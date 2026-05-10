@@ -1,0 +1,38 @@
+# 虚拟环境（不提交到版本库）
+.venv/
+venv/
+env/
+
+# 环境配置（含有密鑰，不提交）
+.env
+# 只提交示例文件
+!.env.example
+
+# 数据库文件（运行时生成）
+data/
+
+# 用户配置中的真实 key 文件（admin.yaml 仅保留模板）
+configs/users/*.yaml
+!configs/users/README.md
+!configs/users/admin.yaml
+
+# PyInstaller 产物
+build/
+dist/
+*.spec.bak
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

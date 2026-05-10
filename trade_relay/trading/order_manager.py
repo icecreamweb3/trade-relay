@@ -1,0 +1,108 @@
+"""
+Order management: places orders via Binance and persists them to the DB.
+"""
+import asyncio
+from typing import Optional
+
+from trade_relay.auth.manager import Session
+from trade_relay import database as db
+from trade_relay import config as cfg
+from trade_relay.trading.binance_client import place_order, place_order_mock
+from trade_relay.i18n import t
+
+
+class OrderResult:
+    def __init__(self, success: bool, message: str, order_id: Optional[int] = None):
+        self.success = success
+        self.message = message
+        self.order_id = order_id
+
+
+async def submit_order(
+    session: Session,
+    symbol: str,
+    side: str,
+    order_type: str,
+    quantity: float,
+    price: Optional[float] = None,
+) -> OrderResult:
+    """
+    Validate, place, and record an order for the given session user.
+    """
+    symbol = symbol.strip().upper()
+    side = side.upper()
+    order_type = order_type.upper()
+
+    if not symbol:
+        return OrderResult(False, t("field_required", t("symbol")))
+    if side not in ("BUY", "SELL"):
+        return OrderResult(False, t("field_required", t("side")))
+    if order_type not in ("MARKET", "LIMIT"):
+        return OrderResult(False, t("field_required", t("order_type")))
+    if quantity <= 0:
+        return OrderResult(False, t("field_required", t("quantity")))
+    if order_type == "LIMIT" and (price is None or price <= 0):
+        return OrderResult(False, t("field_required", t("price")))
+
+    username = session.username
+
+    # Determine execution mode
+    mock = cfg.is_mock_mode(username)
+
+    if mock:
+        result = place_order_mock(symbol, side, order_type, quantity, price)
+    else:
+        api_key = cfg.get_api_key(username)
+        api_secret = cfg.get_api_secret(username)
+
+        if not api_key or not api_secret:
+            return OrderResult(False, t("no_api_key"))
+
+        testnet = cfg.is_testnet(username)
+        result = await place_order(
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            testnet=testnet,
+        )
+
+    # Persist order record
+    order_db_id = db.create_order(
+        user_id=session.user_id,
+        username=username,
+        symbol=symbol,
+        side=side,
+        order_type=order_type,
+        quantity=quantity,
+        price=price,
+        status=result.status if result.success else "FAILED",
+        binance_order_id=result.order_id,
+        error_message=result.error,
+    )
+
+    # Log operation
+    if result.success:
+        db.log_operation(
+            session.user_id,
+            username,
+            "PLACE_ORDER",
+            f"{side} {quantity} {symbol} @ {'MARKET' if order_type == 'MARKET' else price} "
+            f"→ status={result.status} id={result.order_id}",
+        )
+        if result.mock:
+            msg = t("order_mock", side, quantity, symbol, quantity)
+        else:
+            msg = t("order_success", result.order_id)
+        return OrderResult(True, msg, order_db_id)
+    else:
+        db.log_operation(
+            session.user_id,
+            username,
+            "ORDER_FAILED",
+            f"{side} {quantity} {symbol}: {result.error}",
+        )
+        return OrderResult(False, t("order_failed", result.error), order_db_id)

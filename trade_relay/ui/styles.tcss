@@ -1,0 +1,311 @@
+/* ============================================================
+   Trade Relay — Textual CSS
+   ============================================================ */
+
+/* ── Global ── */
+Screen {
+    background: #0d1117;
+    color: #e6edf3;
+}
+
+/* ── Login Screen ── */
+#login-screen {
+    align: center middle;
+}
+
+#login-box {
+    width: 56;
+    height: auto;
+    border: solid #1f6feb;
+    padding: 2 4;
+    background: #161b22;
+}
+
+#login-title {
+    text-align: center;
+    text-style: bold;
+    color: #58a6ff;
+    margin-bottom: 1;
+    width: 100%;
+}
+
+#login-subtitle {
+    text-align: center;
+    color: #8b949e;
+    margin-bottom: 2;
+    width: 100%;
+}
+
+#login-error {
+    color: #f85149;
+    text-align: center;
+    height: 1;
+    margin-bottom: 1;
+}
+
+#login-box Label {
+    color: #8b949e;
+    margin-top: 1;
+}
+
+#login-box Input {
+    margin-bottom: 1;
+}
+
+#login-btn {
+    width: 100%;
+    margin-top: 1;
+}
+
+/* ── Header ── */
+#app-header {
+    height: 3;
+    background: #161b22;
+    border-bottom: solid #30363d;
+    layout: horizontal;
+    align: center middle;
+    padding: 0 2;
+}
+
+#header-title {
+    text-style: bold;
+    color: #58a6ff;
+    width: 1fr;
+}
+
+#header-user {
+    color: #8b949e;
+    margin-right: 2;
+}
+
+#header-role-admin {
+    color: #f0883e;
+    text-style: bold;
+    margin-right: 2;
+}
+
+#header-role-user {
+    color: #56d364;
+    margin-right: 2;
+}
+
+#logout-btn {
+    min-width: 12;
+    height: 1;
+    border: none;
+    background: #30363d;
+    color: #e6edf3;
+}
+
+#logout-btn:hover {
+    background: #f85149;
+    color: white;
+}
+
+/* ── Tabs ── */
+TabbedContent {
+    height: 1fr;
+}
+
+/* ── Order Log ── */
+#order-log-pane {
+    height: 1fr;
+    padding: 1;
+}
+
+#order-table {
+    height: 1fr;
+}
+
+#log-toolbar {
+    height: 3;
+    align: right middle;
+    padding: 0 1;
+}
+
+#refresh-btn {
+    min-width: 12;
+}
+
+/* ── Order Form ── */
+#order-form-pane {
+    height: 1fr;
+    align: center top;
+    padding: 2;
+}
+
+#order-form-box {
+    width: 60;
+    height: auto;
+    border: solid #30363d;
+    padding: 2 4;
+    background: #161b22;
+}
+
+#order-form-title {
+    text-style: bold;
+    color: #58a6ff;
+    margin-bottom: 2;
+    text-align: center;
+    width: 100%;
+}
+
+#order-form-box Label {
+    color: #8b949e;
+    margin-top: 1;
+}
+
+#order-form-box Input {
+    margin-bottom: 0;
+}
+
+#order-form-box Select {
+    margin-bottom: 0;
+}
+
+#order-form-notice {
+    color: #f0883e;
+    text-align: center;
+    margin-top: 1;
+    height: 1;
+}
+
+#order-form-buttons {
+    layout: horizontal;
+    height: 3;
+    margin-top: 2;
+    align: center middle;
+}
+
+#submit-order-btn {
+    width: 20;
+    margin-right: 2;
+}
+
+#clear-form-btn {
+    width: 14;
+    background: #30363d;
+}
+
+/* ── Admin Screen ── */
+#admin-pane {
+    height: 1fr;
+    layout: horizontal;
+    padding: 1;
+}
+
+#user-list-panel {
+    width: 2fr;
+    height: 1fr;
+    border: solid #30363d;
+    padding: 1;
+    margin-right: 1;
+}
+
+#user-list-title {
+    text-style: bold;
+    color: #58a6ff;
+    margin-bottom: 1;
+}
+
+#user-table {
+    height: 1fr;
+}
+
+#user-actions {
+    height: 3;
+    layout: horizontal;
+    align: left middle;
+    margin-top: 1;
+}
+
+#delete-user-btn {
+    min-width: 14;
+    margin-right: 1;
+    background: #da3633;
+}
+
+#reset-pwd-btn {
+    min-width: 16;
+    background: #388bfd;
+}
+
+#create-user-panel {
+    width: 1fr;
+    height: 1fr;
+    border: solid #30363d;
+    padding: 1 2;
+    background: #161b22;
+}
+
+#create-user-title {
+    text-style: bold;
+    color: #58a6ff;
+    margin-bottom: 1;
+}
+
+#create-user-panel Label {
+    color: #8b949e;
+    margin-top: 1;
+}
+
+#create-user-panel Input {
+    margin-bottom: 0;
+}
+
+#create-user-panel Select {
+    margin-bottom: 0;
+}
+
+#create-user-btn {
+    width: 100%;
+    margin-top: 2;
+}
+
+/* ── Settings Screen ── */
+#settings-pane {
+    height: 1fr;
+    align: center top;
+    padding: 2;
+}
+
+#settings-box {
+    width: 60;
+    height: auto;
+    border: solid #30363d;
+    padding: 2 4;
+    background: #161b22;
+}
+
+#settings-title {
+    text-style: bold;
+    color: #58a6ff;
+    margin-bottom: 1;
+    text-align: center;
+    width: 100%;
+}
+
+#settings-box Label {
+    color: #8b949e;
+    margin-top: 1;
+}
+
+#settings-box Input {
+    margin-bottom: 0;
+}
+
+#settings-hint {
+    color: #8b949e;
+    text-align: center;
+    margin-top: 1;
+}
+
+#save-settings-btn {
+    width: 100%;
+    margin-top: 2;
+}
+
+/* ── Notification colours ── */
+.success { color: #56d364; }
+.error   { color: #f85149; }
+.warning { color: #f0883e; }

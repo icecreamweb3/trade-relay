@@ -1,0 +1,7 @@
+binance:
+  api_key: ""
+  api_secret: ""
+  testnet: false
+
+trading:
+  mock_mode: true
