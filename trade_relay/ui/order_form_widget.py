@@ -9,7 +9,7 @@ import time
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QComboBox,
+    QLabel, QLineEdit, QPushButton, QComboBox, QListView,
     QCheckBox, QSlider, QSplitter, QFrame,
     QButtonGroup, QScrollArea,
 )
@@ -188,6 +188,14 @@ class _TabBar(QWidget):
 
     def current_index(self) -> int:
         return self._group.checkedId()
+
+
+def _configure_combo_popup(combo: QComboBox) -> None:
+    """Use a list view with mouse tracking so hover/selection feedback is immediate."""
+    view = QListView(combo)
+    view.setMouseTracking(True)
+    view.viewport().setMouseTracking(True)
+    combo.setView(view)
 
 
 _MAX_RECENT_TRADES = 20
@@ -401,7 +409,7 @@ class _AccountPanel(QWidget):
                 )
             self._val_labels[key] = val
             lo.addLayout(self._kv_row(self._key_lbl(t(key)), val))
-            lo.addSpacing(4)
+            lo.addSpacing(10)
 
         lo.addStretch(1)
 
@@ -619,19 +627,39 @@ class _OrderFormPanel(QWidget):
         # ── Price (委托价格) ──
         lo.addWidget(_small_label(t("order_price_label")))
         price_row = QHBoxLayout()
-        price_row.setSpacing(4)
+        price_row.setSpacing(6)
+
+        price_container = QWidget()
+        price_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        price_container.setStyleSheet(
+            "QWidget { background:#21262d; border:1px solid #30363d;"
+            " border-radius:6px; }"
+            "QWidget:focus-within { border-color:#58a6ff; }"
+        )
+        price_container.setMinimumHeight(42)
+        price_c_lo = QHBoxLayout(price_container)
+        price_c_lo.setContentsMargins(12, 0, 12, 0)
+        price_c_lo.setSpacing(6)
         self._price_edit = QLineEdit()
         self._price_edit.setPlaceholderText("--")
-        self._price_edit.setObjectName("trade_input")
-        self._price_edit.setMinimumHeight(34)
+        self._price_edit.setFrame(False)
+        self._price_edit.setStyleSheet(
+            "QLineEdit { background:transparent; color:#e6edf3;"
+            " font-size:16px; border:none; }"
+        )
         self._quote_lbl = QLabel("USDT")
-        self._quote_lbl.setStyleSheet("color: #8b949e; min-width: 36px; font-size: 12px;")
+        self._quote_lbl.setStyleSheet(
+            "color:#e6edf3; font-size:13px; min-width:40px; border:none; background:transparent;"
+        )
+        self._quote_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        price_c_lo.addWidget(self._price_edit, 1)
+        price_c_lo.addWidget(self._quote_lbl)
+
         bbo_btn = QPushButton("BBO")
         bbo_btn.setObjectName("tag_btn")
-        bbo_btn.setFixedHeight(34)
-        bbo_btn.setFixedWidth(46)
-        price_row.addWidget(self._price_edit)
-        price_row.addWidget(self._quote_lbl)
+        bbo_btn.setFixedHeight(42)
+        bbo_btn.setFixedWidth(52)
+        price_row.addWidget(price_container, 1)
         price_row.addWidget(bbo_btn)
         lo.addLayout(price_row)
 
@@ -645,10 +673,11 @@ class _OrderFormPanel(QWidget):
         self._qty_edit.setMinimumHeight(34)
         self._unit_combo = QComboBox()
         self._unit_combo.addItems(["USDC", "Cont"])
-        self._unit_combo.setFixedWidth(72)
+        _configure_combo_popup(self._unit_combo)
+        self._unit_combo.setMinimumWidth(92)
         self._unit_combo.setMinimumHeight(34)
-        qty_row.addWidget(self._qty_edit)
-        qty_row.addWidget(self._unit_combo)
+        qty_row.addWidget(self._qty_edit, 9)
+        qty_row.addWidget(self._unit_combo, 1)
         lo.addLayout(qty_row)
 
         # ── Percentage slider ──
@@ -693,7 +722,7 @@ class _OrderFormPanel(QWidget):
         tpsl_lo.setContentsMargins(0, 4, 0, 0)
         tpsl_lo.setSpacing(6)
 
-        def _tpsl_row(label_key: str) -> QLineEdit:
+        def _tpsl_row(label_key: str):
             hdr = QHBoxLayout()
             hdr.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(t(label_key))
@@ -713,15 +742,16 @@ class _OrderFormPanel(QWidget):
             edit.setMinimumHeight(34)
             quote_combo = QComboBox()
             quote_combo.addItems(["USDT", "USDC"])
-            quote_combo.setFixedWidth(72)
+            _configure_combo_popup(quote_combo)
+            quote_combo.setMinimumWidth(92)
             quote_combo.setMinimumHeight(34)
-            inp_row.addWidget(edit)
-            inp_row.addWidget(quote_combo)
+            inp_row.addWidget(edit, 9)
+            inp_row.addWidget(quote_combo, 1)
             tpsl_lo.addLayout(inp_row)
-            return edit
+            return edit, quote_combo
 
-        self._tp_edit = _tpsl_row("tpsl_tp")
-        self._sl_edit = _tpsl_row("tpsl_sl")
+        self._tp_edit, self._tp_quote_combo = _tpsl_row("tpsl_tp")
+        self._sl_edit, self._sl_quote_combo = _tpsl_row("tpsl_sl")
         lo.addWidget(self._tpsl_panel)
 
         self._tpsl.toggled.connect(self._tpsl_panel.setVisible)
@@ -732,7 +762,9 @@ class _OrderFormPanel(QWidget):
         tif_lbl.setStyleSheet("color: #8b949e; font-size: 12px;")
         self._tif = QComboBox()
         self._tif.addItems(["GTC", "IOC", "FOK"])
-        self._tif.setFixedWidth(64)
+        _configure_combo_popup(self._tif)
+        self._tif.setFixedWidth(100)
+        self._tif.setFixedHeight(26)
         tif_row.addWidget(tif_lbl)
         tif_row.addSpacing(4)
         tif_row.addWidget(self._tif)
@@ -814,8 +846,14 @@ class _OrderFormPanel(QWidget):
             self._price_edit.setText(price)
 
     def set_quote(self, quote: str) -> None:
-        """Update the quote currency label next to the price input."""
+        """Update all quote labels/selectors when the symbol quote changes."""
         self._quote_lbl.setText(quote)
+        idx = self._tp_quote_combo.findText(quote)
+        if idx >= 0:
+            self._tp_quote_combo.setCurrentIndex(idx)
+        idx = self._sl_quote_combo.findText(quote)
+        if idx >= 0:
+            self._sl_quote_combo.setCurrentIndex(idx)
 
 
 def _small_label(text: str) -> QLabel:
