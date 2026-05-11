@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #1e1e1e;
+  color: #cccccc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
+  user-select: none;
+  text-align: left !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* Panel resize handle */
+[data-panel-resize-handle-id] {
+  background-color: #3e3e42;
+  transition: background-color 0.15s;
+}
+[data-panel-resize-handle-id]:hover,
+[data-panel-resize-handle-id][data-resize-handle-active] {
+  background-color: #007acc;
+}
+
+.selectable { user-select: text; }
+
+/* Table styles */
+.trade-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.trade-table th {
+  background: #252526;
+  color: #858585;
+  padding: 4px 8px;
+  text-align: left;
+  font-weight: 500;
+  border-bottom: 1px solid #3e3e42;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.trade-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #2a2a2a;
+  white-space: nowrap;
+}
+.trade-table tr:hover td { background: #2a2a2a; }
+
+/* Buy / sell colors */
+.text-buy { color: #00c853; }
+.text-sell { color: #ff1744; }
+.bg-buy { background-color: rgba(0,200,83,0.15); }
+.bg-sell { background-color: rgba(255,23,68,0.15); }
+
+/* Status badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-filled { background: rgba(78,201,176,0.2); color: #4ec9b0; }
+.badge-pending { background: rgba(206,145,120,0.2); color: #ce9178; }
+.badge-failed  { background: rgba(244,71,71,0.2);  color: #f44747; }
+.badge-mock    { background: rgba(0,122,204,0.2);  color: #007acc; }

@@ -16,11 +16,25 @@ Copy .env.example → .env and edit to configure the application.
 import sys
 import os
 import argparse
+import shutil
+import importlib
 from pathlib import Path
 
 # Add project root to sys.path (needed when running as packaged executable)
 _ROOT = Path(__file__).parent
 sys.path.insert(0, str(_ROOT))
+
+
+def _purge_local_pycache() -> None:
+    for cache_dir in _ROOT.rglob("__pycache__"):
+        try:
+            shutil.rmtree(cache_dir)
+        except OSError:
+            pass
+    importlib.invalidate_caches()
+
+
+_purge_local_pycache()
 
 # ── Load .env before anything else ──────────────────────────────────────────
 # We do this with a minimal inline loader so the app works even if

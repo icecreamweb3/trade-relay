@@ -5,15 +5,15 @@ Layout of the Trade page:
   Right (fixed):    OrderFormWidget (order book + order form)
 """
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QStatusBar, QMenuBar, QMessageBox,
     QSplitter,
 )
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
-from PyQt6.QtCore import pyqtSignal, QThread, QUrl, Qt
+from PyQt6.QtCore import pyqtSignal, QThread, Qt, QTimer, QPoint
 from PyQt6.QtGui import QAction
+from pathlib import Path
 import json
+import os
 import urllib.request
 import datetime
 
@@ -27,15 +27,12 @@ from trade_relay.ui.admin_screen import AdminWidget
 from trade_relay.ui.config_screen import ConfigWidget
 from trade_relay.ui.profile_screen import ProfileWidget
 from trade_relay.ui.ticker_widget import TickerWidget
+from trade_relay.ui.electron_bridge import ElectronBridge
 
-_BINANCE_FUTURES_BASE = "https://www.binance.com/en/futures/"
-_DEFAULT_SYMBOL = "BTCUSDT"
-
-
-class _SilentPage(QWebEnginePage):
-    """WebEnginePage that suppresses all JS console output."""
-    def javaScriptConsoleMessage(self, level, message, line, source):
-        pass  # swallow all JS console messages from the embedded site
+# Derive Binance URL language from TRADE_RELAY_LANG env var (zh → zh-CN, others → en)
+_BINANCE_LANG = "zh-CN" if os.environ.get("TRADE_RELAY_LANG", "en").lower().startswith("zh") else "en"
+_DEFAULT_SYMBOL = os.environ.get("TRADE_RELAY_BINANCE_SYMBOL", "BTCUSDT").upper()
+_BINANCE_FUTURES_BASE = f"https://www.binance.com/{_BINANCE_LANG}/futures/"
 
 
 class _SyncTickersWorker(QThread):
@@ -95,10 +92,22 @@ class _SyncTickersWorker(QThread):
 
 class MainWindow(QMainWindow):
     logout_signal = pyqtSignal()
+    _app_inactive = False
+    _app_state_connected = False
+    _was_minimized = False
+    _x11_ok = False
+    _x11_minimized = False
+    _restore_timer = None
 
     def __init__(self, session: Session) -> None:
-        super().__init__()
+        self._app_inactive = False
+        self._app_state_connected = False
+        self._was_minimized = False
+        self._x11_ok = False
+        self._x11_minimized = False
+        self._restore_timer = None
         self._session = session
+        super().__init__()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -148,6 +157,9 @@ class MainWindow(QMainWindow):
         status.showMessage(t("login_success", self._session.username))
         self.setStatusBar(status)
 
+        # Start the Electron chart window after the Qt window is fully laid out.
+        QTimer.singleShot(500, self._start_electron)
+
     def _build_menubar(self) -> None:
         mb = self.menuBar()
         mb.setStyleSheet(
@@ -193,7 +205,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         act_reload = QAction(t("reload_page"), self)
         act_reload.setShortcut("F5")
-        act_reload.triggered.connect(lambda: self._webview.reload())
+        act_reload.triggered.connect(lambda: self._bridge.reload())
         view_menu.addAction(act_reload)
 
     def _build_header(self) -> QWidget:
@@ -256,7 +268,7 @@ class MainWindow(QMainWindow):
         """
         Returns the composite trading screen:
           Left (vertical splitter):
-            top    – Binance Futures WebView
+            top    – Chart placeholder (Electron BrowserWindow overlaid here)
             bottom – PositionsPanel (positions / orders / history tabs)
           Right (fixed 420 px):
             OrderFormWidget (order book + order form)
@@ -266,20 +278,19 @@ class MainWindow(QMainWindow):
         h_lo.setContentsMargins(0, 0, 0, 0)
         h_lo.setSpacing(0)
 
-        # ── Left: vertical splitter (webview / positions panel) ─────────
+        # ── Left: vertical splitter (chart / positions panel) ───────────
         v_split = QSplitter(Qt.Orientation.Vertical)
         v_split.setHandleWidth(2)
         v_split.setChildrenCollapsible(False)
 
-        self._webview = QWebEngineView()
-        self._webview.setPage(_SilentPage(self._webview))
-        self._inject_chart_fullscreen_script()
-        self._webview.setUrl(QUrl(_BINANCE_FUTURES_BASE + _DEFAULT_SYMBOL))
-        self._webview.setMinimumHeight(300)
-        self._webview.loadFinished.connect(self._dismiss_webview_popups)
-        self._webview.page().renderProcessTerminated.connect(self._on_render_crashed)
-        self._webview.urlChanged.connect(self._on_webview_url_changed)
-        v_split.addWidget(self._webview)
+        # Dark placeholder – the Electron window is positioned over this widget.
+        self._chart_placeholder = QLabel("Loading Binance chart…")
+        self._chart_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._chart_placeholder.setMinimumHeight(300)
+        self._chart_placeholder.setStyleSheet(
+            "background:#0b0e11; color:#4a5568; font-size:14px;"
+        )
+        v_split.addWidget(self._chart_placeholder)
 
         self._positions_panel = PositionsPanel(self._session)
         self._positions_panel.setMinimumHeight(160)
@@ -288,136 +299,232 @@ class MainWindow(QMainWindow):
         v_split.setStretchFactor(0, 7)
         v_split.setStretchFactor(1, 3)
 
+        # Forward splitter moves to Electron so the window tracks the correct size.
+        self._v_split = v_split
+        v_split.splitterMoved.connect(
+            lambda: QTimer.singleShot(50, self._sync_electron_geometry)
+        )
+
         # ── Right: order form ────────────────────────────────────────────
         self._order_form = OrderFormWidget(self._session)
         self._order_form.setMinimumWidth(360)
-        # keep order log in sync
-        # (connected in _setup_ui after _order_log is created)
-        # update positions panel after placing order
         self._order_form.order_placed.connect(self._positions_panel.refresh)
 
         h_lo.addWidget(v_split, 6)
         h_lo.addWidget(self._order_form, 4)
 
+        # ── Electron bridge (started via timer in _setup_ui) ─────────────
+        self._bridge = ElectronBridge(lang=_BINANCE_LANG, symbol=_DEFAULT_SYMBOL)
+        self._bridge.symbol_changed.connect(self._order_form.set_symbol)
+        self._bridge.load_ok.connect(self._on_electron_load_ok)
+        self._bridge.error.connect(self._on_electron_error)
+
         return container
 
-    def _on_webview_url_changed(self, url) -> None:
-        """Parse the symbol from the Binance futures URL and sync the order form.
+    # ── Electron bridge management ─────────────────────────────────────────────
 
-        URL pattern: https://www.binance.com/en/futures/BTCUSDT
+    # ── X11 minimize detection ─────────────────────────────────────────────────
+
+    def _x11_init(self) -> bool:
+        """Subscribe to X11 structural/visibility events and start background event thread."""
+        import threading
+        try:
+            from Xlib import display as Xdisplay, X
+            self._xdpy = Xdisplay.Display()
+            wid = int(self.winId())
+            # The Qt window — we own it, so we can set its event mask
+            self._x11_win = self._xdpy.create_resource_object('window', wid)
+            self._x11_win.change_attributes(event_mask=(
+                X.StructureNotifyMask | X.VisibilityChangeMask
+            ))
+            # Also subscribe on the WM frame (parent chain up to root)
+            root = self._xdpy.screen().root
+            w = self._x11_win
+            while True:
+                p = w.query_tree().parent
+                if p.id == root.id:
+                    break
+                w = p
+            self._x11_top = w
+            if w.id != self._x11_win.id:
+                try:
+                    w.change_attributes(event_mask=(
+                        X.StructureNotifyMask | X.VisibilityChangeMask
+                    ))
+                except Exception:
+                    pass
+            self._xdpy.flush()
+            self._x11_minimized = False
+            t = threading.Thread(target=self._x11_event_loop, daemon=True)
+            t.start()
+            print(f"[x11] listening: qt_wid={hex(wid)} top_wid={hex(w.id)}", flush=True)
+            return True
+        except Exception as exc:
+            print(f"[x11] init failed: {exc}", flush=True)
+            return False
+
+    def _x11_event_loop(self) -> None:
+        """Background thread: consume X11 events and update self._x11_minimized."""
+        import select
+        from Xlib import X
+        fd = self._xdpy.fileno()
+        print(f"[x11] event loop started fd={fd}", flush=True)
+        while True:
+            try:
+                r, _, _ = select.select([fd], [], [], 2.0)
+                if not r and not self._xdpy.pending_events():
+                    continue
+                while self._xdpy.pending_events():
+                    ev = self._xdpy.next_event()
+                    if ev.type == X.UnmapNotify:
+                        self._x11_minimized = True
+                        print(f"[x11] UnmapNotify → minimized", flush=True)
+                    elif ev.type == X.MapNotify:
+                        self._x11_minimized = False
+                        print(f"[x11] MapNotify → visible", flush=True)
+                    elif ev.type == X.VisibilityNotify:
+                        self._x11_minimized = (ev.state == X.VisibilityFullyObscured)
+                        print(f"[x11] VisibilityNotify state={ev.state} → minimized={self._x11_minimized}", flush=True)
+            except Exception as exc:
+                print(f"[x11] event loop error: {exc}", flush=True)
+                break
+
+    # ── Electron lifecycle ─────────────────────────────────────────────────────
+
+    def _start_electron(self) -> None:
+        """Start the Electron subprocess and send initial layout."""
+        self._bridge.start()
+        self._sync_electron_geometry()
+        if not self._app_state_connected:
+            app = QApplication.instance()
+            if app is not None:
+                app.applicationStateChanged.connect(self._on_application_state_changed)
+                self._app_state_connected = True
+        self._x11_ok = self._x11_init()
+
+        self._minimize_poll = QTimer(self)
+        self._minimize_poll.setInterval(400)
+        self._minimize_poll.timeout.connect(self._poll_minimize_state)
+        self._minimize_poll.start()
+
+    def _poll_minimize_state(self) -> None:
+        if self._x11_ok:
+            minimized = self._x11_minimized  # updated by background event thread
+        else:
+            minimized = bool(self.windowState() & Qt.WindowState.WindowMinimized)
+        active = self.isActiveWindow()
+        focus_lost = self._app_inactive or not active
+        minimized = minimized or focus_lost
+        if minimized != self._was_minimized:
+            print(f"[poll] minimized={minimized} active={active} app_inactive={self._app_inactive}", flush=True)
+        self._apply_overlay_visibility(minimized)
+
+    def _apply_overlay_visibility(self, minimized: bool) -> None:
+        previous_minimized = getattr(self, "_was_minimized", False)
+        if minimized == previous_minimized:
+            return
+        bridge = getattr(self, "_bridge", None)
+        restore_timer = getattr(self, "_restore_timer", None)
+        if minimized:
+            if restore_timer is not None:
+                restore_timer.stop()
+            if bridge is not None:
+                bridge.hide()
+            self._was_minimized = True
+            return
+
+        if restore_timer is None:
+            restore_timer = QTimer(self)
+            restore_timer.setSingleShot(True)
+            restore_timer.timeout.connect(self._restore_overlay_if_active)
+            self._restore_timer = restore_timer
+        restore_timer.start(700)
+
+    def _restore_overlay_if_active(self) -> None:
+        focus_lost = self._app_inactive or not self.isActiveWindow()
+        if focus_lost:
+            return
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            bridge.show()
+            QTimer.singleShot(150, self._sync_electron_geometry)
+        self._was_minimized = False
+
+    def _on_application_state_changed(self, state) -> None:
+        inactive = state != Qt.ApplicationState.ApplicationActive
+        state_value = getattr(state, "value", state)
+        print(f"[app] state={state_value} inactive={inactive}", flush=True)
+        self._app_inactive = inactive
+        self._apply_overlay_visibility(inactive)
+
+    def _on_visibility_changed(self, visibility) -> None:
+        from PyQt6.QtGui import QWindow
+        minimized = (visibility == QWindow.Visibility.Minimized
+                     or visibility == QWindow.Visibility.Hidden)
+        self._apply_overlay_visibility(minimized)
+
+    def _sync_electron_geometry(self) -> None:
+        """Send the Qt main-window bounds + chart placeholder bounds to Electron.
+
+        The overlay BrowserWindow will be repositioned to match the main window
+        (so it is always perfectly aligned), and the BrowserView within it will
+        be clipped to the chart placeholder area — exactly like omnitrader-ai's
+        updateBinanceViewBounds() approach.
         """
-        path = url.path()          # e.g. "/en/futures/BTCUSDT"
-        parts = [p for p in path.split("/") if p]
-        if parts and parts[-1].isalpha() and len(parts[-1]) >= 3:
-            self._order_form.set_symbol(parts[-1].upper())
+        if not self._bridge.is_running():
+            return
 
-    def _on_render_crashed(self) -> None:
-        """Reload the page when the WebEngine renderer process crashes (black screen).
-        A 60-second cooldown prevents a crash-reload-crash loop.
-        """
-        import time as _time
-        now = _time.monotonic()
-        last = getattr(self, "_last_render_reload", 0.0)
-        if now - last > 60:
-            self._last_render_reload = now
-            self._webview.reload()
+        # Main-window screen geometry
+        win_geo  = self.geometry()
+        win_tl   = self.mapToGlobal(QPoint(0, 0))
+        # Adjust for the fact that geometry() is in frame coords on some WMs
+        win_x, win_y = win_tl.x(), win_tl.y()
+        win_w, win_h = self.width(), self.height()
 
-    def _inject_chart_fullscreen_script(self) -> None:
-        """Inject a polling script into all frames (including cross-origin TradingView
-        iframe) that waits 3 s for async rendering, then polls every 1 s (max 30 times)
-        for svg.chart-fullscreen-icon and simulates mousedown+mouseup to expand the chart.
+        # Chart placeholder screen position
+        chart_tl = self._chart_placeholder.mapToGlobal(QPoint(0, 0))
+        chart_w  = self._chart_placeholder.width()
+        chart_h  = self._chart_placeholder.height()
 
-        Uses sessionStorage instead of a window property so the flag survives
-        TradingView iframe soft-reloads – preventing the icon being clicked a second
-        time which would collapse the chart and produce a black-screen.
-        """
-        js = """
-(function () {
-    var STORAGE_KEY = '__trRelayExpanded';
-    try {
-        // sessionStorage persists across same-origin soft reloads within the tab.
-        // If the flag is already set this iframe has already been expanded – bail out
-        // to avoid toggling the chart back to collapsed state.
-        if (window.sessionStorage && sessionStorage.getItem(STORAGE_KEY)) return;
-    } catch (e) {}
+        self._bridge.set_layout(
+            win_x, win_y, win_w, win_h,
+            chart_tl.x(), chart_tl.y(), chart_w, chart_h,
+        )
 
-    var attempts = 0;
+    def _on_electron_load_ok(self) -> None:
+        self._chart_placeholder.setText("")  # blank out the loading message
 
-    function tryExpand() {
-        attempts++;
-        var el = document.querySelector('svg.chart-fullscreen-icon');
-        if (el) {
-            try {
-                if (window.sessionStorage) sessionStorage.setItem(STORAGE_KEY, '1');
-            } catch (e) {}
-            var rect = el.getBoundingClientRect();
-            var cx = rect.left + rect.width  / 2;
-            var cy = rect.top  + rect.height / 2;
-            ['mousedown', 'mouseup', 'click'].forEach(function (type) {
-                el.dispatchEvent(new MouseEvent(type, {
-                    bubbles: true, cancelable: true,
-                    clientX: cx,   clientY: cy
-                }));
-            });
-            return;
-        }
-        if (attempts < 30) {
-            setTimeout(tryExpand, 2000);
-        }
-    }
+    def _on_electron_error(self, message: str) -> None:
+        print(f"[ElectronBridge] {message}")
+        self.statusBar().showMessage(f"Binance chart: {message}", 8000)
+        if not self._bridge.is_running():
+            self._chart_placeholder.setText(f"⚠  {message}")
 
-    // Wait 8 s for TradingView to fully initialise and load chart data
-    // before expanding – clicking too early interrupts data loading.
-    setTimeout(tryExpand, 8000);
-})();
-"""
-        script = QWebEngineScript()
-        script.setName("trade_relay_chart_expand")
-        script.setSourceCode(js)
-        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
-        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-        script.setRunsOnSubFrames(True)   # runs in TradingView iframe too
-        self._webview.page().scripts().insert(script)
+    # ── Qt event overrides ─────────────────────────────────────────────────────
 
-    def _dismiss_webview_popups(self) -> None:
-        """Inject JS to auto-close Binance consent/cookie dialogs on page load."""
-        js = r"""
-(function() {
-    function dismiss() {
-        var phrases = [
-            /I\s+Understand/i,
-            /Reject\s+Additional/i,
-            /Accept\s+Cookies/i,
-            /Accept\s+&\s+Continue/i,
-            /Got\s+it/i,
-        ];
-        document.querySelectorAll('button').forEach(function(btn) {
-            var txt = (btn.innerText || btn.textContent || '').trim();
-            for (var i = 0; i < phrases.length; i++) {
-                if (phrases[i].test(txt)) { btn.click(); break; }
-            }
-        });
-        document.querySelectorAll(
-            'button[aria-label="Close"], button[aria-label="close"],' +
-            '[data-bn-type="button"][class*="close"],' +
-            '[class*="campaignClose"],[class*="campaign-close"],' +
-            '[class*="notificationClose"],[class*="notification-close"],' +
-            '[class*="popupClose"],[class*="popup-close"],' +
-            '[class*="modalClose"],[class*="modal-close"],' +
-            '[class*="bannerClose"],[class*="banner-close"],' +
-            '[class*="challengeClose"],[class*="challenge-close"],' +
-            '[class*="activityClose"],[class*="activity-close"]'
-        ).forEach(function(b) { b.click(); });
-    }
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.WindowStateChange:
+            # windowState() already reflects the new state after super() call.
+            state = self.windowState()
+            minimized = bool(state & Qt.WindowState.WindowMinimized)
+            print(f"[changeEvent] WindowStateChange minimized={minimized} state={int(state)}")
+            self._apply_overlay_visibility(minimized)
+        elif event.type() == QEvent.Type.ActivationChange:
+            active = self.isActiveWindow()
+            print(f"[changeEvent] ActivationChange active={active}", flush=True)
+            self._apply_overlay_visibility(not active)
 
-    dismiss();
-    [800, 1800, 3000, 5000].forEach(function(ms) {
-        setTimeout(dismiss, ms);
-    });
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        QTimer.singleShot(0, self._sync_electron_geometry)
 
-    var observer = new MutationObserver(function() { dismiss(); });
-    observer.observe(document.body || document.documentElement,
-                     { childList: true, subtree: true });
-})();
-"""
-        self._webview.page().runJavaScript(js)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._sync_electron_geometry)
+
+    def closeEvent(self, event) -> None:
+        self._bridge.stop()
+        super().closeEvent(event)
+

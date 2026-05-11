@@ -1,0 +1,9 @@
+{
+  "name": "trade-relay-binance",
+  "version": "1.0.0",
+  "description": "Lightweight Electron subprocess – renders the Binance Futures chart for trade-relay",
+  "main": "main.js",
+  "devDependencies": {
+    "electron": "^33.4.11"
+  }
+}
