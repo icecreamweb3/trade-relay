@@ -25,9 +25,18 @@ export const api = {
     return res.data
   },
 
-  async getOrders(params?: { limit?: number; user_id?: number }) {
+  async getOrders(params?: {
+    limit?: number; user_id?: number; username?: string; order_id?: string
+    start_time?: string; end_time?: string; status?: string
+  }) {
     const token = await getToken()
     const res = await axios.get(`${BASE_URL}/api/orders`, { params, headers: getHeaders(token) })
+    return res.data
+  },
+
+  async getOrderUsers() {
+    const token = await getToken()
+    const res = await axios.get(`${BASE_URL}/api/orders/users`, { headers: getHeaders(token) })
     return res.data
   },
 

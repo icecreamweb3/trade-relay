@@ -675,6 +675,57 @@ def get_order_history(user_id: Optional[int] = None, limit: int = 200) -> list:
         conn.close()
 
 
+def query_orders(
+    *,
+    limit: int = 200,
+    user_id: Optional[int] = None,
+    username: Optional[str] = None,
+    order_id: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list:
+    """Return orders with optional filters for user, order id, time range, and status."""
+    sql = "SELECT * FROM orders WHERE 1 = 1"
+    params: list = []
+
+    if user_id is not None:
+        sql += " AND user_id = %s"
+        params.append(user_id)
+
+    if username:
+        sql += " AND username LIKE %s"
+        params.append(f"%{username}%")
+
+    if order_id:
+        sql += " AND (CAST(id AS CHAR) LIKE %s OR exchange_order_id LIKE %s)"
+        like_value = f"%{order_id}%"
+        params.extend([like_value, like_value])
+
+    if start_time:
+        sql += " AND created_at >= %s"
+        params.append(start_time)
+
+    if end_time:
+        sql += " AND created_at <= %s"
+        params.append(end_time)
+
+    if status:
+        sql += " AND status = %s"
+        params.append(status)
+
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def get_recent_platform_trades(limit: int = 30) -> list:
     """返回平台内所有用户最近的已成交订单。
     每行包含: username, symbol, side, filled_qty, avg_price, created_at

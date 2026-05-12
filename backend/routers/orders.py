@@ -44,6 +44,11 @@ class OrderOut(BaseModel):
     created_at: str
 
 
+class OrderUserOption(BaseModel):
+    id: int
+    username: str
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_out(r: dict) -> OrderOut:
@@ -84,6 +89,38 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail=result.message)
     _log.info("Order placed: order_id=%s user=%s", result.order_id, user["username"])
     return {"ok": True, "order_id": result.order_id, "message": result.message}
+
+
+@router.get("", response_model=list[OrderOut])
+def list_orders(
+    limit: int = 200,
+    username: Optional[str] = None,
+    order_id: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    rows = db_module.query_orders(
+        limit=limit,
+        user_id=None,
+        username=username,
+        order_id=order_id,
+        start_time=start_time,
+        end_time=end_time,
+        status=status,
+    )
+    return [_row_to_out(r) for r in rows]
+
+
+@router.get("/users", response_model=list[OrderUserOption])
+def list_order_users(user: dict = Depends(get_current_user)):
+    rows = db_module.get_all_users()
+    return [
+        OrderUserOption(id=row["id"], username=row["username"])
+        for row in rows
+        if row.get("role") != "admin"
+    ]
 
 
 @router.get("/active", response_model=list[OrderOut])
