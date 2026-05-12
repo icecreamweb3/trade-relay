@@ -4,8 +4,24 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useMarketStore } from '../store/marketStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface Level { price: number; qty: number; sum: number }
+
+const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
+
+function splitTradingSymbol(symbol: string) {
+  const upperSymbol = symbol.toUpperCase()
+  for (const quoteAsset of QUOTE_ASSETS) {
+    if (upperSymbol.endsWith(quoteAsset) && upperSymbol.length > quoteAsset.length) {
+      return { baseAsset: upperSymbol.slice(0, -quoteAsset.length), quoteAsset }
+    }
+  }
+  return { baseAsset: upperSymbol, quoteAsset: 'USDT' }
+}
 
 function buildLevels(raw: [string, string][], side: 'ask' | 'bid'): Level[] {
   const sorted = raw
@@ -25,8 +41,10 @@ function fmt(n: number, dp = 1): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 }
 
-export function OrderBook() {
+export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) => void }) {
+  const { t } = useTranslation(locale)
   const { symbol, currentPrice } = useMarketStore()
+  const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
   const [asks, setAsks] = useState<Level[]>([])
   const [bids, setBids] = useState<Level[]>([])
   const wsRef = useRef<WebSocket | null>(null)
@@ -84,14 +102,14 @@ export function OrderBook() {
     <div className="h-full flex flex-col bg-[#161616] text-[11px] select-none min-w-0">
       {/* Header */}
       <div className="px-2 py-1.5 border-b border-[#3e3e42] shrink-0">
-        <span className="text-[11px] font-semibold text-[#cccccc]">Order Book</span>
+        <span className="text-[11px] font-semibold text-[#cccccc]">{t('orderbook.title')}</span>
       </div>
 
       {/* Column labels */}
       <div className="grid grid-cols-3 px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]">
-        <span>Price(USDT)</span>
-        <span className="text-right">Size(BTC)</span>
-        <span className="text-right">Sum(BTC)</span>
+        <span>{t('orderbook.price')}({quoteAsset})</span>
+        <span className="text-right">{t('orderbook.size')}({baseAsset})</span>
+        <span className="text-right">{t('orderbook.sum')}({baseAsset})</span>
       </div>
 
       {/* Asks (sells) — red, highest at top, lowest ask at bottom near spread */}
@@ -99,7 +117,12 @@ export function OrderBook() {
         {asks.map((lvl, i) => {
           const barW = (lvl.sum / maxSum) * 100
           return (
-            <div key={i} className="relative grid grid-cols-3 px-2 py-[1px] hover:bg-[#252526] cursor-default">
+            <button
+              key={i}
+              type="button"
+              onClick={() => onPriceSelect?.(lvl.price)}
+              className="relative grid grid-cols-3 w-full px-2 py-[1px] hover:bg-[#252526] cursor-pointer text-left"
+            >
               <div
                 className="absolute right-0 top-0 h-full bg-[#f6465d]/10"
                 style={{ width: `${barW}%` }}
@@ -107,7 +130,7 @@ export function OrderBook() {
               <span className="text-[#f6465d] font-mono tabular-nums z-10">{fmt(lvl.price, 1)}</span>
               <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmt(lvl.qty, 4)}</span>
               <span className="text-right text-[#666] font-mono tabular-nums z-10">{fmt(lvl.sum, 2)}</span>
-            </div>
+            </button>
           )
         })}
       </div>
@@ -119,7 +142,7 @@ export function OrderBook() {
         </span>
         {spread != null && (
           <span className="text-[9px] text-[#555]">
-            Spread {fmt(spread, 1)} ({spreadPct}%)
+            {t('orderbook.spread')} {fmt(spread, 1)} ({spreadPct}%)
           </span>
         )}
       </div>
@@ -129,7 +152,12 @@ export function OrderBook() {
         {bids.map((lvl, i) => {
           const barW = (lvl.sum / maxSum) * 100
           return (
-            <div key={i} className="relative grid grid-cols-3 px-2 py-[1px] hover:bg-[#252526] cursor-default">
+            <button
+              key={i}
+              type="button"
+              onClick={() => onPriceSelect?.(lvl.price)}
+              className="relative grid grid-cols-3 w-full px-2 py-[1px] hover:bg-[#252526] cursor-pointer text-left"
+            >
               <div
                 className="absolute right-0 top-0 h-full bg-[#0ecb81]/10"
                 style={{ width: `${barW}%` }}
@@ -137,7 +165,7 @@ export function OrderBook() {
               <span className="text-[#0ecb81] font-mono tabular-nums z-10">{fmt(lvl.price, 1)}</span>
               <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmt(lvl.qty, 4)}</span>
               <span className="text-right text-[#666] font-mono tabular-nums z-10">{fmt(lvl.sum, 2)}</span>
-            </div>
+            </button>
           )
         })}
       </div>

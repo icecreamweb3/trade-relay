@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -8,16 +9,17 @@ const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 export function LoginScreen() {
   const { t } = useTranslation(locale)
   const { login, isLoading, error, clearError } = useAuthStore()
+  const showToast = useToastStore((state) => state.showToast)
 
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
 
   useEffect(() => {
     if (error) {
-      const timer = setTimeout(clearError, 4000)
-      return () => clearTimeout(timer)
+      showToast('error', error)
+      clearError()
     }
-  }, [error, clearError])
+  }, [error, clearError, showToast])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -44,13 +46,6 @@ export function LoginScreen() {
         onSubmit={handleSubmit}
         className="w-80 bg-[#252526] rounded-lg border border-[#3e3e42] p-6 space-y-4"
       >
-        {/* Error message */}
-        {error && (
-          <div className="bg-red-900/30 border border-red-700/50 rounded px-3 py-2 text-red-400 text-sm">
-            {error}
-          </div>
-        )}
-
         {/* Username */}
         <div>
           <label className="block text-xs text-[#858585] mb-1.5">{t('login.username')}</label>

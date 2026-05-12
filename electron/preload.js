@@ -62,11 +62,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Renderer → main log forwarding ───────────────────────────────────────
   logToMain: (level, msg, extra) => ipcRenderer.send('log-to-main', level, msg, extra),
 
-  // ── markPrice data from main process WS ──────────────────────────────
-  onMarkPriceData: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('mark-price-data', handler)
-    return () => ipcRenderer.removeListener('mark-price-data', handler)
-  },
-  switchMarkPriceSymbol: (symbol) => ipcRenderer.send('switch-mark-price-symbol', symbol),
 })

@@ -168,8 +168,12 @@ TRADE_RELAY_ENCRYPTION_KEY=another-random-key-for-aes
 
 # Binance 面板设置（可选）
 BINANCE_LANG=zh-CN
-BINANCE_SYMBOL=BTCUSDT
+BINANCE_SYMBOL=BTCUSDC
 BACKEND_PORT=8000
+
+# 代理设置（可选，供 Electron/Chromium 网络栈使用）
+ALL_PROXY=socks5://127.0.0.1:10808
+# HTTPS_PROXY=http://127.0.0.1:10809
 ```
 
 ### 5.2 默认管理员账号
@@ -349,7 +353,7 @@ Authorization: Bearer <token>
 **下单请求体：**
 ```json
 {
-  "symbol": "BTCUSDT",
+  "symbol": "BTCUSDC",
   "side": "BUY",
   "order_type": "LIMIT",
   "quantity": 0.001,

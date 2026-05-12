@@ -4,6 +4,8 @@ Binance API wrapper supporting real, testnet, and mock modes.
 from typing import Optional
 import asyncio
 
+from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
+
 
 class BinanceOrderResult:
     def __init__(
@@ -29,6 +31,7 @@ async def place_order(
     order_type: str,
     quantity: float,
     price: Optional[float] = None,
+    leverage: int = 10,
     testnet: bool = False,
 ) -> BinanceOrderResult:
     """
@@ -36,35 +39,42 @@ async def place_order(
     Returns BinanceOrderResult.
     """
     try:
-        from binance import AsyncClient  # type: ignore
-    except ImportError:
-        return BinanceOrderResult(
-            success=False,
-            error="python-binance not installed. Run: pip install python-binance",
-        )
-
-    client = None
-    try:
-        client = await AsyncClient.create(
+        client = FuturesBinanceClient(
             api_key=api_key,
-            api_secret=api_secret,
+            secret_key=api_secret,
             testnet=testnet,
         )
 
-        params: dict = {
-            "symbol": symbol,
-            "side": side,
-            "type": order_type,
-            "quantity": str(quantity),
-        }
+        await asyncio.to_thread(client.set_leverage, symbol, leverage)
 
         if order_type == "LIMIT":
             if price is None:
                 return BinanceOrderResult(success=False, error="Price required for LIMIT order")
-            params["price"] = str(price)
-            params["timeInForce"] = "GTC"
+            response = await asyncio.to_thread(
+                client.place_limit_order,
+                symbol,
+                side,
+                quantity,
+                price,
+            )
+        elif order_type == "MARKET":
+            response = await asyncio.to_thread(
+                client.place_market_order,
+                symbol,
+                side,
+                quantity,
+            )
+        else:
+            return BinanceOrderResult(success=False, error=f"Unsupported order type: {order_type}")
 
-        response = await client.create_order(**params)
+        if not response:
+            return BinanceOrderResult(success=False, error="Empty response from Binance Futures")
+
+        if response.get("error"):
+            return BinanceOrderResult(
+                success=False,
+                error=response.get("error_message") or str(response),
+            )
 
         order_id = str(response.get("orderId", ""))
         status = response.get("status", "NEW")
@@ -77,12 +87,6 @@ async def place_order(
 
     except Exception as exc:
         return BinanceOrderResult(success=False, error=str(exc))
-    finally:
-        if client is not None:
-            try:
-                await client.close_connection()
-            except Exception:
-                pass
 
 
 def place_order_mock(

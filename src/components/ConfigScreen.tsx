@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api/client'
+import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -11,8 +12,7 @@ export function ConfigScreen() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState('')
+  const showToast = useToastStore((state) => state.showToast)
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -21,17 +21,16 @@ export function ConfigScreen() {
     const confirm = confirmPassword.trim()
 
     if (!current || !next || !confirm) {
-      setError(t('config.error.required'))
+      showToast('error', t('config.error.required'))
       return
     }
 
     if (next !== confirm) {
-      setError(t('config.error.mismatch'))
+      showToast('error', t('config.error.mismatch'))
       return
     }
 
     setSaving(true)
-    setError('')
     try {
       await api.changeMyPassword({
         current_password: current,
@@ -40,10 +39,9 @@ export function ConfigScreen() {
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
-      setSaved(true)
-      setTimeout(() => setSaved(false), 3000)
+      showToast('success', t('config.success'))
     } catch (err: unknown) {
-      setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.required'))
+      showToast('error', (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.required'))
     }
     setSaving(false)
   }
@@ -54,9 +52,6 @@ export function ConfigScreen() {
         <span className="text-sm font-semibold text-[#cccccc]">{t('config.title')}</span>
       </div>
       <form onSubmit={handleSave} className="p-4 space-y-4 max-w-lg">
-        {error && <div className="text-xs text-red-400 bg-red-900/20 rounded px-2 py-1">{error}</div>}
-        {saved && <div className="text-xs text-green-400 bg-green-900/20 rounded px-2 py-1">{t('config.success')}</div>}
-
         <Field label={t('config.currentPassword')}>
           <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)}
             placeholder={t('config.placeholder.currentPassword')} className={INPUT_CLS} />

@@ -8,3 +8,4 @@ cryptography>=41.0.0
 
 # Binance API (optional – required for live trading)
 python-binance>=1.0.19
+websocket-client>=1.8.0

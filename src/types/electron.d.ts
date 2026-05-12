@@ -37,10 +37,6 @@ interface ElectronAPI {
 
   // Renderer → main log forwarding
   logToMain?: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, extra?: Record<string, unknown>) => void
-
-  // markPrice data pushed from main-process WS
-  onMarkPriceData?: (callback: (data: import('../store/marketStore').MarkPriceData) => void) => () => void
-  switchMarkPriceSymbol?: (symbol: string) => void
 }
 
 declare global {

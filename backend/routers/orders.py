@@ -27,6 +27,7 @@ class OrderRequest(BaseModel):
     order_type: str    # LIMIT | MARKET
     quantity: float
     price: Optional[float] = None
+    leverage: int = 10
 
 class OrderOut(BaseModel):
     id: int
@@ -83,6 +84,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.order_type,
         body.quantity,
         body.price,
+        body.leverage,
     )
     if not result.success:
         _log.warning("Order failed: user=%s reason=%s", user["username"], result.message)

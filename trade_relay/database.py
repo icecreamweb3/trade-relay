@@ -472,6 +472,46 @@ def update_order_status(
         conn.close()
 
 
+def update_order_status_by_exchange_id(
+    username: str,
+    exchange_order_id: str,
+    status: str,
+    filled_qty: Optional[float] = None,
+    avg_price: Optional[float] = None,
+    commission: Optional[float] = None,
+    commission_asset: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> bool:
+    """Update an order row by username + exchange_order_id."""
+    fields = ["status = %s"]
+    params: list = [status]
+    if filled_qty is not None:
+        fields.append("filled_qty = %s"); params.append(filled_qty)
+    if avg_price is not None:
+        fields.append("avg_price = %s"); params.append(avg_price)
+    if commission is not None:
+        fields.append("commission = %s"); params.append(commission)
+    if commission_asset is not None:
+        fields.append("commission_asset = %s"); params.append(commission_asset)
+    if error_message is not None:
+        fields.append("error_message = %s"); params.append(error_message)
+    params.extend([username, exchange_order_id])
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""UPDATE orders
+                       SET {', '.join(fields)}
+                     WHERE username = %s AND exchange_order_id = %s""",
+                params,
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_recent_fills(limit: int = 20) -> list:
     """Return most recent FILLED orders for the ticker broadcast.
 
@@ -650,6 +690,26 @@ def get_active_orders(user_id: Optional[int] = None) -> list:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_active_order_usernames() -> list[str]:
+    """Return usernames that currently have active orders."""
+    placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT DISTINCT username
+                       FROM orders
+                      WHERE status IN ({placeholders})
+                        AND username IS NOT NULL
+                        AND username <> ''""",
+                list(ACTIVE_STATUSES),
+            )
+            rows = cur.fetchall()
+            return [str(row["username"]) for row in rows if row.get("username")]
     finally:
         conn.close()
 

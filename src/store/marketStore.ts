@@ -1,5 +1,9 @@
 import { create } from 'zustand'
 
+function normalizeSymbol(symbol: string): string {
+  return symbol.trim().toUpperCase()
+}
+
 export interface OHLCVBar {
   time: number; open: number; high: number; low: number; close: number; volume: number
 }
@@ -45,7 +49,7 @@ interface MarketStore {
 }
 
 export const useMarketStore = create<MarketStore>((set) => ({
-  symbol: 'BTCUSDT',
+  symbol: 'BTCUSDC',
   currentPrice: null,
   markPrice: null,
   fundingRate: null,
@@ -57,15 +61,31 @@ export const useMarketStore = create<MarketStore>((set) => ({
   chartInterval: '15m',
   isChartExpanded: false,
 
-  setSymbol: (symbol) => set({ symbol }),
+  setSymbol: (symbol) => set((state) => {
+    const nextSymbol = normalizeSymbol(symbol)
+    if (!nextSymbol || nextSymbol === state.symbol) return {}
+    return {
+      symbol: nextSymbol,
+      currentPrice: null,
+      markPrice: null,
+      fundingRate: null,
+      nextFundingTime: null,
+      klines: [],
+      latestKline: null,
+      recentTrades: [],
+      isConnected: false,
+    }
+  }),
   setConnected: (connected) => set({ isConnected: connected }),
   setChartInterval: (interval) => set({ chartInterval: interval }),
   setChartExpanded: (v) => set({ isChartExpanded: v }),
 
   processMarketEvent: (event) => {
+    const eventSymbol = normalizeSymbol(event.symbol)
     if (event.type === 'kline') {
       const kline = event as KlineData
       set((state) => {
+        if (eventSymbol !== state.symbol) return {}
         const newBar: OHLCVBar = {
           time: kline.openTime, open: kline.open, high: kline.high,
           low: kline.low, close: kline.close, volume: kline.volume,
@@ -90,13 +110,18 @@ export const useMarketStore = create<MarketStore>((set) => ({
       })
     } else if (event.type === 'markPrice') {
       const mp = event as MarkPriceData
-      set({ markPrice: mp.markPrice, fundingRate: mp.fundingRate, nextFundingTime: mp.nextFundingTime, isConnected: true })
+      set((state) => {
+        if (eventSymbol !== state.symbol) return {}
+        return { markPrice: mp.markPrice, fundingRate: mp.fundingRate, nextFundingTime: mp.nextFundingTime, isConnected: true }
+      })
     } else if (event.type === 'trade') {
       const trade = event as TradeData
       set((state) => ({
+        ...(eventSymbol !== state.symbol ? {} : {
         recentTrades: [trade, ...state.recentTrades].slice(0, 50),
         currentPrice: trade.price,
         isConnected: true,
+        }),
       }))
     }
   },

@@ -9,9 +9,8 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from exchange.base import BaseExchange
-from exchange.binance_client import BinanceClient
-from core.models import KlineBar
+from .base import BaseExchange
+from .binance_client import BinanceClient
 
 
 INTERVAL_TO_MS: dict[str, int] = {

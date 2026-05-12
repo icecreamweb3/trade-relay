@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api/client'
+import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -27,6 +29,8 @@ interface Trade {
 
 export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) {
   const { t } = useTranslation(locale)
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
+  const showToast = useToastStore((state) => state.showToast)
   const [tab, setTab] = useState<Tab>('positions')
   const [positions, setPositions] = useState<Position[]>([])
   const [openOrders, setOpenOrders] = useState<Order[]>([])
@@ -35,21 +39,36 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
+    if (!isAuthenticated) {
+      setPositions([])
+      setOpenOrders([])
+      setHistory([])
+      setTrades([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       if (tab === 'positions') setPositions(await api.getPositions())
       else if (tab === 'openOrders') setOpenOrders(await api.getOpenOrders())
       else if (tab === 'history') setHistory(await api.getOrderHistory())
       else if (tab === 'tradeHistory') setTrades(await api.getTradeHistory())
-    } catch { /* ignore */ }
+    } catch (error: unknown) {
+      const msg =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as { message?: string })?.message ||
+        t('order.error.failed')
+      showToast('error', msg)
+    }
     setLoading(false)
-  }, [tab])
+  }, [isAuthenticated, showToast, t, tab])
 
   useEffect(() => { load() }, [load, refreshTrigger])
   useEffect(() => {
+    if (!isAuthenticated) return
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
-  }, [load])
+  }, [isAuthenticated, load])
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">
@@ -65,7 +84,7 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
           </button>
         ))}
         <button onClick={load} className="ml-auto px-2 text-[#858585] hover:text-[#cccccc] text-xs pr-3">
-          {loading ? '...' : '↻'}
+          {loading ? t('statusbar.refreshing') : `↻ ${t('pos.refresh')}`}
         </button>
       </div>
 
@@ -83,7 +102,7 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
-                    <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side}</td>
+                    <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
                     <td className="font-mono">{p.quantity}</td>
                     <td className="font-mono">{p.entry_price.toFixed(2)}</td>
                     <td className="font-mono text-orange-400">{p.liquidation_price ? p.liquidation_price.toFixed(2) : '-'}</td>
@@ -91,7 +110,7 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
                       {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toFixed(2)}
                     </td>
                     <td>{p.leverage}x</td>
-                    <td className="text-[#858585]">{p.margin_type}</td>
+                    <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                   </tr>
                 ))
               }
@@ -109,13 +128,13 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
                 ? <tr><td colSpan={7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : (tab === 'openOrders' ? openOrders : history).map(o => (
                   <tr key={o.id}>
-                    <td className="text-[#858585]">{o.created_at ? new Date(o.created_at).toLocaleTimeString() : '-'}</td>
+                    <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
                     <td className="font-semibold">{o.symbol}</td>
-                    <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side}</td>
-                    <td className="text-[#858585]">{o.order_type}</td>
+                    <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
+                    <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                     <td className="font-mono">{o.quantity}</td>
-                    <td className="font-mono">{o.price ? o.price.toFixed(2) : 'MARKET'}</td>
-                    <td><StatusBadge status={o.status} /></td>
+                    <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
+                    <td><StatusBadge status={o.status} t={t} /></td>
                   </tr>
                 ))
               }
@@ -133,9 +152,9 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
                 ? <tr><td colSpan={6} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : trades.map(t => (
                   <tr key={t.id}>
-                    <td className="text-[#858585]">{t.created_at ? new Date(t.created_at).toLocaleTimeString() : '-'}</td>
+                    <td className="text-[#858585]">{formatTimestamp(t.created_at)}</td>
                     <td className="font-semibold">{t.symbol}</td>
-                    <td className={t.side === 'BUY' ? 'text-buy' : 'text-sell'}>{t.side}</td>
+                    <td className={t.side === 'BUY' ? 'text-buy' : 'text-sell'}>{t.side === 'BUY' ? useTranslation(locale).t('side.buy') : useTranslation(locale).t('side.sell')}</td>
                     <td className="font-mono">{t.quantity}</td>
                     <td className="font-mono">{t.avg_price ? t.avg_price.toFixed(2) : '-'}</td>
                     <td className="font-mono text-[#858585]">{t.commission} {t.commission_asset}</td>
@@ -150,10 +169,48 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
+function formatTimestamp(value?: string) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString()
+}
+
+function StatusBadge({ status, t }: { status: string; t: (key: string) => string }) {
   const cls = status === 'FILLED' ? 'badge-filled'
     : status === 'MOCK' ? 'badge-mock'
     : status === 'FAILED' ? 'badge-failed'
     : 'badge-pending'
-  return <span className={`badge ${cls}`}>{status}</span>
+  return <span className={`badge ${cls}`}>{formatStatus(status, t)}</span>
+}
+
+function formatOrderType(orderType: string, t: (key: string) => string) {
+  switch (orderType) {
+    case 'LIMIT': return t('type.limit')
+    case 'MARKET': return t('type.market')
+    case 'STOP': return t('type.stop')
+    case 'STOP_MARKET': return t('type.stopMarket')
+    case 'TAKE_PROFIT': return t('type.takeProfit')
+    case 'TAKE_PROFIT_MARKET': return t('type.takeProfitMarket')
+    default: return orderType
+  }
+}
+
+function formatStatus(status: string, t: (key: string) => string) {
+  switch (status) {
+    case 'FILLED': return t('status.filled')
+    case 'MOCK': return t('status.mock')
+    case 'FAILED': return t('status.failed')
+    case 'NEW': return t('status.new')
+    case 'PARTIALLY_FILLED': return t('status.partiallyFilled')
+    case 'CANCELED': return t('status.canceled')
+    case 'REJECTED': return t('status.rejected')
+    case 'EXPIRED': return t('status.expired')
+    case 'ERROR': return t('status.error')
+    default: return t('status.pending')
+  }
+}
+
+function formatMarginType(marginType: string, t: (key: string) => string) {
+  if (marginType === 'CROSS') return t('pos.marginType.cross')
+  if (marginType === 'ISOLATED') return t('pos.marginType.isolated')
+  return marginType
 }

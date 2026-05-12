@@ -8,6 +8,7 @@ from trade_relay.auth.manager import Session
 from trade_relay import database as db
 from trade_relay import config as cfg
 from trade_relay.trading.binance_client import place_order, place_order_mock
+from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, sync_order_status_once
 from trade_relay.i18n import t
 
 
@@ -25,6 +26,7 @@ async def submit_order(
     order_type: str,
     quantity: float,
     price: Optional[float] = None,
+    leverage: int = 10,
 ) -> OrderResult:
     """
     Validate, place, and record an order for the given session user.
@@ -43,11 +45,16 @@ async def submit_order(
         return OrderResult(False, t("field_required", t("quantity")))
     if order_type == "LIMIT" and (price is None or price <= 0):
         return OrderResult(False, t("field_required", t("price")))
+    if leverage <= 0:
+        return OrderResult(False, "Invalid leverage")
 
     username = session.username
 
     # Determine execution mode
     mock = cfg.is_mock_mode(username)
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    testnet = False
 
     if mock:
         result = place_order_mock(symbol, side, order_type, quantity, price)
@@ -67,6 +74,7 @@ async def submit_order(
             order_type=order_type,
             quantity=quantity,
             price=price,
+            leverage=leverage,
             testnet=testnet,
         )
 
@@ -83,6 +91,15 @@ async def submit_order(
         binance_order_id=result.order_id,
         error_message=result.error,
     )
+
+    if result.success and not mock and result.order_id and api_key and api_secret:
+        # Start the per-user user-data stream and do one immediate REST sync to
+        # close the race where an order fills before the websocket is fully up.
+        ensure_user_order_status_stream(username, api_key, api_secret, testnet)
+        try:
+            sync_order_status_once(username, api_key, api_secret, testnet, symbol, str(result.order_id))
+        except Exception:
+            pass
 
     # Log operation
     if result.success:

@@ -1,6 +1,11 @@
 import { useMarketStore } from '../store/marketStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 export function StatusBar() {
+  const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice, fundingRate, isConnected, klines } = useMarketStore()
 
   const lastKline = klines[klines.length - 1]
@@ -13,7 +18,7 @@ export function StatusBar() {
     <div className="h-6 bg-[#007acc] flex items-center px-3 gap-4 text-xs text-white select-none shrink-0">
       <span className={`flex items-center gap-1 ${isConnected ? '' : 'opacity-60'}`}>
         <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-300' : 'bg-yellow-300'}`} />
-        {isConnected ? '实时' : '未连接'}
+        {isConnected ? t('statusbar.live') : t('statusbar.disconnected')}
       </span>
       <span className="text-blue-200">|</span>
       <span className="font-semibold">{symbol}</span>
@@ -26,11 +31,11 @@ export function StatusBar() {
         </>
       )}
       {markPrice !== null && (
-        <><span className="text-blue-200">|</span><span className="text-blue-100">标记: <span className="font-mono">{markPrice.toFixed(2)}</span></span></>
+        <><span className="text-blue-200">|</span><span className="text-blue-100">{t('statusbar.markPrice')}: <span className="font-mono">{markPrice.toFixed(2)}</span></span></>
       )}
       {fundingRate !== null && (
         <span className={fundingRate >= 0 ? 'text-green-300' : 'text-red-300'}>
-          资金费: {(fundingRate * 100).toFixed(4)}%
+          {t('statusbar.fundingRate')}: {(fundingRate * 100).toFixed(4)}%
         </span>
       )}
     </div>

@@ -1,11 +1,49 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { api } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
+import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 type Side = 'BUY' | 'SELL'
 type OrderType = 'LIMIT' | 'MARKET' | 'STOP'
 type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
+
+interface AccountSummary {
+  symbol?: string | null
+  base_asset?: string | null
+  quote_asset?: string | null
+  configured_leverage?: number | null
+  long_position_qty?: number | null
+  short_position_qty?: number | null
+  available_balance: number | null
+  margin_ratio: number | null
+  risk_rate: number | null
+  maint_margin: number | null
+  total_equity: number | null
+  position_value: number | null
+  actual_leverage: number | null
+  unrealized_pnl: number | null
+  wallet_balance: number | null
+  has_api_credentials: boolean
+  message?: string | null
+}
+
+const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
+
+function splitTradingSymbol(symbol: string) {
+  const upperSymbol = symbol.toUpperCase()
+  for (const quoteAsset of QUOTE_ASSETS) {
+    if (upperSymbol.endsWith(quoteAsset) && upperSymbol.length > quoteAsset.length) {
+      return { baseAsset: upperSymbol.slice(0, -quoteAsset.length), quoteAsset }
+    }
+  }
+  return { baseAsset: upperSymbol, quoteAsset: 'USDT' }
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,9 +74,28 @@ function fmtCountdown(s: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
+function describeRequestError(error: unknown) {
+  if (error instanceof Error) {
+    const axiosLike = error as Error & {
+      code?: string
+      response?: { status?: number; data?: unknown }
+    }
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      code: axiosLike.code ?? null,
+      status: axiosLike.response?.status ?? null,
+      data: axiosLike.response?.data ?? null,
+    }
+  }
+  return { value: error }
+}
+
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
 function TickerStrip() {
+  const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice, fundingRate, nextFundingTime, klines } = useMarketStore()
   const [countdown, setCountdown] = useState(() => nextFundingSeconds(nextFundingTime))
 
@@ -64,7 +121,7 @@ function TickerStrip() {
     <div className="px-3 py-2.5 border-b border-[#2B2F36] bg-[#0B0E11] shrink-0 select-none">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-[13px] font-bold text-[#EAECEF] tracking-wide">{symbol}</span>
-        <span className="text-[9px] text-[#848E9C] bg-[#1E2026] px-1.5 py-0.5 rounded uppercase tracking-wider">Perpetual</span>
+        <span className="text-[9px] text-[#848E9C] bg-[#1E2026] px-1.5 py-0.5 rounded uppercase tracking-wider">{t('order.perpetual')}</span>
       </div>
       <div className={`text-[22px] font-bold leading-none mb-2 tabular-nums ${priceColor}`}>
         {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
@@ -76,11 +133,11 @@ function TickerStrip() {
       </div>
       <div className="grid grid-cols-2 gap-x-3">
         <div>
-          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">Mark Price</div>
+          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">{t('order.markPrice')}</div>
           <div className="text-[11px] text-[#EAECEF] font-mono tabular-nums">{markPrice != null ? fmt(markPrice, 2) : '—'}</div>
         </div>
         <div>
-          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">Funding / Countdown</div>
+          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">{t('order.fundingCountdown')}</div>
           <div className="text-[11px] font-mono tabular-nums">
             <span className={fundingRate != null && fundingRate >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
               {fmtRate(fundingRate)}
@@ -94,8 +151,17 @@ function TickerStrip() {
   )
 }
 
-export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void }) {
+export function OrderFormWidget({
+  onOrderPlaced,
+  selectedOrderBookPrice,
+}: {
+  onOrderPlaced?: () => void
+  selectedOrderBookPrice?: { value: number; token: number } | null
+}) {
+  const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
+  const { user } = useAuthStore()
+  const { baseAsset, quoteAsset } = useMemo(() => splitTradingSymbol(symbol), [symbol])
 
   const [side, setSide] = useState<Side>('BUY')
   const [marginType, setMarginType] = useState<MarginType>('CROSS')
@@ -108,17 +174,138 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
   const [sl, setSl] = useState('')
   const [showTpSl, setShowTpSl] = useState(false)
   const [leverage, setLeverage] = useState(10)
+  const [leverageUpdating, setLeverageUpdating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [sizeUnit, setSizeUnit] = useState<'USDT' | 'BASE'>('USDT')
+  const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
+  const [accountLoading, setAccountLoading] = useState(false)
+  const showToast = useToastStore((state) => state.showToast)
+  const lastAccountErrorRef = useRef<string | null>(null)
 
-  // Derived: base asset ticker (e.g. "BTC" from "BTCUSDT")
-  const baseTicker = symbol.replace('USDT', '')
+  useEffect(() => {
+    let alive = true
+
+    const emptyAccountSummary: AccountSummary = {
+      symbol,
+      base_asset: baseAsset,
+      quote_asset: quoteAsset,
+      configured_leverage: null,
+      long_position_qty: null,
+      short_position_qty: null,
+      available_balance: null,
+      margin_ratio: null,
+      risk_rate: null,
+      maint_margin: null,
+      total_equity: null,
+      position_value: null,
+      actual_leverage: null,
+      unrealized_pnl: null,
+      wallet_balance: null,
+      has_api_credentials: false,
+      message: null,
+    }
+
+    if (!user?.username) {
+      setAccountSummary(emptyAccountSummary)
+      setAccountLoading(false)
+      return () => { alive = false }
+    }
+
+    const loadAccountSummary = async () => {
+      setAccountLoading(true)
+      try {
+        const data = await api.getAccountSummary(symbol)
+        if (data?.message) {
+          window.electronAPI?.logToMain?.('warn', 'account summary returned message', {
+            username: user?.username ?? null,
+            symbol,
+            response: data,
+          })
+        }
+        if (alive) setAccountSummary(data)
+      } catch (error) {
+        window.electronAPI?.logToMain?.('error', 'account summary request failed', {
+          username: user?.username ?? null,
+          symbol,
+          error: describeRequestError(error),
+        })
+        if (alive) {
+          setAccountSummary({
+            ...emptyAccountSummary,
+            message: t('order.error.loadAccount'),
+          })
+        }
+      } finally {
+        if (alive) setAccountLoading(false)
+      }
+    }
+
+    loadAccountSummary()
+    const timer = setInterval(loadAccountSummary, 15000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [user?.username, symbol, baseAsset, quoteAsset])
+
+  const baseTicker = baseAsset
 
   const fillMarkPrice = () => {
     const ref = markPrice ?? currentPrice
     if (ref != null) setPrice(ref.toFixed(2))
   }
+
+  useEffect(() => {
+    if (accountSummary?.configured_leverage && accountSummary.configured_leverage !== leverage) {
+      setLeverage(accountSummary.configured_leverage)
+    }
+  }, [accountSummary?.configured_leverage])
+
+  useEffect(() => {
+    const message = accountSummary?.message ?? null
+    if (!message) {
+      lastAccountErrorRef.current = null
+      return
+    }
+    if (!accountSummary?.has_api_credentials) return
+    if (lastAccountErrorRef.current === message) return
+    lastAccountErrorRef.current = message
+    showToast('error', message)
+  }, [accountSummary?.message, accountSummary?.has_api_credentials, showToast])
+
+  const handleLeverageChange = async (nextLeverage: number) => {
+    const previousLeverage = leverage
+    setLeverage(nextLeverage)
+
+    if (!user?.username) return
+
+    setLeverageUpdating(true)
+    try {
+      await api.setAccountLeverage(symbol, nextLeverage)
+      window.electronAPI?.logToMain?.('info', 'account leverage updated', {
+        username: user.username,
+        symbol,
+        leverage: nextLeverage,
+      })
+      setAccountSummary((current) => current ? { ...current, configured_leverage: nextLeverage } : current)
+    } catch (error) {
+      setLeverage(previousLeverage)
+      window.electronAPI?.logToMain?.('error', 'account leverage update failed', {
+        username: user?.username ?? null,
+        symbol,
+        leverage: nextLeverage,
+        error: describeRequestError(error),
+      })
+      const msg =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as { message?: string })?.message || t('order.error.failed')
+      showToast('error', msg)
+    } finally {
+      setLeverageUpdating(false)
+    }
+  }
+
+  useEffect(() => {
+    if (selectedOrderBookPrice?.value == null) return
+    setPrice(String(selectedOrderBookPrice.value))
+  }, [selectedOrderBookPrice])
 
   const estimatedCost = useMemo(() => {
     const qtyNum = parseFloat(qty)
@@ -134,8 +321,8 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
       ? (currentPrice ?? 0)
       : (parseFloat(price) || (currentPrice ?? 0))
     if (!refPrice) return
-    const availableUsdt = 1000
-    const maxBaseQty = (availableUsdt * leverage) / refPrice
+    const availableQuoteBalance = accountSummary?.available_balance ?? 0
+    const maxBaseQty = (availableQuoteBalance * leverage) / refPrice
     if (sizeUnit === 'USDT') {
       setQty((maxBaseQty * refPrice * pct).toFixed(2))
     } else {
@@ -143,9 +330,35 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
     }
   }
 
+  const referencePrice = useMemo(() => {
+    if (orderType === 'MARKET') return currentPrice ?? markPrice ?? null
+    const typedPrice = parseFloat(price)
+    return Number.isFinite(typedPrice) && typedPrice > 0 ? typedPrice : (markPrice ?? currentPrice ?? null)
+  }, [orderType, currentPrice, markPrice, price])
+
+  const openAvailableDisplay = useMemo(() => {
+    const availableBalance = accountSummary?.available_balance ?? null
+    if (availableBalance == null) return '—'
+    if (sizeUnit === 'USDT') return withAsset(availableBalance * leverage, quoteAsset)
+    if (!referencePrice) return '—'
+    return `${fmt((availableBalance * leverage) / referencePrice, 4)} ${baseTicker}`
+  }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
+
+  const longCloseDisplay = useMemo(() => {
+    const qty = accountSummary?.long_position_qty ?? null
+    if (qty == null) return '—'
+    return `${fmt(qty, 4)} ${baseTicker}`
+  }, [accountSummary?.long_position_qty, baseTicker])
+
+  const shortCloseDisplay = useMemo(() => {
+    const qty = accountSummary?.short_position_qty ?? null
+    if (qty == null) return '—'
+    return `${fmt(qty, 4)} ${baseTicker}`
+  }, [accountSummary?.short_position_qty, baseTicker])
+
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)
-    if (!qtyNum || qtyNum <= 0) { setResult({ ok: false, msg: 'Invalid quantity' }); return }
+    if (!qtyNum || qtyNum <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
 
     // API 始终接收 base 数量（BTC）；若用户以 USDT 输入则按参考价格换算
     let baseQty = qtyNum
@@ -153,17 +366,17 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
       const refPrice = orderType === 'MARKET'
         ? (currentPrice ?? 0)
         : (parseFloat(price) || (currentPrice ?? 0))
-      if (!refPrice) { setResult({ ok: false, msg: 'Price unavailable for USDT conversion' }); return }
+      if (!refPrice) { showToast('error', t('order.error.priceUnavailable')); return }
       baseQty = qtyNum / refPrice
     }
 
     setIsSubmitting(true)
-    setResult(null)
     try {
       const body: Parameters<typeof api.submitOrder>[0] = {
         symbol, side: submitSide,
         order_type: orderType === 'STOP' ? 'STOP_MARKET' : orderType,
         quantity: baseQty,
+        leverage,
         margin_type: marginType,
         position_direction: posDir,
       }
@@ -173,14 +386,14 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
       if (showTpSl && sl) body.sl_price = parseFloat(sl)
 
       await api.submitOrder(body)
-      setResult({ ok: true, msg: 'Order placed successfully' })
+      showToast('success', t('order.success'))
       setQty('')
       onOrderPlaced?.()
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        (err as { message?: string })?.message || 'Failed'
-      setResult({ ok: false, msg })
+        (err as { message?: string })?.message || t('order.error.failed')
+      showToast('error', msg)
     } finally {
       setIsSubmitting(false)
     }
@@ -198,13 +411,13 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
           className={`py-2.5 text-[13px] font-bold tracking-wide transition-colors ${
             posDir === 'OPEN' ? 'text-[#EAECEF] border-b-2 border-[#F0B90B]' : 'text-[#848E9C] hover:text-[#EAECEF]'
           }`}>
-          Open
+          {t('order.open')}
         </button>
         <button onClick={() => setPosDir('CLOSE')}
           className={`py-2.5 text-[13px] font-bold tracking-wide transition-colors ${
             posDir === 'CLOSE' ? 'text-[#EAECEF] border-b-2 border-[#F0B90B]' : 'text-[#848E9C] hover:text-[#EAECEF]'
           }`}>
-          Close
+          {t('order.close')}
         </button>
       </div>
 
@@ -217,14 +430,14 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
               className={`px-2 py-1 text-[10px] font-medium transition-colors ${
                 marginType === m ? 'bg-[#1E2026] text-[#EAECEF]' : 'text-[#848E9C] hover:text-[#EAECEF]'
               }`}>
-              {m === 'CROSS' ? 'Cross' : 'Isolated'}
+              {m === 'CROSS' ? t('order.margin.cross') : t('order.margin.isolated')}
             </button>
           ))}
         </div>
         {/* Leverage */}
         <div className="ml-auto flex items-center gap-1.5">
-          <span className="text-[10px] text-[#848E9C]">Lev</span>
-          <select value={leverage} onChange={e => setLeverage(Number(e.target.value))}
+          <span className="text-[10px] text-[#848E9C]">{t('order.leverageShort')}</span>
+          <select value={leverage} onChange={e => { void handleLeverageChange(Number(e.target.value)) }} disabled={leverageUpdating}
             className="bg-[#1E2026] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded px-1.5 py-0.5 outline-none cursor-pointer">
             {[1,2,3,5,10,20,25,50,75,100,125].map(l => (
               <option key={l} value={l}>{l}×</option>
@@ -242,7 +455,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
                 ? 'text-[#EAECEF] border-b border-[#F0B90B]'
                 : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
             }`}>
-            {t}
+            {t === 'LIMIT' ? useTranslation(locale).t('order.limit') : t === 'MARKET' ? useTranslation(locale).t('order.market') : useTranslation(locale).t('type.stop')}
           </button>
         ))}
       </div>
@@ -253,7 +466,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
         {/* Stop trigger price */}
         {orderType === 'STOP' && (
           <div>
-            <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">Trigger Price</label>
+            <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.triggerPrice')}</label>
             <input type="number" value={stopPrice} onChange={e => setStopPrice(e.target.value)}
               placeholder="0.00" min="0" step="any"
               className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable" />
@@ -265,18 +478,18 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">
-                {orderType === 'STOP' ? 'Limit Price' : 'Price'}
+                {orderType === 'STOP' ? t('order.limitPrice') : t('order.price')}
               </label>
               <button type="button" onClick={fillMarkPrice}
                 className="text-[9px] text-[#F0B90B] hover:text-[#D9A429] transition-colors">
-                Mark ↓
+                {t('order.fillMark')} ↓
               </button>
             </div>
             <div className="relative">
               <input type="number" value={price} onChange={e => setPrice(e.target.value)}
                 placeholder="0.00" min="0" step="any"
                 className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable pr-14" />
-              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#848E9C]">USDT</span>
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#848E9C]">{quoteAsset}</span>
             </div>
           </div>
         )}
@@ -284,7 +497,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
         {/* Market price info */}
         {orderType === 'MARKET' && currentPrice != null && (
           <div className="flex items-center justify-between px-2 py-1.5 bg-[#1E2026] rounded text-[11px]">
-            <span className="text-[#848E9C]">Market Price</span>
+            <span className="text-[#848E9C]">{t('order.marketPrice')}</span>
             <span className="text-[#EAECEF] font-mono tabular-nums">{fmt(currentPrice, 2)}</span>
           </div>
         )}
@@ -292,7 +505,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
         {/* Size */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">Size</label>
+            <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">{t('order.size')}</label>
           </div>
           <div className="flex">
             <input type="number" value={qty} onChange={e => setQty(e.target.value)}
@@ -302,7 +515,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
               value={sizeUnit}
               onChange={e => { setSizeUnit(e.target.value as 'USDT' | 'BASE'); setQty('') }}
               className="bg-[#2B2F36] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded-r px-2 py-1.5 outline-none cursor-pointer shrink-0">
-              <option value="USDT">USDT</option>
+              <option value="USDT">{quoteAsset}</option>
               <option value="BASE">{baseTicker}</option>
             </select>
           </div>
@@ -321,8 +534,8 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
         {/* Estimated margin cost */}
         {estimatedCost != null && (
           <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#161A1E] border border-[#2B2F36] rounded">
-            <span className="text-[10px] text-[#848E9C]">Est. Margin ({leverage}×)</span>
-            <span className="text-[11px] text-[#EAECEF] font-mono tabular-nums">{fmt(estimatedCost, 2)} USDT</span>
+            <span className="text-[10px] text-[#848E9C]">{t('order.estimatedMargin')} ({leverage}×)</span>
+            <span className="text-[11px] text-[#EAECEF] font-mono tabular-nums">{fmt(estimatedCost, 2)} {quoteAsset}</span>
           </div>
         )}
 
@@ -333,14 +546,14 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
             <span className={`flex items-center justify-center w-3 h-3 rounded-sm border text-[8px] leading-none ${showTpSl ? 'bg-[#F0B90B] border-[#F0B90B] text-black' : 'border-[#848E9C]'}`}>
               {showTpSl ? '✓' : ''}
             </span>
-            TP / SL
+            {t('order.tpSl')}
           </button>
         </div>
 
         {showTpSl && (
           <div className="space-y-2">
             <div>
-              <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">Take Profit</label>
+              <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.takeProfit')}</label>
               <div className="relative">
                 <input type="number" value={tp} onChange={e => setTp(e.target.value)}
                   placeholder="0.00" min="0" step="any"
@@ -349,7 +562,7 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
               </div>
             </div>
             <div>
-              <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">Stop Loss</label>
+              <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.stopLoss')}</label>
               <div className="relative">
                 <input type="number" value={sl} onChange={e => setSl(e.target.value)}
                   placeholder="0.00" min="0" step="any"
@@ -359,38 +572,25 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
             </div>
           </div>
         )}
-
-        {/* Result flash */}
-        {result && (
-          <div className={`text-[11px] px-2.5 py-1.5 rounded flex items-center gap-2 ${
-            result.ok
-              ? 'bg-[#0ecb81]/10 text-[#0ecb81] border border-[#0ecb81]/20'
-              : 'bg-[#f6465d]/10 text-[#f6465d] border border-[#f6465d]/20'
-          }`}>
-            <span className="font-bold">{result.ok ? '✓' : '✗'}</span>
-            {result.msg}
-          </div>
-        )}
-
         {/* Submit */}
         <div className="grid grid-cols-2 gap-2">
           {posDir === 'OPEN' ? (<>
             <button type="button" onClick={() => handleSubmit('BUY')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#0ecb81] hover:bg-[#0ab36d] text-white">
-              {isSubmitting ? 'Placing...' : 'Open Long'}
+              {isSubmitting ? t('order.submitting') : t('order.openLong')}
             </button>
             <button type="button" onClick={() => handleSubmit('SELL')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#f6465d] hover:bg-[#d93a4e] text-white">
-              {isSubmitting ? 'Placing...' : 'Open Short'}
+              {isSubmitting ? t('order.submitting') : t('order.openShort')}
             </button>
           </>) : (<>
             <button type="button" onClick={() => handleSubmit('SELL')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#0ecb81] hover:bg-[#0ab36d] text-white">
-              {isSubmitting ? 'Placing...' : 'Close short'}
+              {isSubmitting ? t('order.submitting') : t('order.closeShort')}
             </button>
             <button type="button" onClick={() => handleSubmit('BUY')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#f6465d] hover:bg-[#d93a4e] text-white">
-              {isSubmitting ? 'Placing...' : 'Close long'}
+              {isSubmitting ? t('order.submitting') : t('order.closeLong')}
             </button>
           </>)}
         </div>
@@ -400,31 +600,31 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
           {/* Long side */}
           <div className="space-y-1">
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Liq. Price</span>
-              <span className="text-[#0ECB81]">— USDC</span>
+              <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
+              <span className="text-[#0ECB81]">— {quoteAsset}</span>
             </div>
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Margin</span>
-              <span className="text-[#EAECEF]">— USDC</span>
+              <span className="text-[#848E9C]">{t('pos.margin')}</span>
+              <span className="text-[#EAECEF]">— {quoteAsset}</span>
             </div>
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Avail. Open</span>
-              <span className="text-[#EAECEF]">— USDC</span>
+              <span className="text-[#848E9C]">{posDir === 'OPEN' ? t('order.availOpen') : t('order.availClose')}</span>
+              <span className="text-[#EAECEF]">{accountLoading ? t('order.loading') : (posDir === 'OPEN' ? openAvailableDisplay : shortCloseDisplay)}</span>
             </div>
           </div>
           {/* Short side */}
           <div className="space-y-1">
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Liq. Price</span>
-              <span className="text-[#F6465D]">— USDC</span>
+              <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
+              <span className="text-[#F6465D]">— {quoteAsset}</span>
             </div>
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Margin</span>
-              <span className="text-[#EAECEF]">— USDC</span>
+              <span className="text-[#848E9C]">{t('pos.margin')}</span>
+              <span className="text-[#EAECEF]">— {quoteAsset}</span>
             </div>
             <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">Avail. Open</span>
-              <span className="text-[#EAECEF]">— USDC</span>
+              <span className="text-[#848E9C]">{posDir === 'OPEN' ? t('order.availOpen') : t('order.availClose')}</span>
+              <span className="text-[#EAECEF]">{accountLoading ? t('order.loading') : (posDir === 'OPEN' ? openAvailableDisplay : longCloseDisplay)}</span>
             </div>
           </div>
         </div>
@@ -432,18 +632,23 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
         {/* ── Account section ── */}
         <div className="border-t border-[#2B2F36] pt-2 -mx-3 px-3">
           <div className="py-1 mb-1">
-            <span className="text-[10px] font-semibold text-[#848E9C] uppercase tracking-wider">Account</span>
+            <span className="text-[10px] font-semibold text-[#848E9C] uppercase tracking-wider">{t('order.account')}</span>
           </div>
+          {accountSummary?.message && (
+            <div className="mb-2 rounded border border-[#2B2F36] bg-[#161A1E] px-2.5 py-1.5 text-[10px] text-[#848E9C]">
+              {accountSummary.message}
+            </div>
+          )}
           <div className="space-y-1 pb-2">
             {[
-              ['Margin Ratio',    '—'],
-              ['Risk Rate',       '—'],
-              ['Maint. Margin',   '—'],
-              ['Total Equity',    '—'],
-              ['Position Value',  '—'],
-              ['Actual Leverage', '—'],
-              ['Unrealized PnL',  '—'],
-              ['Wallet Balance',  '—'],
+              [t('order.account.marginRatio'),    accountLoading ? t('order.loading') : fmtRate(accountSummary?.margin_ratio ?? null)],
+              [t('order.account.riskRate'),       accountLoading ? t('order.loading') : fmtRate(accountSummary?.risk_rate ?? null)],
+              [t('order.account.maintMargin'),   accountLoading ? t('order.loading') : withAsset(accountSummary?.maint_margin, quoteAsset)],
+              [t('order.account.totalEquity'),    accountLoading ? t('order.loading') : withAsset(accountSummary?.total_equity, quoteAsset)],
+              [t('order.account.positionValue'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.position_value, quoteAsset)],
+              [t('order.account.actualLeverage'), accountLoading ? t('order.loading') : withTimes(accountSummary?.actual_leverage)],
+              [t('order.account.unrealizedPnl'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.unrealized_pnl, quoteAsset)],
+              [t('order.account.walletBalance'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.wallet_balance, quoteAsset)],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">
                 <span className="text-[10px] text-[#848E9C]">{k}</span>
@@ -457,4 +662,14 @@ export function OrderFormWidget({ onOrderPlaced }: { onOrderPlaced?: () => void 
       </form>
     </div>
   )
+}
+
+function withAsset(value: number | null | undefined, asset: string) {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${fmt(value, 2)} ${asset}`
+}
+
+function withTimes(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return '—'
+  return `${fmt(value, 2)}x`
 }

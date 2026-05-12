@@ -14,6 +14,7 @@ import { OrderLogScreen } from './components/OrderLogScreen'
 import { AdminScreen } from './components/AdminScreen'
 import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
+import { GlobalToast } from './components/GlobalToast'
 
 type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
 type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
@@ -35,6 +36,7 @@ function MainApp() {
   const [activeTabId, setActiveTabId] = useState<Screen>('trade')
   const [orderRefresh, setOrderRefresh] = useState(0)
   const [showLogin, setShowLogin] = useState(false)
+  const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? TRADE_TAB
   const activeScreen = activeTab.screen
@@ -103,6 +105,7 @@ function MainApp() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <TitleBar activeScreen={activeScreen} onNavigate={openScreen} onLoginClick={openLogin} />
+      <GlobalToast />
 
       <div className="h-9 shrink-0 bg-[#1a1d23] border-b border-[#2b2f36] flex items-end px-2 overflow-x-auto">
         {tabs.map((tab) => {
@@ -178,11 +181,16 @@ function MainApp() {
                 <div className="h-full flex overflow-hidden">
                   {/* Order book — fixed width */}
                   <div className="w-[280px] shrink-0 border-r border-[#2a2a2a] overflow-hidden">
-                    <OrderBook />
+                    <OrderBook onPriceSelect={(value) => {
+                      setSelectedOrderBookPrice((current) => ({ value, token: (current?.token ?? 0) + 1 }))
+                    }} />
                   </div>
                   {/* Trade form — fills remaining width */}
                   <div className="flex-1 min-w-0 overflow-hidden">
-                    <OrderFormWidget onOrderPlaced={() => setOrderRefresh(n => n + 1)} />
+                    <OrderFormWidget
+                      onOrderPlaced={() => setOrderRefresh(n => n + 1)}
+                      selectedOrderBookPrice={selectedOrderBookPrice}
+                    />
                   </div>
                 </div>
               </Panel>

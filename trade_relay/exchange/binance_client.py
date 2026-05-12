@@ -94,7 +94,8 @@ class BinanceClient:
         api_key: Optional[str] = None,
         secret_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        proxy_config: Optional[Dict] = None
+        proxy_config: Optional[Dict] = None,
+        testnet: bool = False,
     ):
         # 加载 .env 文件中的环境变量
         # Use override=True to avoid stale shell env vars mixing old key with new secret.
@@ -104,6 +105,7 @@ class BinanceClient:
         self.api_key = self._normalize_credential(api_key or os.getenv('BINANCE_API_KEY', ''))
         self.secret_key = self._normalize_credential(secret_key or os.getenv('BINANCE_SECRET_KEY', ''))
         self.base_url = base_url or os.getenv('BINANCE_BASE_URL', '').strip() or 'https://fapi.binance.com'
+        self.testnet = testnet
         
         # 检查必需的参数
         if not self.api_key or not self.secret_key:
@@ -145,7 +147,7 @@ class BinanceClient:
         self.client = BinanceClientBase(
             api_key=self.api_key,
             api_secret=self.secret_key,
-            testnet=False  # 设置为 True 使用测试网
+            testnet=self.testnet
         )
         # Disable SSL verification when using a proxy that does TLS interception
         if self.proxy_config:
@@ -825,14 +827,23 @@ class BinanceClient:
                 return float(entry.get("availableBalance", 0.0))
         return 0.0
 
-    def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """Set leverage for a symbol"""
+    def set_leverage(self, symbol: str, leverage: int) -> dict:
+        """Set leverage for a symbol and return Binance's response payload."""
         try:
-            self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
-            return True
+            return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
         except Exception as e:
-            logger.debug(f"Failed to set leverage for {symbol}: {e}")
-            return False
+            status_code = getattr(e, 'status_code', None)
+            error_code = getattr(e, 'code', None)
+            error_message = getattr(e, 'message', None) or str(e)
+            logger.warning(
+                "Failed to set leverage for %s to %s (status=%s code=%s): %s",
+                symbol,
+                leverage,
+                status_code,
+                error_code,
+                error_message,
+            )
+            raise RuntimeError(error_message) from e
     
     def get_position_mode(self) -> Optional[bool]:
         """Get position mode: True = Hedge Mode, False = One-way Mode"""

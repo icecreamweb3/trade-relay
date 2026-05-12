@@ -18,6 +18,7 @@ export const api = {
   async submitOrder(order: {
     symbol: string; side: string; order_type: string; quantity: number
     price?: number; stop_price?: number; tp_price?: number; sl_price?: number
+    leverage?: number
     margin_type: string; position_direction: string
   }) {
     const token = await getToken()
@@ -49,25 +50,45 @@ export const api = {
 
   async getOpenOrders() {
     const token = await getToken()
-    const res = await axios.get(`${BASE_URL}/api/positions/open-orders`, { headers: getHeaders(token) })
+    const res = await axios.get(`${BASE_URL}/api/orders/active`, { headers: getHeaders(token) })
     return res.data
   },
 
   async getOrderHistory() {
     const token = await getToken()
-    const res = await axios.get(`${BASE_URL}/api/positions/order-history`, { headers: getHeaders(token) })
+    const res = await axios.get(`${BASE_URL}/api/orders/history`, { headers: getHeaders(token) })
     return res.data
   },
 
   async getTradeHistory() {
     const token = await getToken()
-    const res = await axios.get(`${BASE_URL}/api/positions/trade-history`, { headers: getHeaders(token) })
+    const res = await axios.get(`${BASE_URL}/api/orders/fills`, { headers: getHeaders(token) })
     return res.data
   },
 
   async getRecentFills() {
     const token = await getToken()
     const res = await axios.get(`${BASE_URL}/api/orders/fills`, { headers: getHeaders(token) })
+    return res.data
+  },
+
+  async getAccountSummary(symbol?: string) {
+    const token = await getToken()
+    const res = await axios.get(`${BASE_URL}/api/account/summary`, {
+      params: symbol ? { symbol } : undefined,
+      headers: getHeaders(token),
+    })
+    return res.data
+  },
+
+  async setAccountLeverage(symbol: string, leverage: number) {
+    const token = await getToken()
+    const res = await axios.post(`${BASE_URL}/api/account/leverage`, {
+      symbol,
+      leverage,
+    }, {
+      headers: getHeaders(token),
+    })
     return res.data
   },
 

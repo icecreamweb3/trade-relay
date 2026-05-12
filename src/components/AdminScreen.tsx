@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
 
 interface User {
   id: number
@@ -18,11 +19,11 @@ type FormMode = 'create' | 'edit'
 export function AdminScreen() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [formMode, setFormMode] = useState<FormMode>('create')
   const { user: me } = useAuthStore()
+  const showToast = useToastStore((state) => state.showToast)
 
   const selectedUser = useMemo(
     () => users.find((user) => user.id === selectedUserId) ?? null,
@@ -31,7 +32,6 @@ export function AdminScreen() {
 
   const loadUsers = useCallback(async () => {
     setLoading(true)
-    setError('')
     try {
       const nextUsers = await api.getUsers()
       setUsers(nextUsers)
@@ -40,11 +40,11 @@ export function AdminScreen() {
         return nextUsers[0]?.id ?? null
       })
     } catch (err: unknown) {
-      setError(getApiError(err, '加载用户失败'))
+      showToast('error', getApiError(err, '加载用户失败'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [showToast])
 
   useEffect(() => { loadUsers() }, [loadUsers])
 
@@ -65,8 +65,9 @@ export function AdminScreen() {
     try {
       await api.deleteUser(selectedUser.id)
       await loadUsers()
+      showToast('success', '已删除')
     } catch (err: unknown) {
-      setError(getApiError(err, '删除用户失败'))
+      showToast('error', getApiError(err, '删除用户失败'))
     }
   }
 
@@ -76,8 +77,9 @@ export function AdminScreen() {
     try {
       await api.updateUser(selectedUser.id, { is_active: isActive })
       await loadUsers()
+      showToast('success', isActive ? '已启用' : '已停用')
     } catch (err: unknown) {
-      setError(getApiError(err, isActive ? '启用用户失败' : '停用用户失败'))
+      showToast('error', getApiError(err, isActive ? '启用用户失败' : '停用用户失败'))
     }
   }
 
@@ -98,13 +100,6 @@ export function AdminScreen() {
           <ToolbarButton onClick={() => handleSetActive(false)} disabled={!canDeactivate} tone="danger">Deactivate</ToolbarButton>
         </div>
       </div>
-
-      {error && (
-        <div className="mx-4 mt-3 rounded border border-[#5b2a34] bg-[#2b141a] px-3 py-2 text-sm text-[#ffb4bf] shrink-0">
-          {error}
-        </div>
-      )}
-
       <div className="flex-1 min-h-0 overflow-auto">
         <table className="w-full border-collapse text-[12px]">
           <thead>
@@ -191,7 +186,7 @@ function UserFormModal({
   const [apiKey, setApiKey] = useState(user?.binance_api_key ?? '')
   const [apiSecret, setApiSecret] = useState(user?.binance_api_secret ?? '')
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const showToast = useToastStore((state) => state.showToast)
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -200,24 +195,23 @@ function UserFormModal({
     const trimmedPassword = password.trim()
 
     if (!trimmedUsername) {
-      setError('用户名必填')
+      showToast('error', '用户名必填')
       return
     }
 
     if (!isEdit && !trimmedPassword) {
-      setError('用户名和密码必填')
+      showToast('error', '用户名和密码必填')
       return
     }
 
     if (trimmedPassword || confirmPassword.trim()) {
       if (trimmedPassword !== confirmPassword.trim()) {
-        setError('两次输入的密码不一致')
+        showToast('error', '两次输入的密码不一致')
         return
       }
     }
 
     setSubmitting(true)
-    setError('')
     try {
       if (isEdit && user) {
         const payload: Record<string, unknown> = {
@@ -238,8 +232,9 @@ function UserFormModal({
         })
       }
       await onSaved()
+      showToast('success', isEdit ? '已更新' : '已创建')
     } catch (err: unknown) {
-      setError(getApiError(err, '保存用户失败'))
+      showToast('error', getApiError(err, '保存用户失败'))
     } finally {
       setSubmitting(false)
     }
@@ -313,12 +308,6 @@ function UserFormModal({
               <Input type="password" value={apiSecret} onChange={setApiSecret} placeholder="Binance API secret" />
             </Field>
           </div>
-
-          {error && (
-            <div className="col-span-2 rounded border border-[#5b2a34] bg-[#2b141a] px-3 py-2 text-sm text-[#ffb4bf]">
-              {error}
-            </div>
-          )}
         </div>
 
         <div className="flex items-center justify-end gap-3 border-t border-[#2b3240] px-5 py-4">

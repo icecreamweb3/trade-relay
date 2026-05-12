@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from trade_relay import database as db_module
+
 try:
     import yaml
 except ImportError:
@@ -68,7 +70,12 @@ def save_user_config(username: str, config: dict) -> None:
 
 
 def get_api_key(username: str) -> Optional[str]:
-    """Return API key: per-user YAML → env TRADE_RELAY_BINANCE_API_KEY."""
+    """Return API key: DB encrypted value → per-user YAML → env."""
+    row = db_module.get_user_by_username(username)
+    if row is not None:
+        db_value = db_module.decrypt_api_credential(row.get("binance_api_key") or "")
+        if db_value:
+            return db_value
     cfg = load_user_config(username)
     return (cfg.get("binance", {}).get("api_key")
             or os.environ.get("TRADE_RELAY_BINANCE_API_KEY", "").strip()
@@ -76,7 +83,12 @@ def get_api_key(username: str) -> Optional[str]:
 
 
 def get_api_secret(username: str) -> Optional[str]:
-    """Return API secret: per-user YAML → env TRADE_RELAY_BINANCE_API_SECRET."""
+    """Return API secret: DB encrypted value → per-user YAML → env."""
+    row = db_module.get_user_by_username(username)
+    if row is not None:
+        db_value = db_module.decrypt_api_credential(row.get("binance_api_secret") or "")
+        if db_value:
+            return db_value
     cfg = load_user_config(username)
     return (cfg.get("binance", {}).get("api_secret")
             or os.environ.get("TRADE_RELAY_BINANCE_API_SECRET", "").strip()

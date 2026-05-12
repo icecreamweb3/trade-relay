@@ -1,7 +1,12 @@
 // Left panel placeholder — actual Binance chart is rendered by Electron BrowserView
 import { useMarketStore } from '../store/marketStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 export function BinancePanel() {
+  const { t } = useTranslation(locale)
   const { symbol, currentPrice, isConnected } = useMarketStore()
 
   return (
@@ -12,7 +17,7 @@ export function BinancePanel() {
           <div className="text-lg font-mono text-[#4a4a7a]">{currentPrice.toFixed(2)}</div>
         )}
         <div className={`text-xs mt-1 ${isConnected ? 'text-green-900' : 'text-[#3e3e6a]'}`}>
-          {isConnected ? '● 数据流已连接' : '● 等待 BrowserView...'}
+          {isConnected ? `● ${t('binance.connected')}` : `● ${t('binance.waitingView')}`}
         </div>
       </div>
     </div>

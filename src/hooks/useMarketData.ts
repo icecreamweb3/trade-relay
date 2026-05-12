@@ -87,12 +87,22 @@ export function useMarketData() {
   const processRef = useRef(processMarketEvent)
   useEffect(() => { processRef.current = processMarketEvent })
 
+  const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
+    const nextSymbol = event?.symbol?.toUpperCase()
+    if (!nextSymbol) return
+    const currentSymbol = useMarketStore.getState().symbol
+    if (nextSymbol !== currentSymbol) {
+      setSymbol(nextSymbol)
+    }
+  }
+
   // ── Electron IPC bridge (BrowserView secondary source) ────────────────────
   useEffect(() => {
     const cleanups: (() => void)[] = []
     if (!window.electronAPI) return
 
     const unsubMarket = window.electronAPI.onMarketData?.((data: MarketEvent) => {
+      syncSymbolFromEvent(data)
       processRef.current(data)
     })
     if (unsubMarket) cleanups.push(unsubMarket)
@@ -114,20 +124,6 @@ export function useMarketData() {
 
     return () => cleanups.forEach(fn => fn())
   }, [setSymbol, setChartInterval, setChartExpanded])
-
-  // ── markPrice from main-process WS (available when Node.js can reach Binance) ──
-  useEffect(() => {
-    if (!window.electronAPI?.onMarkPriceData) return
-    const unsub = window.electronAPI.onMarkPriceData((data) => {
-      processRef.current(data)
-    })
-    return unsub
-  }, [])
-
-  // Notify main process when symbol changes so it restarts the markPrice WS
-  useEffect(() => {
-    window.electronAPI?.switchMarkPriceSymbol?.(symbol)
-  }, [symbol])
 
   // ── markPrice: REST polling via fetch (Chromium network stack, respects proxy) ──
   useEffect(() => {

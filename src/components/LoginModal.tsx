@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Activity } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -13,6 +14,7 @@ interface LoginModalProps {
 export function LoginModal({ onClose }: LoginModalProps) {
   const { t } = useTranslation(locale)
   const { login, isLoading, error, clearError } = useAuthStore()
+  const showToast = useToastStore((state) => state.showToast)
 
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
@@ -24,10 +26,10 @@ export function LoginModal({ onClose }: LoginModalProps) {
 
   useEffect(() => {
     if (error) {
-      const timer = setTimeout(clearError, 4000)
-      return () => clearTimeout(timer)
+      showToast('error', error)
+      clearError()
     }
-  }, [error, clearError])
+  }, [error, clearError, showToast])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -62,12 +64,6 @@ export function LoginModal({ onClose }: LoginModalProps) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="bg-red-900/30 border border-red-700/50 rounded px-3 py-2 text-red-400 text-xs">
-              {error}
-            </div>
-          )}
-
           <div>
             <label className="block text-xs text-[#858585] mb-1.5">{t('login.username')}</label>
             <input
