@@ -342,6 +342,20 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
         conn.close()
 
 
+def update_username(user_id: int, username: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET username = %s WHERE id = %s",
+                (username, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def update_user_role(user_id: int, role: str) -> bool:
     conn = get_connection()
     try:
@@ -764,14 +778,46 @@ def upsert_position(
         conn.close()
 
 
+def _get_table_columns(table_name: str) -> set[str]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SHOW COLUMNS FROM {table_name}")
+            return {row['Field'] for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def get_positions(user_id: Optional[int] = None, exchange: str = "binance") -> list:
-    """返回头寸列表，可按用户和交易所筛选。"""
-    sql = "SELECT * FROM positions WHERE exchange = %s"
-    params: list = [exchange]
-    if user_id is not None:
-        sql += " AND user_id = %s"
-        params.append(user_id)
-    sql += " ORDER BY symbol, position_side"
+    """返回头寸列表，兼容旧版与新版 positions 表结构。"""
+    columns = _get_table_columns("positions")
+
+    if "exchange" in columns and "position_side" in columns:
+        sql = "SELECT * FROM positions WHERE exchange = %s"
+        params: list = [exchange]
+        if user_id is not None and "user_id" in columns:
+            sql += " AND user_id = %s"
+            params.append(user_id)
+        sql += " ORDER BY symbol, position_side"
+    else:
+        # Legacy schema from docs/ddl.sql
+        sql = """
+            SELECT
+                id,
+                '' AS username,
+                symbol,
+                side AS position_side,
+                quantity,
+                entry_price AS avg_entry_price,
+                unrealized_pnl,
+                0 AS realized_pnl,
+                leverage,
+                margin_type,
+                created_at AS updated_at
+            FROM positions
+            ORDER BY symbol, side
+        """
+        params = []
 
     conn = get_connection()
     try:
@@ -788,16 +834,24 @@ def delete_position(
     position_side: str = "BOTH",
     exchange: str = "binance",
 ) -> bool:
-    """删除（清除）指定头寸记录。"""
+    """删除（清除）指定头寸记录，兼容旧版与新版 positions 表结构。"""
+    columns = _get_table_columns("positions")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """DELETE FROM positions
-                   WHERE user_id = %s AND exchange = %s
-                     AND symbol = %s AND position_side = %s""",
-                (user_id, exchange, symbol, position_side),
-            )
+            if "exchange" in columns and "position_side" in columns and "user_id" in columns:
+                cur.execute(
+                    """DELETE FROM positions
+                       WHERE user_id = %s AND exchange = %s
+                         AND symbol = %s AND position_side = %s""",
+                    (user_id, exchange, symbol, position_side),
+                )
+            else:
+                legacy_side = "SHORT" if position_side == "SHORT" else "LONG"
+                cur.execute(
+                    "DELETE FROM positions WHERE symbol = %s AND side = %s",
+                    (symbol, legacy_side),
+                )
             conn.commit()
             return cur.rowcount > 0
     finally:

@@ -1,5 +1,5 @@
 """
-Auth router: POST /api/auth/login, GET /api/auth/me
+Auth router: POST /api/auth/login, GET /api/auth/me, POST /api/auth/change-password
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
-from trade_relay.auth.manager import login as auth_login
+from trade_relay.auth.manager import Session, change_own_password, login as auth_login
 from backend.config import JWT_SECRET, JWT_ALGO, JWT_EXPIRE_HOURS
 from backend.logger import get_logger
 
@@ -37,6 +37,11 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserInfo
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 # ── JWT helpers ───────────────────────────────────────────────────────────────
@@ -114,3 +119,12 @@ def get_me(user: dict = Depends(get_current_user)):
         role=row["role"],
         is_active=bool(row["is_active"]),
     )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(body: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    session = Session(int(user["sub"]), user["username"], user["role"])
+    ok, msg = change_own_password(session, body.current_password, body.new_password)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    return None

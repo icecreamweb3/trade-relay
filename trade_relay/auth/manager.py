@@ -160,6 +160,29 @@ def reset_user_password(
     return True, t("password_reset", target["username"])
 
 
+def change_own_password(
+    session: Session,
+    current_password: str,
+    new_password: str,
+) -> tuple[bool, str]:
+    """Change the current user's password after verifying the old password."""
+    if not current_password or not new_password:
+        return False, "Current password and new password are required"
+
+    row = db.get_user_by_id(session.user_id)
+    if row is None:
+        return False, "User not found"
+
+    if not verify_password(current_password, row["password_hash"]):
+        return False, "Current password is incorrect"
+
+    password_hash = hash_password(new_password)
+    db.update_user_password(session.user_id, password_hash)
+    db.log_operation(session.user_id, session.username, "CHANGE_PASSWORD",
+                     "Changed own password")
+    return True, "Password updated"
+
+
 # ──────────────────────────────────────────────
 # Bootstrap
 # ──────────────────────────────────────────────

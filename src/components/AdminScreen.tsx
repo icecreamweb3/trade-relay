@@ -1,169 +1,332 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 
 interface User {
-  id: number; username: string; role: string; is_active: boolean
-  binance_api_key?: string; created_at?: string
+  id: number
+  username: string
+  role: string
+  is_active: boolean
+  binance_api_key?: string
+  binance_api_secret?: string
+  created_at?: string
+  updated_at?: string
 }
+
+type FormMode = 'create' | 'edit'
 
 export function AdminScreen() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [editUser, setEditUser] = useState<User | null>(null)
+  const [formMode, setFormMode] = useState<FormMode>('create')
   const { user: me } = useAuthStore()
 
-  const load = useCallback(async () => {
+  const selectedUser = useMemo(
+    () => users.find((user) => user.id === selectedUserId) ?? null,
+    [selectedUserId, users],
+  )
+
+  const loadUsers = useCallback(async () => {
     setLoading(true)
-    try { setUsers(await api.getUsers()) } catch { /* ignore */ }
-    setLoading(false)
+    setError('')
+    try {
+      const nextUsers = await api.getUsers()
+      setUsers(nextUsers)
+      setSelectedUserId((current) => {
+        if (current != null && nextUsers.some((user: User) => user.id === current)) return current
+        return nextUsers[0]?.id ?? null
+      })
+    } catch (err: unknown) {
+      setError(getApiError(err, '加载用户失败'))
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { loadUsers() }, [loadUsers])
 
-  const handleToggleActive = async (u: User) => {
+  const openCreate = () => {
+    setFormMode('create')
+    setShowForm(true)
+  }
+
+  const openEdit = () => {
+    if (!selectedUser) return
+    setFormMode('edit')
+    setShowForm(true)
+  }
+
+  const handleDelete = async () => {
+    if (!selectedUser || selectedUser.id === me?.id) return
+    if (!confirm(`确认删除用户 ${selectedUser.username}？`)) return
     try {
-      await api.updateUser(u.id, { is_active: !u.is_active })
-      load()
-    } catch { /* ignore */ }
+      await api.deleteUser(selectedUser.id)
+      await loadUsers()
+    } catch (err: unknown) {
+      setError(getApiError(err, '删除用户失败'))
+    }
   }
 
-  const handleDelete = async (u: User) => {
-    if (!confirm(`确认删除用户 ${u.username}？`)) return
-    try { await api.deleteUser(u.id); load() } catch { /* ignore */ }
+  const handleSetActive = async (isActive: boolean) => {
+    if (!selectedUser) return
+    if (!isActive && selectedUser.id === me?.id) return
+    try {
+      await api.updateUser(selectedUser.id, { is_active: isActive })
+      await loadUsers()
+    } catch (err: unknown) {
+      setError(getApiError(err, isActive ? '启用用户失败' : '停用用户失败'))
+    }
   }
+
+  const canEdit = !!selectedUser
+  const canDelete = !!selectedUser && selectedUser.id !== me?.id
+  const canActivate = !!selectedUser && !selectedUser.is_active
+  const canDeactivate = !!selectedUser && selectedUser.is_active && selectedUser.id !== me?.id
 
   return (
-    <div className="h-full flex flex-col bg-[#1e1e1e]">
-      {/* Header */}
-      <div className="px-4 py-2 border-b border-[#3e3e42] flex items-center gap-3 shrink-0">
-        <span className="text-sm font-semibold text-[#cccccc]">用户管理</span>
-        <button
-          onClick={() => { setEditUser(null); setShowForm(true) }}
-          className="ml-auto px-3 py-1 bg-[#007acc] hover:bg-blue-600 text-white text-xs rounded"
-        >
-          + 新建用户
-        </button>
+    <div className="h-full min-h-0 flex flex-col bg-[#0d1219] text-[#dde4ef]">
+      <div className="flex items-center gap-2 border-b border-[#2a303c] px-4 py-3 shrink-0">
+        <div className="text-sm font-semibold tracking-[0.16em] uppercase text-[#8b94a5]">User Management</div>
+        <div className="ml-auto flex items-center gap-2">
+          <ToolbarButton onClick={openCreate} tone="primary">Add User</ToolbarButton>
+          <ToolbarButton onClick={openEdit} disabled={!canEdit} tone="primary">Edit User</ToolbarButton>
+          <ToolbarButton onClick={handleDelete} disabled={!canDelete} tone="danger">Delete User</ToolbarButton>
+          <ToolbarButton onClick={() => handleSetActive(true)} disabled={!canActivate} tone="primary">Activate</ToolbarButton>
+          <ToolbarButton onClick={() => handleSetActive(false)} disabled={!canDeactivate} tone="danger">Deactivate</ToolbarButton>
+        </div>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        <table className="trade-table w-full">
-          <thead><tr>
-            <th>用户名</th><th>角色</th><th>状态</th><th>API Key</th><th>创建时间</th><th>操作</th>
-          </tr></thead>
+      {error && (
+        <div className="mx-4 mt-3 rounded border border-[#5b2a34] bg-[#2b141a] px-3 py-2 text-sm text-[#ffb4bf] shrink-0">
+          {error}
+        </div>
+      )}
+
+      <div className="flex-1 min-h-0 overflow-auto">
+        <table className="w-full border-collapse text-[12px]">
+          <thead>
+            <tr className="bg-[#171c24] text-[#8b94a5]">
+              <TableHeader className="w-[70px] text-right">ID</TableHeader>
+              <TableHeader className="w-[110px]">Username</TableHeader>
+              <TableHeader className="w-[90px]">Role</TableHeader>
+              <TableHeader className="w-[70px]">Active</TableHeader>
+              <TableHeader>API Key</TableHeader>
+              <TableHeader>API Secret</TableHeader>
+              <TableHeader className="w-[130px] text-right">Created</TableHeader>
+              <TableHeader className="w-[130px] text-right">Updated</TableHeader>
+            </tr>
+          </thead>
           <tbody>
             {users.length === 0 ? (
-              <tr><td colSpan={6} className="text-center text-[#858585] py-6">{loading ? '...' : '暂无用户'}</td></tr>
-            ) : users.map(u => (
-              <tr key={u.id}>
-                <td className="font-semibold">{u.username}{u.id === me?.id && <span className="ml-1 text-[#007acc] text-xs">(我)</span>}</td>
-                <td><span className={`badge ${u.role === 'admin' ? 'badge-filled' : 'badge-mock'}`}>{u.role}</span></td>
-                <td><span className={`badge ${u.is_active ? 'badge-filled' : 'badge-failed'}`}>{u.is_active ? '启用' : '禁用'}</span></td>
-                <td className="font-mono text-[#858585]">{u.binance_api_key ? '****' + u.binance_api_key.slice(-4) : '-'}</td>
-                <td className="text-[#858585]">{u.created_at ? new Date(u.created_at).toLocaleDateString() : '-'}</td>
-                <td>
-                  <div className="flex gap-1">
-                    <ActionBtn onClick={() => { setEditUser(u); setShowForm(true) }}>编辑</ActionBtn>
-                    {u.id !== me?.id && (
-                      <>
-                        <ActionBtn onClick={() => handleToggleActive(u)}>{u.is_active ? '禁用' : '启用'}</ActionBtn>
-                        <ActionBtn onClick={() => handleDelete(u)} danger>删除</ActionBtn>
-                      </>
-                    )}
-                  </div>
+              <tr>
+                <td colSpan={8} className="border border-[#2a303c] px-4 py-8 text-center text-[#7d8696]">
+                  {loading ? 'Loading users...' : 'No users'}
                 </td>
               </tr>
-            ))}
+            ) : users.map((user) => {
+              const isSelected = user.id === selectedUserId
+              return (
+                <tr
+                  key={user.id}
+                  onClick={() => setSelectedUserId(user.id)}
+                  onDoubleClick={() => {
+                    setSelectedUserId(user.id)
+                    setFormMode('edit')
+                    setShowForm(true)
+                  }}
+                  className={`cursor-pointer ${isSelected ? 'bg-[#122035]' : 'bg-[#0d1219] hover:bg-[#121923]'}`}
+                >
+                  <TableCell className="text-right text-[#c5ccd8]">{user.id}</TableCell>
+                  <TableCell className="font-medium text-[#edf2fb]">
+                    {user.username}
+                    {user.id === me?.id && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#3a84f7]">Self</span>}
+                  </TableCell>
+                  <TableCell>{formatRole(user.role)}</TableCell>
+                  <TableCell>{user.is_active ? 'Yes' : 'No'}</TableCell>
+                  <TableCell className="font-mono text-[#d5dce8]">{user.binance_api_key || ''}</TableCell>
+                  <TableCell className="font-mono text-[#d5dce8]">{user.binance_api_secret || ''}</TableCell>
+                  <TableCell className="text-right text-[#c5ccd8]">{formatDateTime(user.created_at)}</TableCell>
+                  <TableCell className="text-right text-[#c5ccd8]">{formatDateTime(user.updated_at)}</TableCell>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
 
-      {/* User form modal */}
       {showForm && (
         <UserFormModal
-          user={editUser}
-          onSave={() => { setShowForm(false); load() }}
+          mode={formMode}
+          user={formMode === 'edit' ? selectedUser : null}
           onCancel={() => setShowForm(false)}
+          onSaved={async () => {
+            setShowForm(false)
+            await loadUsers()
+          }}
         />
       )}
     </div>
   )
 }
 
-function UserFormModal({ user, onSave, onCancel }: { user: User | null; onSave: () => void; onCancel: () => void }) {
-  const [username, setUsername] = useState(user?.username || '')
+function UserFormModal({
+  mode,
+  user,
+  onCancel,
+  onSaved,
+}: {
+  mode: FormMode
+  user: User | null
+  onCancel: () => void
+  onSaved: () => Promise<void>
+}) {
+  const isEdit = mode === 'edit'
+  const [username, setUsername] = useState(user?.username ?? '')
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState(user?.role || 'user')
-  const [apiKey, setApiKey] = useState('')
-  const [apiSecret, setApiSecret] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [role, setRole] = useState(user?.role ?? 'user')
+  const [apiKey, setApiKey] = useState(user?.binance_api_key ?? '')
+  const [apiSecret, setApiSecret] = useState(user?.binance_api_secret ?? '')
+  const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
 
-  const isEdit = !!user
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!isEdit && (!username || !password)) { setError('用户名和密码必填'); return }
-    setLoading(true); setError('')
-    try {
-      if (isEdit) {
-        const update: Record<string, unknown> = { role }
-        if (password) update.password = password
-        if (apiKey) update.binance_api_key = apiKey
-        if (apiSecret) update.binance_api_secret = apiSecret
-        await api.updateUser(user!.id, update)
-      } else {
-        await api.createUser({ username, password, role, binance_api_key: apiKey || undefined, binance_api_secret: apiSecret || undefined })
-      }
-      onSave()
-    } catch (err: unknown) {
-      setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '操作失败')
+    const trimmedUsername = username.trim()
+    const trimmedPassword = password.trim()
+
+    if (!trimmedUsername) {
+      setError('用户名必填')
+      return
     }
-    setLoading(false)
+
+    if (!isEdit && !trimmedPassword) {
+      setError('用户名和密码必填')
+      return
+    }
+
+    if (trimmedPassword || confirmPassword.trim()) {
+      if (trimmedPassword !== confirmPassword.trim()) {
+        setError('两次输入的密码不一致')
+        return
+      }
+    }
+
+    setSubmitting(true)
+    setError('')
+    try {
+      if (isEdit && user) {
+        const payload: Record<string, unknown> = {
+          username: trimmedUsername,
+          role,
+          binance_api_key: apiKey.trim(),
+          binance_api_secret: apiSecret.trim(),
+        }
+        if (trimmedPassword) payload.password = trimmedPassword
+        await api.updateUser(user.id, payload)
+      } else {
+        await api.createUser({
+          username: trimmedUsername,
+          password: trimmedPassword,
+          role,
+          binance_api_key: apiKey.trim() || undefined,
+          binance_api_secret: apiSecret.trim() || undefined,
+        })
+      }
+      await onSaved()
+    } catch (err: unknown) {
+      setError(getApiError(err, '保存用户失败'))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onCancel}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" onClick={onCancel}>
       <form
-        onClick={e => e.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
         onSubmit={handleSubmit}
-        className="w-96 bg-[#252526] border border-[#3e3e42] rounded-lg p-6 space-y-3"
+        className="w-full max-w-[520px] rounded-xl border border-[#2b3240] bg-[#121923] shadow-[0_28px_80px_rgba(0,0,0,0.55)]"
       >
-        <h3 className="text-sm font-semibold text-[#cccccc] mb-2">{isEdit ? '编辑用户' : '新建用户'}</h3>
-        {error && <div className="text-xs text-red-400 bg-red-900/20 rounded px-2 py-1">{error}</div>}
+        <div className="flex items-start justify-between border-b border-[#2b3240] px-5 py-4">
+          <div>
+            <div className="text-base font-semibold text-white">{isEdit ? 'Edit User' : 'Add User'}</div>
+            <div className="mt-1 text-xs text-[#8b94a5]">Manage account role and Binance credentials.</div>
+          </div>
+          <button type="button" onClick={onCancel} className="text-[#8b94a5] hover:text-white text-xl leading-none">×</button>
+        </div>
 
-        {!isEdit && (
-          <Field label="用户名">
-            <Input value={username} onChange={setUsername} placeholder="username" />
-          </Field>
-        )}
-        <Field label={isEdit ? '新密码（留空不修改）' : '密码'}>
-          <Input type="password" value={password} onChange={setPassword} placeholder={isEdit ? '留空不修改' : '密码'} />
-        </Field>
-        <Field label="角色">
-          <select value={role} onChange={e => setRole(e.target.value)}
-            className="w-full bg-[#1e1e1e] border border-[#3e3e42] text-sm text-[#cccccc] rounded px-2 py-1.5 outline-none">
-            <option value="user">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </Field>
-        <Field label="Binance API Key（可选）">
-          <Input value={apiKey} onChange={setApiKey} placeholder="留空不修改" />
-        </Field>
-        <Field label="Binance API Secret（可选）">
-          <Input type="password" value={apiSecret} onChange={setApiSecret} placeholder="留空不修改" />
-        </Field>
+        <div className="grid grid-cols-2 gap-4 px-5 py-5">
+          <div className="col-span-2">
+            <Field label="Username">
+              <Input value={username} onChange={setUsername} placeholder="username" />
+            </Field>
+          </div>
 
-        <div className="flex gap-2 pt-2">
-          <button type="submit" disabled={loading}
-            className="flex-1 py-1.5 bg-[#007acc] hover:bg-blue-600 disabled:opacity-50 text-white text-sm rounded">
-            {loading ? '...' : '保存'}
+          <div className={isEdit ? 'col-span-2' : ''}>
+            <Field label={isEdit ? 'New Password' : 'Password'}>
+              <Input
+                type="password"
+                value={password}
+                onChange={setPassword}
+                placeholder={isEdit ? '留空表示不修改' : 'password'}
+              />
+            </Field>
+          </div>
+
+          <div className="col-span-2">
+            <Field label={isEdit ? 'Confirm New Password' : 'Confirm Password'}>
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                placeholder={isEdit ? '再次输入新密码' : 'confirm password'}
+              />
+            </Field>
+          </div>
+
+          <div className="col-span-2">
+            <Field label="Role">
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+                className="w-full rounded-md border border-[#2d3542] bg-[#0d131a] px-3 py-2 text-sm text-[#e6ebf2] outline-none focus:border-[#3182f6]"
+              >
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </Field>
+          </div>
+
+          <div className="col-span-2">
+            <Field label="API Key">
+              <Input value={apiKey} onChange={setApiKey} placeholder="Binance API key" />
+            </Field>
+          </div>
+
+          <div className="col-span-2">
+            <Field label="API Secret">
+              <Input type="password" value={apiSecret} onChange={setApiSecret} placeholder="Binance API secret" />
+            </Field>
+          </div>
+
+          {error && (
+            <div className="col-span-2 rounded border border-[#5b2a34] bg-[#2b141a] px-3 py-2 text-sm text-[#ffb4bf]">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-[#2b3240] px-5 py-4">
+          <button type="button" onClick={onCancel} className="rounded-md border border-[#394152] px-4 py-2 text-sm text-[#d7dde7] hover:bg-[#18202b]">
+            Cancel
           </button>
-          <button type="button" onClick={onCancel}
-            className="flex-1 py-1.5 bg-[#3e3e42] hover:bg-[#4e4e52] text-sm rounded">
-            取消
+          <button type="submit" disabled={submitting} className="rounded-md bg-[#2f7cf6] px-4 py-2 text-sm font-medium text-white hover:bg-[#4b90fb] disabled:opacity-60">
+            {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Create User'}
           </button>
         </div>
       </form>
@@ -171,30 +334,96 @@ function UserFormModal({ user, onSave, onCancel }: { user: User | null; onSave: 
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="block text-xs text-[#858585] mb-1">{label}</label>
-      {children}
-    </div>
-  )
-}
-
-function Input({ value, onChange, placeholder, type = 'text' }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; type?: string
+function ToolbarButton({
+  children,
+  onClick,
+  disabled,
+  tone,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  disabled?: boolean
+  tone: 'primary' | 'danger'
 }) {
-  return (
-    <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      className="w-full bg-[#1e1e1e] border border-[#3e3e42] text-sm text-[#cccccc] rounded px-2 py-1.5 outline-none selectable focus:border-[#007acc]" />
-  )
-}
+  const toneClass = tone === 'danger'
+    ? 'bg-[#d83d35] hover:bg-[#f04e45]'
+    : 'bg-[#2f7cf6] hover:bg-[#4b90fb]'
 
-function ActionBtn({ onClick, children, danger }: { onClick: () => void; children: React.ReactNode; danger?: boolean }) {
   return (
-    <button onClick={onClick}
-      className={`px-2 py-0.5 text-xs rounded transition-colors ${danger ? 'text-red-400 hover:bg-red-900/20' : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#3e3e42]'}`}
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-md px-4 py-2 text-xs font-medium text-white transition-colors ${toneClass} disabled:cursor-not-allowed disabled:bg-[#334052] disabled:text-[#7b8596]`}
     >
       {children}
     </button>
   )
+}
+
+function TableHeader({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th className={`border border-[#2a303c] px-4 py-3 text-[11px] font-semibold ${className}`}>
+      {children}
+    </th>
+  )
+}
+
+function TableCell({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <td className={`border border-[#252b36] px-4 py-3 align-middle ${className}`}>
+      {children}
+    </td>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="mb-1.5 text-xs font-medium uppercase tracking-[0.08em] text-[#8b94a5]">{label}</div>
+      {children}
+    </label>
+  )
+}
+
+function Input({
+  value,
+  onChange,
+  placeholder,
+  type = 'text',
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  type?: string
+}) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      className="selectable w-full rounded-md border border-[#2d3542] bg-[#0d131a] px-3 py-2 text-sm text-[#e6ebf2] outline-none focus:border-[#3182f6]"
+    />
+  )
+}
+
+function formatRole(role: string) {
+  return role.toLowerCase() === 'admin' ? 'Admin' : 'User'
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return '-'
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return value
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
+function getApiError(error: unknown, fallback: string) {
+  return (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || fallback
 }

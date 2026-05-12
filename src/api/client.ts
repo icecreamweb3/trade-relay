@@ -79,7 +79,7 @@ export const api = {
   },
 
   async updateUser(userId: number, data: Partial<{
-    role: string; is_active: boolean; password: string
+    username: string; role: string; is_active: boolean; password: string
     binance_api_key: string; binance_api_secret: string
   }>) {
     const token = await getToken()
@@ -106,6 +106,14 @@ export const api = {
   }) {
     const token = await getToken()
     const res = await axios.post(`${BASE_URL}/api/config`, data, { headers: getHeaders(token) })
+    return res.data
+  },
+
+  async changeMyPassword(data: {
+    current_password: string; new_password: string
+  }) {
+    const token = await getToken()
+    const res = await axios.post(`${BASE_URL}/api/auth/change-password`, data, { headers: getHeaders(token) })
     return res.data
   },
 

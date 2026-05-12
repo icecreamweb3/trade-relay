@@ -16,14 +16,47 @@ import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
 
 type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
+type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
+
+const TRADE_TAB: WorkspaceTab = { id: 'trade', screen: 'trade', title: 'Trade', closable: false }
+const SCREEN_TITLES: Record<Screen, string> = {
+  trade: 'Trade',
+  orders: 'Orders',
+  users: 'Users',
+  profile: 'Profile',
+  settings: 'Settings',
+}
 
 function MainApp() {
   useMarketData()
 
   const { isAuthenticated } = useAuthStore()
-  const [screen, setScreen] = useState<Screen>('trade')
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([TRADE_TAB])
+  const [activeTabId, setActiveTabId] = useState<Screen>('trade')
   const [orderRefresh, setOrderRefresh] = useState(0)
   const [showLogin, setShowLogin] = useState(false)
+
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? TRADE_TAB
+  const activeScreen = activeTab.screen
+
+  const openScreen = (screen: Screen) => {
+    if (screen === 'trade') {
+      setActiveTabId('trade')
+      return
+    }
+
+    setTabs((current) => {
+      if (current.some((tab) => tab.id === screen)) return current
+      return [...current, { id: screen, screen, title: SCREEN_TITLES[screen], closable: true }]
+    })
+    setActiveTabId(screen)
+  }
+
+  const closeTab = (tabId: Screen) => {
+    if (tabId === 'trade') return
+    setTabs((current) => current.filter((tab) => tab.id !== tabId))
+    setActiveTabId((current) => (current === tabId ? 'trade' : current))
+  }
 
   const openLogin = () => {
     // Collapse BrowserView to 0 so it doesn't cover the modal
@@ -40,6 +73,14 @@ function MainApp() {
   useEffect(() => {
     if (isAuthenticated) closeLogin()
   }, [isAuthenticated])
+
+  useEffect(() => {
+    const isTrade = activeScreen === 'trade'
+    window.electronAPI?.setBinanceViewVisible?.(isTrade)
+    if (isTrade) {
+      notifyElectron()
+    }
+  }, [activeScreen])
 
   // Track both ratios to send both to Electron on any resize
   const leftRatio = useRef(0.67)
@@ -61,24 +102,54 @@ function MainApp() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <TitleBar activeScreen={screen} onNavigate={setScreen} onLoginClick={openLogin} />
+      <TitleBar activeScreen={activeScreen} onNavigate={openScreen} onLoginClick={openLogin} />
+
+      <div className="h-9 shrink-0 bg-[#1a1d23] border-b border-[#2b2f36] flex items-end px-2 overflow-x-auto">
+        {tabs.map((tab) => {
+          const active = tab.id === activeTabId
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTabId(tab.id)}
+              className={`group flex items-center gap-2 h-8 px-3 mr-1 rounded-t-md border border-b-0 text-xs transition-colors ${
+                active
+                  ? 'bg-[#0f131a] border-[#3a404c] text-white'
+                  : 'bg-[#232831] border-[#2f3440] text-[#9aa3b2] hover:text-white hover:bg-[#2a303a]'
+              }`}
+            >
+              <span>{tab.title}</span>
+              {tab.closable && (
+                <span
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    closeTab(tab.id)
+                  }}
+                  className="text-[11px] leading-none rounded px-1 text-[#7f8896] hover:text-white hover:bg-[#3a404c]"
+                >
+                  ×
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
 
       {/* Login modal — shown when not authenticated */}
       {showLogin && <LoginModal onClose={closeLogin} />}
 
       {/* Non-trade screens */}
-      {screen !== 'trade' && (
+      {activeScreen !== 'trade' && (
         <>
-          {screen === 'orders'   && <div className="flex-1 overflow-hidden"><OrderLogScreen /></div>}
-          {screen === 'users'    && <div className="flex-1 overflow-hidden"><AdminScreen /></div>}
-          {screen === 'profile'  && <div className="flex-1 overflow-hidden"><ProfileScreen /></div>}
-          {screen === 'settings' && <div className="flex-1 overflow-hidden"><ConfigScreen /></div>}
+          {activeScreen === 'orders'   && <div className="flex-1 overflow-hidden"><OrderLogScreen /></div>}
+          {activeScreen === 'users'    && <div className="flex-1 overflow-hidden"><AdminScreen /></div>}
+          {activeScreen === 'profile'  && <div className="flex-1 overflow-hidden"><ProfileScreen /></div>}
+          {activeScreen === 'settings' && <div className="flex-1 overflow-hidden"><ConfigScreen /></div>}
           <StatusBar />
         </>
       )}
 
       {/* Trading screen — always mounted to keep BrowserView in sync */}
-      <div className={`flex-1 overflow-hidden flex flex-col ${screen !== 'trade' ? 'hidden' : ''}`}>
+      <div className={`flex-1 overflow-hidden flex flex-col ${activeScreen !== 'trade' ? 'hidden' : ''}`}>
         <PanelGroup
           direction="horizontal"
           className="flex-1 overflow-hidden"

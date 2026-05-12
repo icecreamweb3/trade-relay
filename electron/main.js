@@ -3,6 +3,7 @@
  * Replaced Qt6 + TCP NDJSON bridge with standard Electron IPC.
  */
 const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, shell } = require('electron')
+const WebSocket = require('ws')
 const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
@@ -269,6 +270,12 @@ ipcMain.handle('auth-get-status', async () => {
 })
 
 // ── Standard IPC ──────────────────────────────────────────────────────────────
+// Renderer-to-main log forwarding — writes renderer WS logs into the Electron log file
+ipcMain.on('log-to-main', (_event, level, msg, extra) => {
+  const fn = logger[level] || logger.info
+  fn.call(logger, `[renderer] ${msg}`, extra)
+})
+
 ipcMain.handle('get-ui-lang', () => UI_LANG)
 ipcMain.on('get-ui-lang-sync', (event) => { event.returnValue = UI_LANG })
 
@@ -414,16 +421,99 @@ ipcMain.handle('maximize-window', () => {
 })
 ipcMain.handle('close-window', () => mainWindow?.close())
 
+// ── markPrice WebSocket in main process (ws package, requires direct network access) ──
+// Falls back gracefully if network is not reachable from Node.js context.
+let _mpWs = null
+let _mpSymbol = null
+let _mpRetry = null
+let _mpFailed = false   // stop retrying if Node.js can't reach Binance
+
+function startMarkPriceWs(symbol) {
+  if (_mpFailed) return   // Node.js network is not reachable, renderer WS is primary
+  if (_mpSymbol === symbol && _mpWs) return
+  stopMarkPriceWs()
+  _mpSymbol = symbol
+  const url = `wss://fstream.binance.com/ws/${symbol.toLowerCase()}@markPrice@1s`
+
+  function connect() {
+    if (_mpSymbol !== symbol) return
+    const ws = new WebSocket(url, { handshakeTimeout: 5000 })
+    _mpWs = ws
+
+    ws.on('open', () => {
+      logger.info(`[markPrice WS] connected: ${url}`)
+    })
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString())
+        if (msg.e !== 'markPriceUpdate') return
+        const markPrice = parseFloat(msg.p)
+        const fundingRate = parseFloat(msg.r)
+        logger.info(`[markPrice WS] ${msg.s}: markPrice=${markPrice} fundingRate=${(fundingRate*100).toFixed(4)}% nextFunding=${new Date(msg.T).toISOString()}`)
+        mainWindow?.webContents.send('mark-price-data', {
+          type: 'markPrice',
+          symbol: msg.s,
+          markPrice,
+          indexPrice: parseFloat(msg.i),
+          fundingRate,
+          nextFundingTime: msg.T,
+          timestamp: msg.E,
+        })
+      } catch (err) {
+        logger.warn(`[markPrice WS] parse error: ${err.message}`)
+      }
+    })
+
+    ws.on('unexpected-response', () => {
+      logger.warn('[markPrice WS] unexpected response — Node.js network unreachable, disabling main-process WS')
+      _mpFailed = true
+      stopMarkPriceWs()
+    })
+
+    ws.on('error', (err) => {
+      logger.warn(`[markPrice WS] error: ${err.message}`)
+      // If connection refused / timeout, mark as failed so we stop retrying
+      if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND') {
+        logger.warn('[markPrice WS] Node.js cannot reach Binance — renderer WS will be primary source')
+        _mpFailed = true
+      }
+    })
+
+    ws.on('close', (code) => {
+      if (_mpFailed) return
+      logger.warn(`[markPrice WS] closed (code=${code}), reconnecting in 5s`)
+      _mpRetry = setTimeout(() => { if (_mpSymbol === symbol) connect() }, 5000)
+    })
+  }
+
+  connect()
+}
+
+function stopMarkPriceWs() {
+  if (_mpRetry) { clearTimeout(_mpRetry); _mpRetry = null }
+  try { _mpWs?.close() } catch {}
+  _mpWs = null
+  _mpSymbol = null
+}
+
+// Allow renderer to switch the markPrice symbol when user changes trading pair
+ipcMain.on('switch-mark-price-symbol', (_event, symbol) => {
+  startMarkPriceWs(symbol)
+})
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   logger.info('Trade Relay starting up', { logFile: logger.getLogFile() })
   createMainWindow()
+  startMarkPriceWs(BINANCE_SYMBOL)
   setTimeout(() => { createBinanceView(); updateBinanceViewBounds() }, 1500)
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 })
 
 app.on('window-all-closed', () => {
   logger.info('All windows closed, quitting')
+  stopMarkPriceWs()
   logger.close()
   if (process.platform !== 'darwin') app.quit()
 })
