@@ -29,6 +29,7 @@ interface MarketStore {
   currentPrice: number | null
   markPrice: number | null
   fundingRate: number | null
+  nextFundingTime: number | null
   klines: OHLCVBar[]
   latestKline: KlineData | null
   recentTrades: TradeData[]
@@ -48,6 +49,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
   currentPrice: null,
   markPrice: null,
   fundingRate: null,
+  nextFundingTime: null,
   klines: [],
   latestKline: null,
   recentTrades: [],
@@ -88,7 +90,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       })
     } else if (event.type === 'markPrice') {
       const mp = event as MarkPriceData
-      set({ markPrice: mp.markPrice, fundingRate: mp.fundingRate, isConnected: true })
+      set({ markPrice: mp.markPrice, fundingRate: mp.fundingRate, nextFundingTime: mp.nextFundingTime, isConnected: true })
     } else if (event.type === 'trade') {
       const trade = event as TradeData
       set((state) => ({

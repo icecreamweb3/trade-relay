@@ -42,7 +42,7 @@ function MainApp() {
   }, [isAuthenticated])
 
   // Track both ratios to send both to Electron on any resize
-  const leftRatio = useRef(0.62)
+  const leftRatio = useRef(0.67)
   const chartRatio = useRef(0.65)
 
   const notifyElectron = () => {
@@ -85,7 +85,7 @@ function MainApp() {
           onLayout={handleMainLayout}
         >
           {/* ── LEFT: chart (top) + positions (bottom) ── */}
-          <Panel defaultSize={62} minSize={38} id="left">
+          <Panel defaultSize={67} minSize={40} id="left">
             <PanelGroup direction="vertical" className="h-full" onLayout={handleLeftLayout}>
               <Panel defaultSize={65} minSize={30} id="chart">
                 <BinancePanel />
@@ -100,13 +100,13 @@ function MainApp() {
           <PanelResizeHandle className="w-1 bg-[#3e3e42] hover:bg-[#007acc] cursor-col-resize" />
 
           {/* ── RIGHT: [order book | trade form] (top) + recent trades (bottom) ── */}
-          <Panel defaultSize={38} minSize={26} maxSize={55} id="right">
+          <Panel defaultSize={33} minSize={22} maxSize={48} id="right">
             <PanelGroup direction="vertical" className="h-full">
               {/* Top: order book (fixed width) + trade form (flex) */}
               <Panel defaultSize={72} minSize={50} id="right-top">
                 <div className="h-full flex overflow-hidden">
                   {/* Order book — fixed width */}
-                  <div className="w-[350px] shrink-0 border-r border-[#2a2a2a] overflow-hidden">
+                  <div className="w-[280px] shrink-0 border-r border-[#2a2a2a] overflow-hidden">
                     <OrderBook />
                   </div>
                   {/* Trade form — fills remaining width */}

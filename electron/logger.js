@@ -1,0 +1,136 @@
+/**
+ * Trade Relay — Electron Main Process Logger
+ *
+ * 每次启动以时间戳命名日志文件，单文件最大 100 MB 后自动滚动。
+ * 格式: 时间 | 级别 | 文件名:行号 | 函数名 | 消息
+ *
+ * 使用方法:
+ *   const { logger } = require('./logger')
+ *   logger.info('Hello', { key: 'value' })
+ */
+
+const fs   = require('fs')
+const path = require('path')
+
+// ── 配置 ──────────────────────────────────────────────────────────────────────
+const LOG_DIR       = path.join(__dirname, '../logs')
+const MAX_BYTES     = 100 * 1024 * 1024   // 100 MB
+const BACKUP_COUNT  = 9
+
+const LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
+
+// ── 内部状态 ──────────────────────────────────────────────────────────────────
+let _fd        = null   // 当前日志文件描述符
+let _filePath  = null   // 当前日志文件路径
+let _written   = 0      // 已写入字节数
+
+/** 确保日志目录存在，创建初始日志文件 */
+function _init() {
+  if (_fd !== null) return
+  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true })
+
+  const ts = _timestamp().replace(/[: ]/g, '-').replace(/\./g, '')
+  _filePath = path.join(LOG_DIR, `electron_${ts}.log`)
+  _fd = fs.openSync(_filePath, 'a')
+  _written = fs.fstatSync(_fd).size
+}
+
+/** 获取当前时间字符串（本地时间） */
+function _timestamp() {
+  const d = new Date()
+  const pad = (n, len = 2) => String(n).padStart(len, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ` +
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+}
+
+/** 解析调用栈，返回 { file, line, func } */
+function _caller() {
+  const err = new Error()
+  const lines = (err.stack || '').split('\n')
+  // 跳过 Error、_caller、_write、log/info/… 共 4 帧
+  for (let i = 4; i < lines.length; i++) {
+    const m = lines[i].match(/at (?:(.+?) \()?(?:.+[/\\])?([^/\\(]+):(\d+):\d+\)?/)
+    if (m) {
+      return {
+        func: m[1] || '<anonymous>',
+        file: m[2] || '?',
+        line: m[3] || '?',
+      }
+    }
+  }
+  return { func: '?', file: '?', line: '?' }
+}
+
+/** 滚动日志文件 */
+function _rotate() {
+  if (_fd !== null) {
+    try { fs.closeSync(_fd) } catch {}
+    _fd = null
+  }
+  // 将旧备份向后移一位
+  for (let i = BACKUP_COUNT - 1; i >= 1; i--) {
+    const src = `${_filePath}.${i}`
+    const dst = `${_filePath}.${i + 1}`
+    if (fs.existsSync(src)) {
+      try { fs.renameSync(src, dst) } catch {}
+    }
+  }
+  if (fs.existsSync(_filePath)) {
+    try { fs.renameSync(_filePath, `${_filePath}.1`) } catch {}
+  }
+  _fd = fs.openSync(_filePath, 'a')
+  _written = 0
+}
+
+/** 核心写入函数 */
+function _write(levelName, message, extra) {
+  _init()
+  const { func, file, line } = _caller()
+  const extraStr = extra !== undefined
+    ? ' ' + (typeof extra === 'string' ? extra : JSON.stringify(extra))
+    : ''
+  const line_ = `${_timestamp()} | ${levelName.padEnd(5)} | ${file}:${line} | ${func} | ${message}${extraStr}\n`
+  const buf = Buffer.from(line_, 'utf8')
+
+  if (_written + buf.length > MAX_BYTES) _rotate()
+
+  try {
+    fs.writeSync(_fd, buf)
+    _written += buf.length
+  } catch (e) {
+    // 写失败时尝试重新打开文件
+    try {
+      _fd = fs.openSync(_filePath, 'a')
+      fs.writeSync(_fd, buf)
+      _written += buf.length
+    } catch {}
+  }
+
+  // 同时输出到控制台
+  const consoleFn = levelName === 'ERROR' ? console.error
+    : levelName === 'WARN'  ? console.warn
+    : levelName === 'DEBUG' ? console.debug
+    : console.log
+  consoleFn(`[TradeRelay] ${line_.trimEnd()}`)
+}
+
+// ── 公开 API ──────────────────────────────────────────────────────────────────
+const logger = {
+  debug: (msg, extra) => _write('DEBUG', msg, extra),
+  info:  (msg, extra) => _write('INFO',  msg, extra),
+  warn:  (msg, extra) => _write('WARN',  msg, extra),
+  error: (msg, extra) => _write('ERROR', msg, extra),
+
+  /** 获取当前日志文件路径（供外部查询） */
+  getLogFile: () => { _init(); return _filePath },
+
+  /** 关闭文件句柄（进程退出前调用） */
+  close: () => {
+    if (_fd !== null) {
+      try { fs.closeSync(_fd) } catch {}
+      _fd = null
+    }
+  },
+}
+
+module.exports = { logger }

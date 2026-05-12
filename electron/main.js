@@ -7,13 +7,14 @@ const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
 require('dotenv').config({ path: path.join(__dirname, '../.env') })
+const { logger } = require('./logger')
 
 const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow = null
 let binanceView = null
 let _autoExpandDone = false
-let _splitRatio = 0.62   // default left panel 62% horizontal
+let _splitRatio = 0.67   // default left panel 67% horizontal
 let _chartRatio = 0.65   // default chart 65% vertical within left panel
 
 // Map TRADE_RELAY_LANG (zh|en) → Binance locale path segment
@@ -81,7 +82,7 @@ function loadBinanceWithRetry(url, retries = 5, delayMs = 2000) {
   binanceView.webContents.on('did-fail-load', (_event, errorCode, _errorDesc, _url, isMainFrame) => {
     if (!isMainFrame) return
     if (RETRYABLE_ERRORS.has(errorCode) && retries > 0) {
-      console.log(`[TradeRelay] Binance retry in ${delayMs}ms (${retries} left)`)
+      logger.warn(`Binance retry in ${delayMs}ms (${retries} left)`)
       setTimeout(() => loadBinanceWithRetry(url, retries - 1, Math.min(delayMs * 1.5, 10000)), delayMs)
     }
   })
@@ -90,7 +91,7 @@ function loadBinanceWithRetry(url, retries = 5, delayMs = 2000) {
 // ── Main window ───────────────────────────────────────────────────────────────
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1920,
+    width: 1850,
     height: 1080,
     minWidth: 1280,
     minHeight: 800,
@@ -208,7 +209,7 @@ function createBinanceView() {
             binanceView.webContents.sendInputEvent({ type: 'mouseDown', x: absX, y: absY, button: 'left', clickCount: 1 })
             await new Promise(r => setTimeout(r, 50))
             binanceView.webContents.sendInputEvent({ type: 'mouseUp', x: absX, y: absY, button: 'left', clickCount: 1 })
-            console.log('[TradeRelay] auto-expand: clicked at', absX, absY)
+            logger.info(`auto-expand: clicked at ${absX} ${absY}`)
             if (mainWindow) mainWindow.webContents.send('chart-expand-state-change', true)
             return
           } catch {}
@@ -415,9 +416,22 @@ ipcMain.handle('close-window', () => mainWindow?.close())
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  logger.info('Trade Relay starting up', { logFile: logger.getLogFile() })
   createMainWindow()
   setTimeout(() => { createBinanceView(); updateBinanceViewBounds() }, 1500)
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 })
 
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('window-all-closed', () => {
+  logger.info('All windows closed, quitting')
+  logger.close()
+  if (process.platform !== 'darwin') app.quit()
+})
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception', { message: err.message, stack: err.stack })
+})
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection', { reason: String(reason) })
+})

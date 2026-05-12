@@ -17,8 +17,10 @@ from trade_relay.auth.manager import (
     reset_user_password as mgr_reset_password,
 )
 from backend.routers.auth import get_current_user, require_admin
+from backend.logger import get_logger
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+_log = get_logger(__name__)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────

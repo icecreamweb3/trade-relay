@@ -14,8 +14,10 @@ from pydantic import BaseModel
 
 from trade_relay.auth.manager import login as auth_login
 from backend.config import JWT_SECRET, JWT_ALGO, JWT_EXPIRE_HOURS
+from backend.logger import get_logger
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+_log = get_logger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -79,12 +81,15 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 @router.post("/login", response_model=LoginResponse)
 def login(body: LoginRequest):
+    _log.info("Login attempt: username=%s", body.username)
     session = auth_login(body.username, body.password)
     if session is None:
+        _log.warning("Login failed: username=%s", body.username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     import trade_relay.database as db_module
     row = db_module.get_user_by_id(session.user_id)
+    _log.info("Login success: user_id=%s username=%s role=%s", session.user_id, session.username, session.role)
     token = create_token(session.user_id, session.username, session.role)
     return LoginResponse(
         access_token=token,

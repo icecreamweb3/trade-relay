@@ -13,8 +13,10 @@ from trade_relay import database as db_module
 from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
 from backend.routers.auth import get_current_user, require_admin
+from backend.logger import get_logger
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
+_log = get_logger(__name__)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -66,6 +68,8 @@ def _row_to_out(r: dict) -> OrderOut:
 
 @router.post("")
 async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)):
+    _log.info("Place order: user=%s symbol=%s side=%s type=%s qty=%s price=%s",
+              user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price)
     session = Session(int(user["sub"]), user["username"], user["role"])
     result = await submit_order(
         session,
@@ -76,7 +80,9 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.price,
     )
     if not result.success:
+        _log.warning("Order failed: user=%s reason=%s", user["username"], result.message)
         raise HTTPException(status_code=400, detail=result.message)
+    _log.info("Order placed: order_id=%s user=%s", result.order_id, user["username"])
     return {"ok": True, "order_id": result.order_id, "message": result.message}
 
 
