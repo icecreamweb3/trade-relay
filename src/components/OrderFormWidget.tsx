@@ -22,6 +22,7 @@ interface AccountSummary {
   short_position_qty?: number | null
   long_position_value?: number | null
   short_position_value?: number | null
+  rest_mark_price?: number | null
   available_balance: number | null
   margin_ratio: number | null
   risk_rate: number | null
@@ -395,15 +396,15 @@ export function OrderFormWidget({
     const qty = accountSummary?.long_position_qty ?? null
     if (qty == null) return '—'
     if (sizeUnit === 'BASE') return `${fmt(qty, 4)} ${baseTicker}`
-    // qty=0 → value is always 0 QUOTE, no price lookup needed
     if (qty === 0) return withAsset(0, quoteAsset)
-    // prefer server-side notional; fall back to qty × market price
+    // prefer server-side notional (qty × REST markPrice at last account poll)
     const notional = accountSummary?.long_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
-    const mktPrice = markPrice ?? currentPrice
-    if (!mktPrice) return `${fmt(qty, 4)} ${baseTicker}`
-    return withAsset(qty * mktPrice, quoteAsset)
-  }, [accountSummary?.long_position_qty, accountSummary?.long_position_value, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    // fallback: use REST markPrice from account summary, then WS markPrice
+    const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
+    if (!price) return `${fmt(qty, 4)} ${baseTicker}`
+    return withAsset(qty * price, quoteAsset)
+  }, [accountSummary?.long_position_qty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
     const qty = accountSummary?.short_position_qty ?? null
@@ -412,10 +413,32 @@ export function OrderFormWidget({
     if (qty === 0) return withAsset(0, quoteAsset)
     const notional = accountSummary?.short_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
-    const mktPrice = markPrice ?? currentPrice
-    if (!mktPrice) return `${fmt(qty, 4)} ${baseTicker}`
-    return withAsset(qty * mktPrice, quoteAsset)
-  }, [accountSummary?.short_position_qty, accountSummary?.short_position_value, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
+    if (!price) return `${fmt(qty, 4)} ${baseTicker}`
+    return withAsset(qty * price, quoteAsset)
+  }, [accountSummary?.short_position_qty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+
+  // Unrealized PnL adjusted in real-time using the latest available price.
+  // base_pnl comes from the REST poll; we add the delta caused by price movement
+  // since that poll: delta = net_qty × (live_price − rest_mark_price).
+  const liveUnrealizedPnl = useMemo(() => {
+    const basePnl = accountSummary?.unrealized_pnl ?? null
+    if (basePnl == null) return null
+    const restMark = accountSummary?.rest_mark_price ?? null
+    const livePrice = markPrice ?? currentPrice
+    if (restMark == null || livePrice == null) return basePnl
+    const longQty = accountSummary?.long_position_qty ?? 0
+    const shortQty = accountSummary?.short_position_qty ?? 0
+    const netQty = longQty - shortQty
+    return basePnl + netQty * (livePrice - restMark)
+  }, [
+    accountSummary?.unrealized_pnl,
+    accountSummary?.rest_mark_price,
+    accountSummary?.long_position_qty,
+    accountSummary?.short_position_qty,
+    markPrice,
+    currentPrice,
+  ])
 
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)
@@ -446,6 +469,14 @@ export function OrderFormWidget({
       if (showTpSl && tp) body.tp_price = parseFloat(tp)
       if (showTpSl && sl) body.sl_price = parseFloat(sl)
 
+      window.electronAPI?.logToMain?.('info', 'submit order', {
+        username: user?.username ?? null,
+        body,
+        sizeUnit,
+        inputQty: qty,
+        baseQty,
+      })
+
       await api.submitOrder(body)
       showToast('success', t('order.success'))
       setQty('')
@@ -454,6 +485,13 @@ export function OrderFormWidget({
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         (err as { message?: string })?.message || t('order.error.failed')
+      window.electronAPI?.logToMain?.('error', 'submit order failed', {
+        username: user?.username ?? null,
+        symbol,
+        side: submitSide,
+        posDir,
+        error: describeRequestError(err),
+      })
       showToast('error', msg)
     } finally {
       setIsSubmitting(false)
@@ -645,11 +683,11 @@ export function OrderFormWidget({
               {isSubmitting ? t('order.submitting') : t('order.openShort')}
             </button>
           </>) : (<>
-            <button type="button" onClick={() => handleSubmit('SELL')} disabled={isSubmitting || !qty}
+            <button type="button" onClick={() => handleSubmit('BUY')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#0ecb81] hover:bg-[#0ab36d] text-white">
               {isSubmitting ? t('order.submitting') : t('order.closeShort')}
             </button>
-            <button type="button" onClick={() => handleSubmit('BUY')} disabled={isSubmitting || !qty}
+            <button type="button" onClick={() => handleSubmit('SELL')} disabled={isSubmitting || !qty}
               className="py-2.5 text-[13px] font-bold rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-[#f6465d] hover:bg-[#d93a4e] text-white">
               {isSubmitting ? t('order.submitting') : t('order.closeLong')}
             </button>
@@ -711,7 +749,7 @@ export function OrderFormWidget({
               [t('order.account.totalEquity'),    withAsset(accountSummary?.total_equity, quoteAsset)],
               [t('order.account.positionValue'),  withAsset(accountSummary?.position_value, quoteAsset)],
               [t('order.account.actualLeverage'), withTimes(accountSummary?.actual_leverage)],
-              [t('order.account.unrealizedPnl'),  withAsset(accountSummary?.unrealized_pnl, quoteAsset)],
+              [t('order.account.unrealizedPnl'),  withAsset(liveUnrealizedPnl, quoteAsset)],
               [t('order.account.walletBalance'),  withAsset(accountSummary?.wallet_balance, quoteAsset)],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">

@@ -220,13 +220,14 @@ function MainApp() {
 }
 
 export default function App() {
-  const { isLoading, checkAuth } = useAuthStore()
+  const { checkAuth } = useAuthStore()
+  const [initializing, setInitializing] = useState(true)
 
   useEffect(() => {
-    checkAuth()
+    checkAuth().finally(() => setInitializing(false))
   }, [checkAuth])
 
-  if (isLoading) {
+  if (initializing) {
     return (
       <div className="h-screen bg-[#1e1e1e] flex items-center justify-center text-[#858585] text-sm">
         正在验证身份...

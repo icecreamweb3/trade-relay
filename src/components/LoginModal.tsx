@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, Activity } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
-import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -14,44 +13,44 @@ interface LoginModalProps {
 export function LoginModal({ onClose }: LoginModalProps) {
   const { t } = useTranslation(locale)
   const { login, isLoading, error, clearError } = useAuthStore()
-  const showToast = useToastStore((state) => state.showToast)
 
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const usernameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     usernameRef.current?.focus()
   }, [])
 
+  // Capture error into local state and keep modal open
   useEffect(() => {
     if (error) {
-      showToast('error', error)
+      setErrorMsg(error)
       clearError()
     }
-  }, [error, clearError, showToast])
+  }, [error, clearError])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim() || !password.trim()) return
     await login(username.trim(), password)
-    // App.tsx will close this modal via isAuthenticated effect
+    // App.tsx closes this modal only when isAuthenticated becomes true
   }
 
   return (
     /* Backdrop */
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       {/* Card */}
       <div className="relative w-80 bg-[#252526] rounded-lg border border-[#3e3e42] shadow-2xl p-6">
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute top-3 right-3 w-6 h-6 flex items-center justify-center rounded text-[#858585] hover:text-white hover:bg-[#3e3e42] transition-colors"
+          className="absolute top-3 right-3 w-12 h-12 flex items-center justify-center rounded text-[#858585] hover:text-white hover:bg-[#3e3e42] transition-colors"
         >
-          <X size={13} />
+          <X size={26} />
         </button>
 
         {/* Header */}
@@ -70,7 +69,7 @@ export function LoginModal({ onClose }: LoginModalProps) {
               ref={usernameRef}
               type="text"
               value={username}
-              onChange={e => setUsername(e.target.value)}
+              onChange={e => { setUsername(e.target.value); setErrorMsg(null) }}
               className="w-full bg-[#1e1e1e] border border-[#3e3e42] rounded px-3 py-2 text-sm text-[#cccccc] outline-none focus:border-[#007acc] transition-colors selectable"
               onKeyDown={e => e.key === 'Enter' && document.getElementById('lm-password')?.focus()}
             />
@@ -82,7 +81,7 @@ export function LoginModal({ onClose }: LoginModalProps) {
               id="lm-password"
               type="password"
               value={password}
-              onChange={e => setPassword(e.target.value)}
+              onChange={e => { setPassword(e.target.value); setErrorMsg(null) }}
               className="w-full bg-[#1e1e1e] border border-[#3e3e42] rounded px-3 py-2 text-sm text-[#cccccc] outline-none focus:border-[#007acc] transition-colors selectable"
             />
           </div>
@@ -94,6 +93,10 @@ export function LoginModal({ onClose }: LoginModalProps) {
           >
             {isLoading ? t('login.loading') : t('login.submit')}
           </button>
+
+          {errorMsg && (
+            <p className="text-xs text-[#f44336] text-center -mt-1">{errorMsg}</p>
+          )}
         </form>
       </div>
     </div>

@@ -29,6 +29,12 @@ interface Trade {
   commission_asset: string; created_at?: string
 }
 
+interface PositionHistory {
+  id: number; username: string; symbol: string; side: string
+  entry_price: number; close_price: number; quantity: number
+  realized_pnl: number; commission: number; created_at: string
+}
+
 export function PositionsPanel({
   refreshTrigger,
   isActive = true,
@@ -46,8 +52,22 @@ export function PositionsPanel({
   const [openOrders, setOpenOrders] = useState<Order[]>([])
   const [history, setHistory] = useState<Order[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
+  const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([])
   const [loading, setLoading] = useState(false)
+  const [cancellingId, setCancellingId] = useState<number | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
+
+  const loadPositions = useCallback(async () => {
+    if (!isActive || !isAuthenticated) return
+    try {
+      setPositions(await api.getPositions())
+    } catch {
+      // silently ignore background position refresh errors
+    }
+  }, [isActive, isAuthenticated])
+
+  const loadPositionsRef = useRef<() => Promise<void>>(async () => {})
+  useEffect(() => { loadPositionsRef.current = loadPositions }, [loadPositions])
 
   const load = useCallback(async () => {
     if (!isActive) {
@@ -67,7 +87,7 @@ export function PositionsPanel({
       if (tab === 'positions') setPositions(await api.getPositions())
       else if (tab === 'openOrders') setOpenOrders(await api.getOpenOrders())
       else if (tab === 'history') setHistory(await api.getOrderHistory())
-      else if (tab === 'tradeHistory') setTrades(await api.getTradeHistory())
+      else if (tab === 'tradeHistory') setPositionHistory(await api.getPositionHistory())
     } catch (error: unknown) {
       const msg =
         (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
@@ -88,6 +108,19 @@ export function PositionsPanel({
   // dozens of concurrent requests from stale component instances).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadRef.current() }, [refreshTrigger, tab])
+
+  // Periodic poll for Open Orders tab so missed WebSocket notifications don't leave stale status
+  const tabRef = useRef<Tab>('positions')
+  useEffect(() => { tabRef.current = tab }, [tab])
+  useEffect(() => {
+    if (!isActive || !isAuthenticated) return
+    const POLL_MS = 30_000
+    const timer = setInterval(() => {
+      if (tabRef.current === 'openOrders') void loadRef.current()
+    }, POLL_MS)
+    return () => clearInterval(timer)
+  }, [isActive, isAuthenticated])
+
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
 
@@ -121,6 +154,11 @@ export function PositionsPanel({
           if (data.type === 'account_update' || data.type === 'order_update') {
             scheduleReload()
           }
+          // When an order status changes, always refresh positions immediately
+          // regardless of which tab is currently active.
+          if (data.type === 'order_update') {
+            void loadPositionsRef.current()
+          }
         } catch {
           // ignore malformed messages
         }
@@ -148,6 +186,21 @@ export function PositionsPanel({
     }
   }, [isActive, isAuthenticated])
 
+  const handleCancelOrder = async (o: Order) => {
+    if (!o.exchange_order_id) return
+    setCancellingId(o.id)
+    try {
+      await api.cancelOrder(o.id, o.symbol, o.exchange_order_id)
+      showToast('Order cancelled', 'success')
+      setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showToast(`Cancel failed: ${msg}`, 'error')
+    } finally {
+      setCancellingId(null)
+    }
+  }
+
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">
       {/* Tab bar */}
@@ -172,11 +225,11 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th>
-              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.leverage')}</th><th>{t('pos.margin')}</th>
+              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
@@ -187,7 +240,6 @@ export function PositionsPanel({
                     <td className={`font-mono font-semibold ${(p.unrealized_pnl ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
                       {p.unrealized_pnl != null ? `${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}` : '-'}
                     </td>
-                    <td>{p.leverage}x</td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                   </tr>
                 ))
@@ -200,10 +252,12 @@ export function PositionsPanel({
             <thead><tr>
               <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
               <th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th>
+              {tab === 'openOrders' && <th>Order Id</th>}
+              {tab === 'openOrders' && <th></th>}
             </tr></thead>
             <tbody>
               {(tab === 'openOrders' ? openOrders : history).length === 0
-                ? <tr><td colSpan={7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={tab === 'openOrders' ? 9 : 7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : (tab === 'openOrders' ? openOrders : history).map(o => (
                   <tr key={o.id}>
                     <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
@@ -213,6 +267,20 @@ export function PositionsPanel({
                     <td className="font-mono">{o.quantity}</td>
                     <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                     <td><StatusBadge status={o.status} t={t} /></td>
+                    {tab === 'openOrders' && <td className="font-mono text-[10px] text-[#858585]">{o.exchange_order_id ?? '—'}</td>}
+                    {tab === 'openOrders' && (
+                      <td>
+                        {o.status === 'NEW' || o.status === 'PARTIALLY_FILLED' ? (
+                          <button
+                            disabled={cancellingId === o.id}
+                            onClick={() => void handleCancelOrder(o)}
+                            className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {cancellingId === o.id ? '…' : 'Cancel'}
+                          </button>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
                 ))
               }
@@ -222,20 +290,25 @@ export function PositionsPanel({
         {tab === 'tradeHistory' && (
           <table className="trade-table w-full">
             <thead><tr>
-              <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('pos.size')}</th>
-              <th>{t('pos.entry')}</th><th>{t('trade.commission')}</th>
+              <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th>
+              <th>{t('pos.size')}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
+              <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th>
             </tr></thead>
             <tbody>
-              {trades.length === 0
-                ? <tr><td colSpan={6} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
-                : trades.map(t => (
-                  <tr key={t.id}>
-                    <td className="text-[#858585]">{formatTimestamp(t.created_at)}</td>
-                    <td className="font-semibold">{t.symbol}</td>
-                    <td className={t.side === 'BUY' ? 'text-buy' : 'text-sell'}>{t.side === 'BUY' ? useTranslation(locale).t('side.buy') : useTranslation(locale).t('side.sell')}</td>
-                    <td className="font-mono">{t.quantity}</td>
-                    <td className="font-mono">{t.avg_price ? t.avg_price.toFixed(2) : '-'}</td>
-                    <td className="font-mono text-[#858585]">{t.commission} {t.commission_asset}</td>
+              {positionHistory.length === 0
+                ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                : positionHistory.map(ph => (
+                  <tr key={ph.id}>
+                    <td className="text-[#858585]">{formatTimestamp(ph.created_at)}</td>
+                    <td className="font-semibold">{ph.symbol}</td>
+                    <td className={ph.side === 'LONG' ? 'text-buy' : 'text-sell'}>{ph.side}</td>
+                    <td className="font-mono">{ph.quantity}</td>
+                    <td className="font-mono">{ph.entry_price.toFixed(2)}</td>
+                    <td className="font-mono">{ph.close_price.toFixed(2)}</td>
+                    <td className={`font-mono ${ph.realized_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                      {ph.realized_pnl >= 0 ? '+' : ''}{ph.realized_pnl.toFixed(4)}
+                    </td>
+                    <td className="font-mono text-[#858585]">{ph.commission.toFixed(4)}</td>
                   </tr>
                 ))
               }

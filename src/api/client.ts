@@ -63,6 +63,19 @@ interface ApiTrade {
   created_at?: string
 }
 
+interface ApiPositionHistory {
+  id: number
+  username: string
+  symbol: string
+  side: string
+  entry_price: number
+  close_price: number
+  quantity: number
+  realized_pnl: number
+  commission: number
+  created_at: string
+}
+
 interface ApiAccountSummary {
   symbol?: string | null
   base_asset?: string | null
@@ -72,6 +85,7 @@ interface ApiAccountSummary {
   short_position_qty?: number | null
   long_position_value?: number | null
   short_position_value?: number | null
+  rest_mark_price?: number | null
   available_balance: number | null
   margin_ratio: number | null
   risk_rate: number | null
@@ -176,12 +190,22 @@ export const api = {
     return request<ApiOrder[]>('GET', '/api/orders/active')
   },
 
+  async cancelOrder(orderId: number, symbol: string, exchangeOrderId: string): Promise<ApiResult> {
+    return request<ApiResult>('POST', `/api/orders/${orderId}/cancel`, {
+      body: { symbol, exchange_order_id: exchangeOrderId },
+    })
+  },
+
   async getOrderHistory(): Promise<ApiOrder[]> {
     return request<ApiOrder[]>('GET', '/api/orders/history')
   },
 
   async getTradeHistory(): Promise<ApiTrade[]> {
     return request<ApiTrade[]>('GET', '/api/orders/fills')
+  },
+
+  async getPositionHistory(): Promise<ApiPositionHistory[]> {
+    return request<ApiPositionHistory[]>('GET', '/api/positions/history')
   },
 
   async getRecentFills(): Promise<ApiTrade[]> {

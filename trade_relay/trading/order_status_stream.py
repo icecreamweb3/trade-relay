@@ -37,11 +37,20 @@ class UserOrderStatusStream:
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_thread: Optional[threading.Thread] = None
         self.keepalive_thread: Optional[threading.Thread] = None
+        self.poll_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.running = False
         self.proxy_url = None
         if self.client.proxy_config:
             self.proxy_url = self.client.proxy_config.get("https") or self.client.proxy_config.get("http")
+        # Reconnect state (mirrors orders_monitor.py pattern)
+        self.reconnecting = False
+        self.reconnect_count = 0
+        self.max_reconnect_attempts = 10
+        self.reconnect_interval = 5       # seconds to wait between reconnect attempts
+        self.connection_timeout = 5 * 60  # seconds without any WS message → trigger reconnect
+        self.last_message_time: Optional[float] = None
+        self.health_check_thread: Optional[threading.Thread] = None
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -60,6 +69,8 @@ class UserOrderStatusStream:
             logger.warning("Failed to start order status stream for user=%s: missing listenKey", self.username)
             return
         self.running = True
+        self.reconnecting = False
+        self.reconnect_count = 0
         self.ws_thread = threading.Thread(
             target=self._run_ws_loop,
             daemon=True,
@@ -72,6 +83,18 @@ class UserOrderStatusStream:
             name=f"order-status-keepalive-{self.username}",
         )
         self.keepalive_thread.start()
+        self.poll_thread = threading.Thread(
+            target=self._poll_open_orders_loop,
+            daemon=True,
+            name=f"order-status-poll-{self.username}",
+        )
+        self.poll_thread.start()
+        self.health_check_thread = threading.Thread(
+            target=self._health_check_loop,
+            daemon=True,
+            name=f"order-status-health-{self.username}",
+        )
+        self.health_check_thread.start()
         logger.info("Started order status stream for user=%s", self.username)
 
     def stop(self) -> None:
@@ -94,17 +117,66 @@ class UserOrderStatusStream:
         if not order:
             return
         self._persist_status(order)
+        # Notify frontend so Open Orders / Positions tabs refresh immediately.
+        # Use force=True to bypass cooldown — this is triggered by an explicit action.
+        status = str(order.get("status") or "").upper()
+        force = status in ("FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+        self._notify_listeners({
+            "type": "order_update",
+            "event": "SYNC",
+            "symbol": symbol,
+            "status": status,
+        }, force=force)
 
     def _run_ws_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
+                # ── Reconnect branch: get a fresh listenKey before reconnecting ──
+                if self.reconnecting:
+                    if self.reconnect_count >= self.max_reconnect_attempts:
+                        logger.error(
+                            "Order status stream user=%s: reached max reconnect attempts (%d), giving up",
+                            self.username, self.max_reconnect_attempts,
+                        )
+                        self.running = False
+                        break
+
+                    self.reconnect_count += 1
+                    logger.info(
+                        "Order status stream user=%s: reconnect attempt %d/%d …",
+                        self.username, self.reconnect_count, self.max_reconnect_attempts,
+                    )
+                    if self.stop_event.wait(self.reconnect_interval):
+                        break
+
+                    # Close stale listenKey and get a new one
+                    old_key = self.listen_key
+                    try:
+                        new_key = self.client.start_user_data_stream()
+                    except Exception:
+                        logger.exception("Order status stream user=%s: failed to refresh listenKey", self.username)
+                        continue
+                    if not new_key:
+                        logger.warning("Order status stream user=%s: got empty listenKey on reconnect", self.username)
+                        continue
+                    if old_key and old_key != new_key:
+                        try:
+                            self.client.close_user_data_stream(old_key)
+                        except Exception:
+                            pass
+                    self.listen_key = new_key
+                    self.reconnecting = False
+                    logger.info("Order status stream user=%s: new listenKey obtained, reconnecting …", self.username)
+
+                # ── Normal / post-reconnect: open WebSocket ──
                 self.ws = websocket.WebSocketApp(
                     self.ws_url,
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,
+                    on_open=self._on_open,
                 )
-                run_kwargs = {
+                run_kwargs: dict = {
                     "sslopt": {"cert_reqs": ssl.CERT_NONE},
                     "ping_interval": 20,
                     "ping_timeout": 10,
@@ -113,10 +185,59 @@ class UserOrderStatusStream:
                 if parsed_proxy:
                     run_kwargs.update(parsed_proxy)
                 self.ws.run_forever(**run_kwargs)
+
+                # run_forever() returned — connection was closed
+                if not self.stop_event.is_set():
+                    logger.warning(
+                        "Order status websocket closed unexpectedly for user=%s, will reconnect …",
+                        self.username,
+                    )
+                    self.reconnecting = True
+
             except Exception:
                 logger.exception("Order status websocket loop failed for user=%s", self.username)
-            if not self.stop_event.is_set():
-                time.sleep(3)
+                if not self.stop_event.is_set():
+                    self.reconnecting = True
+                    time.sleep(1)
+
+    def _reconnect(self) -> None:
+        """Signal the WS loop to reconnect with a fresh listenKey.
+        Safe to call from any thread (health-check or keepalive).
+        """
+        logger.info("Order status stream user=%s: _reconnect() called", self.username)
+        self.reconnecting = True
+        # Reset the health timestamp so we don't re-trigger immediately during reconnect
+        self.last_message_time = time.time()
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+
+    def _health_check_loop(self) -> None:
+        """Every 60 s, verify that the WS has received at least one message in the
+        last ``connection_timeout`` seconds.  If not, trigger a reconnect.
+        Mirrors the health_check_loop in orders_monitor.py.
+        """
+        check_interval = 60
+        while not self.stop_event.wait(check_interval):
+            if not self.running:
+                break
+            t = self.last_message_time
+            if t is None:
+                continue
+            elapsed = time.time() - t
+            if elapsed > self.connection_timeout:
+                logger.warning(
+                    "Order status stream user=%s: no WS message for %.0f s (timeout %d s) — reconnecting",
+                    self.username, elapsed, self.connection_timeout,
+                )
+                self._reconnect()
+            else:
+                logger.debug(
+                    "Order status stream user=%s: health OK, last message %.0f s ago",
+                    self.username, elapsed,
+                )
 
     def _keepalive_loop(self) -> None:
         while not self.stop_event.wait(30 * 60):
@@ -128,6 +249,158 @@ class UserOrderStatusStream:
             except Exception:
                 logger.exception("listenKey keepalive exception for user=%s", self.username)
 
+    _POLL_INTERVAL = 15  # seconds between REST polls for open order status
+
+    def _poll_open_orders_loop(self) -> None:
+        """Periodically query Binance REST API for every DB-active order and sync status.
+        This is a safety net for missed WebSocket ORDER_TRADE_UPDATE events.
+        """
+        # Stagger initial poll so it doesn't collide with startup sync
+        self.stop_event.wait(self._POLL_INTERVAL)
+        while not self.stop_event.is_set():
+            try:
+                self._poll_open_orders_once()
+            except Exception:
+                logger.exception("Order status poll error for user=%s", self.username)
+            self.stop_event.wait(self._POLL_INTERVAL)
+
+    def _poll_open_orders_once(self) -> None:
+        active_rows = db.get_active_orders_for_user(self.username)
+        if not active_rows:
+            return
+        notify_needed = False
+        # Collect (db_row, new_status, executed_qty, avg_price) for fills detected this round
+        fills: list[tuple[dict, str, float, float | None]] = []
+        for row in active_rows:
+            exchange_order_id = str(row.get("exchange_order_id") or "")
+            symbol = str(row.get("symbol") or "")
+            db_status = str(row.get("status") or "")
+            if not exchange_order_id or not symbol:
+                continue
+            try:
+                result = self.client.get_order_status(symbol, exchange_order_id)
+                if result is None:
+                    continue
+                new_status = str(result.get("status") or "").upper()
+                if not new_status or new_status == db_status:
+                    continue
+                executed_qty = float(result.get("executedQty") or 0)
+                avg_price_raw = result.get("avgPrice")
+                avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
+                logger.info(
+                    "Poll order sync: exchange_order_id=%s user=%s symbol=%s %s → %s executedQty=%s avgPrice=%s",
+                    exchange_order_id, self.username, symbol, db_status, new_status, executed_qty, avg_price,
+                )
+                db.update_order_status_by_exchange_id(
+                    username=self.username,
+                    exchange_order_id=exchange_order_id,
+                    status=new_status,
+                    filled_qty=executed_qty if executed_qty else None,
+                    avg_price=avg_price,
+                )
+                notify_needed = True
+                if new_status in ("FILLED", "PARTIALLY_FILLED") and executed_qty > 0:
+                    fills.append((row, new_status, executed_qty, avg_price))
+            except Exception:
+                logger.exception("Poll: error querying exchange_order_id=%s user=%s", exchange_order_id, self.username)
+
+        # Handle fills: create position_history for CLOSE orders, then sync positions from Binance
+        symbols_to_sync: set[str] = set()
+        for db_row, new_status, executed_qty, avg_price in fills:
+            symbol = str(db_row.get("symbol") or "")
+            trade_direction = str(db_row.get("trade_direction") or "").upper()
+            order_side = str(db_row.get("side") or "").upper()
+            # Derive position_side:
+            # OPEN+BUY→LONG, OPEN+SELL→SHORT, CLOSE+SELL→LONG, CLOSE+BUY→SHORT
+            if trade_direction == "CLOSE":
+                position_side = "LONG" if order_side == "SELL" else "SHORT"
+            else:
+                position_side = "LONG" if order_side == "BUY" else "SHORT"
+
+            if trade_direction == "CLOSE" and avg_price and avg_price > 0:
+                self._create_position_history_from_poll(
+                    symbol=symbol,
+                    position_side=position_side,
+                    fill_qty=executed_qty,
+                    fill_price=avg_price,
+                )
+
+            symbols_to_sync.add(symbol)
+
+        for symbol in symbols_to_sync:
+            self._sync_position_from_rest(symbol)
+
+        if notify_needed:
+            self._notify_listeners({"type": "order_update", "event": "POLL"}, force=True)
+
+    def _sync_position_from_rest(self, symbol: str) -> None:
+        """Fetch live position data from Binance REST for a given symbol and upsert into DB."""
+        try:
+            rows = self.client.get_position_information(symbol=symbol)
+            payload = [
+                {
+                    "s":  r.get("symbol"),
+                    "ps": r.get("positionSide", "BOTH"),
+                    "pa": r.get("positionAmt"),
+                    "ep": r.get("entryPrice"),
+                    "up": r.get("unRealizedProfit") or r.get("unrealizedProfit") or "0",
+                    "cr": str(r.get("realizedPnl", 0)),
+                    "mt": r.get("marginType", "cross").upper(),
+                }
+                for r in rows
+            ]
+            if payload:
+                self._sync_positions(payload)
+                logger.info(
+                    "Synced %d position row(s) from REST for user=%s symbol=%s",
+                    len(payload), self.username, symbol,
+                )
+        except Exception:
+            logger.exception("Failed REST position sync for user=%s symbol=%s", self.username, symbol)
+
+    def _create_position_history_from_poll(
+        self,
+        symbol: str,
+        position_side: str,
+        fill_qty: float,
+        fill_price: float,
+    ) -> None:
+        """Create a position_history record for a CLOSE fill detected via REST poll."""
+        try:
+            user = db.get_user_by_username(self.username)
+            if not user:
+                return
+            user_id = int(user["id"])
+            # Read entry_price from current DB position BEFORE REST sync overwrites it
+            position = db.get_position(user_id, symbol, position_side)
+            entry_price = float((position or {}).get("avg_entry_price") or 0)
+            if position_side == "LONG":
+                realized_pnl = (fill_price - entry_price) * fill_qty
+            else:
+                realized_pnl = (entry_price - fill_price) * fill_qty
+            history_id = db.add_position_history(
+                user_id=user_id,
+                username=self.username,
+                symbol=symbol,
+                side=position_side,
+                entry_price=entry_price,
+                close_price=fill_price,
+                quantity=fill_qty,
+                realized_pnl=realized_pnl,
+                commission=0.0,  # commission not available from poll; WS path has it
+            )
+            logger.info(
+                "position_history (poll) created: id=%s user=%s symbol=%s side=%s qty=%s "
+                "entry=%.4f close=%.4f rpnl=%.4f",
+                history_id, self.username, symbol, position_side,
+                fill_qty, entry_price, fill_price, realized_pnl,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to create position_history (poll) for user=%s symbol=%s",
+                self.username, symbol,
+            )
+
     def _on_message(self, _ws, message: str) -> None:
         try:
             data = json.loads(message)
@@ -135,14 +408,21 @@ class UserOrderStatusStream:
             logger.debug("Invalid order status payload for user=%s: %s", self.username, message[:200])
             return
         event_type = str(data.get("e") or "")
+        # Track liveness for health-check (only real business events, not keep-alive frames)
+        if event_type:
+            self.last_message_time = time.time()
         if event_type == "ORDER_TRADE_UPDATE":
             order = data.get("o") or {}
             self._persist_status(order)
+            # Generate position_history entry when a CLOSE order fills
+            self._handle_close_fill(order)
+            order_status = str(order.get("X") or order.get("status") or "").upper()
+            force_notify = order_status in ("FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
             self._notify_listeners({
                 "type": "order_update",
                 "event": event_type,
                 "symbol": order.get("s") or order.get("symbol"),
-            })
+            }, force=force_notify)
             return
         if event_type == "ACCOUNT_UPDATE":
             account = data.get("a") or {}
@@ -154,6 +434,79 @@ class UserOrderStatusStream:
                 "reason": account.get("m"),
                 "symbols": [str(position.get("s") or "") for position in positions if position.get("s")],
             })
+
+    def _handle_close_fill(self, order: dict) -> None:
+        """When a CLOSE-direction order fills (fully or partially), write a position_history
+        record for the filled portion.  Called once per ORDER_TRADE_UPDATE event."""
+        # Only act on actual trade executions
+        execution_type = str(order.get("x") or "").upper()
+        if execution_type != "TRADE":
+            return
+        order_status = str(order.get("X") or "").upper()
+        if order_status not in ("FILLED", "PARTIALLY_FILLED"):
+            return
+
+        exchange_order_id = str(order.get("i") or "")
+        if not exchange_order_id:
+            return
+
+        # Look up the DB order to check trade_direction
+        db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
+        if not db_order:
+            return
+        trade_direction = str(db_order.get("trade_direction") or "").upper()
+        if trade_direction != "CLOSE":
+            return
+
+        # Fields from the WS event for THIS fill (not cumulative):
+        # l = last filled qty, L = last fill price, n = commission for this fill
+        symbol = str(order.get("s") or "")
+        position_side = str(order.get("ps") or "BOTH").upper()
+        last_fill_qty = _safe_float(order.get("l") or order.get("z") or 0)
+        last_fill_price = _safe_float(order.get("L") or order.get("ap") or 0)
+        commission = abs(_safe_float(order.get("n") or 0))
+
+        if last_fill_qty is None or last_fill_qty <= 0 or last_fill_price is None or last_fill_price <= 0:
+            return
+
+        user = db.get_user_by_username(self.username)
+        if not user:
+            return
+        user_id = int(user["id"])
+
+        # Get the current position to read avg_entry_price
+        position = db.get_position(user_id, symbol, position_side)
+        entry_price = _safe_float((position or {}).get("avg_entry_price") or 0) or 0.0
+
+        # Realized PnL for this fill
+        if position_side == "LONG":
+            realized_pnl = (last_fill_price - entry_price) * last_fill_qty
+        else:
+            realized_pnl = (entry_price - last_fill_price) * last_fill_qty
+
+        try:
+            history_id = db.add_position_history(
+                user_id=user_id,
+                username=self.username,
+                symbol=symbol,
+                side=position_side,
+                entry_price=entry_price,
+                close_price=last_fill_price,
+                quantity=last_fill_qty,
+                realized_pnl=realized_pnl,
+                commission=commission,
+            )
+            logger.info(
+                "position_history created: id=%s user=%s symbol=%s side=%s qty=%s "
+                "entry=%.4f close=%.4f rpnl=%.4f commission=%.6f",
+                history_id, self.username, symbol, position_side,
+                last_fill_qty, entry_price, last_fill_price, realized_pnl, commission,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to create position_history for user=%s exchange_order_id=%s",
+                self.username, exchange_order_id,
+            )
 
     def _sync_positions(self, positions_payload: list[dict]) -> None:
         user = db.get_user_by_username(self.username)
@@ -245,6 +598,14 @@ class UserOrderStatusStream:
                 avg_price,
             )
 
+    def _on_open(self, _ws) -> None:
+        logger.info(
+            "Order status websocket connected for user=%s (reconnect_count was %d)",
+            self.username, self.reconnect_count,
+        )
+        self.reconnect_count = 0
+        self.last_message_time = time.time()
+
     def _on_error(self, _ws, error) -> None:
         logger.warning("Order status websocket error for user=%s: %s", self.username, error)
 
@@ -257,11 +618,11 @@ class UserOrderStatusStream:
                 message,
             )
 
-    def _notify_listeners(self, event: dict) -> None:
+    def _notify_listeners(self, event: dict, force: bool = False) -> None:
         now = time.time()
         with _listeners_lock:
             last = _notify_last.get(self.username, 0.0)
-            if now - last < _notify_cooldown:
+            if not force and now - last < _notify_cooldown:
                 return
             _notify_last[self.username] = now
             listeners = list(_listeners.get(self.username, ()))
@@ -311,6 +672,85 @@ def restore_active_order_status_streams() -> None:
         ensure_user_order_status_stream(username, api_key, api_secret, cfg.is_testnet(username))
 
 
+def sync_active_orders_on_startup() -> None:
+    """At startup, query Binance for the current status of every active (NEW/PARTIALLY_FILLED)
+    order in the DB and update it.  Results are written to the log."""
+    active_rows = db.get_active_orders()
+    if not active_rows:
+        logger.info("Startup order sync: no active orders found in DB")
+        return
+
+    logger.info("Startup order sync: checking %d active order(s)", len(active_rows))
+
+    for row in active_rows:
+        username = str(row.get("username") or "")
+        exchange_order_id = str(row.get("exchange_order_id") or "")
+        symbol = str(row.get("symbol") or "")
+        db_status = str(row.get("status") or "")
+
+        if not exchange_order_id or not symbol or not username:
+            logger.warning(
+                "Startup order sync: skipping order id=%s (missing exchange_order_id/symbol/username)",
+                row.get("id"),
+            )
+            continue
+
+        api_key = cfg.get_api_key(username)
+        api_secret = cfg.get_api_secret(username)
+        if not api_key or not api_secret:
+            logger.warning(
+                "Startup order sync: skipping order exchange_id=%s user=%s (no API credentials)",
+                exchange_order_id, username,
+            )
+            continue
+
+        try:
+            client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=cfg.is_testnet(username))
+            result = client.get_order_status(symbol, exchange_order_id)
+            if result is None:
+                logger.warning(
+                    "Startup order sync: exchange_order_id=%s user=%s symbol=%s — Binance returned no result (order may be expired or unknown)",
+                    exchange_order_id, username, symbol,
+                )
+                continue
+
+            new_status = str(result.get("status") or "").upper()
+            executed_qty = float(result.get("executedQty") or 0)
+            avg_price_raw = result.get("avgPrice")
+            avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
+
+            logger.info(
+                "Startup order sync: exchange_order_id=%s user=%s symbol=%s db_status=%s binance_status=%s "
+                "executedQty=%s avgPrice=%s",
+                exchange_order_id, username, symbol, db_status, new_status, executed_qty, avg_price,
+            )
+
+            if new_status and new_status != db_status:
+                updated = db.update_order_status_by_exchange_id(
+                    username=username,
+                    exchange_order_id=exchange_order_id,
+                    status=new_status,
+                    filled_qty=executed_qty if executed_qty else None,
+                    avg_price=avg_price,
+                )
+                if updated:
+                    logger.info(
+                        "Startup order sync: updated exchange_order_id=%s %s → %s",
+                        exchange_order_id, db_status, new_status,
+                    )
+            else:
+                logger.info(
+                    "Startup order sync: exchange_order_id=%s status unchanged (%s)",
+                    exchange_order_id, db_status,
+                )
+
+        except Exception:
+            logger.exception(
+                "Startup order sync: error querying exchange_order_id=%s user=%s",
+                exchange_order_id, username,
+            )
+
+
 def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str, testnet: bool) -> None:
     """Pull current positions from Binance for a single user and write to DB.
     Called when the user's WebSocket connection is established (they are authenticated).
@@ -319,9 +759,12 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
         client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
         rows = client.get_position_information()
         open_rows = [r for r in rows if float(r.get("positionAmt", 0) or 0) != 0]
-        logger.info("Initial position sync for user=%s: %d open positions", username, len(open_rows))
+        logger.info("Initial position sync for user=%s: %d open positions (total %d from Binance)", username, len(open_rows), len(rows))
+
         stream = UserOrderStatusStream(username, api_key, api_secret, testnet)
-        # Only sync rows with a non-zero position; REST API uses "unRealizedProfit" (capital R)
+
+        # Pass ALL rows (including zero-amount) so _sync_positions can delete closed positions.
+        # REST API uses "unRealizedProfit" (capital R)
         payload = [
             {
                 "s": r.get("symbol"),
@@ -332,9 +775,34 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
                 "cr": "0",
                 "mt": r.get("marginType", "cross").upper(),
             }
-            for r in open_rows
+            for r in rows
         ]
         stream._sync_positions(payload)
+
+        # Binance v3/positionRisk only returns non-zero positions, so DB rows not present
+        # in the Binance response are stale (position already closed). Delete them.
+        user_obj = db.get_user_by_username(username)
+        if user_obj:
+            user_id = int(user_obj["id"])
+            # Build set of (symbol, normalised_side) that Binance says are open
+            binance_open: set[tuple[str, str]] = set()
+            for r in open_rows:
+                sym = str(r.get("symbol") or "")
+                side = str(r.get("positionSide") or "BOTH").upper()
+                if sym:
+                    binance_open.add((sym, side))
+
+            db_positions = db.get_positions(user_id=user_id)
+            for pos in db_positions:
+                sym = str(pos.get("symbol") or "")
+                side = str(pos.get("position_side") or "BOTH").upper()
+                if (sym, side) not in binance_open:
+                    logger.info(
+                        "Initial position sync: deleting stale DB position user=%s symbol=%s side=%s (not in Binance)",
+                        username, sym, side,
+                    )
+                    db.delete_position(user_id, sym, side)
+
     except Exception:
         logger.exception("Failed initial position sync for user=%s", username)
 

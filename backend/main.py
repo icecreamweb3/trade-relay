@@ -21,10 +21,15 @@ async def lifespan(app: FastAPI):
     # Initialize DB schema and ensure default admin exists
     from trade_relay import database as db_module
     from trade_relay.auth.manager import ensure_admin_exists
-    from trade_relay.trading.order_status_stream import restore_active_order_status_streams, stop_all_order_status_streams
+    from trade_relay.trading.order_status_stream import (
+        restore_active_order_status_streams,
+        stop_all_order_status_streams,
+        sync_active_orders_on_startup,
+    )
     db_module.init_db()
     ensure_admin_exists()
     restore_active_order_status_streams()
+    sync_active_orders_on_startup()
     _log.info("Database initialised")
     yield
     stop_all_order_status_streams()

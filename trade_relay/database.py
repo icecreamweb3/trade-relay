@@ -146,6 +146,8 @@ def init_db() -> None:
                     avg_price         DECIMAL(20,8)   DEFAULT NULL COMMENT '成交均价',
                     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
                     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
+                    trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
+                    position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
                     error_message     TEXT            COMMENT '错误信息',
                     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -156,6 +158,16 @@ def init_db() -> None:
                     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
+
+            # Migration: add columns that may be missing in older deployments
+            for _col, _ddl in [
+                ("trade_direction", "ALTER TABLE orders ADD COLUMN trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset"),
+                ("position_id",     "ALTER TABLE orders ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction"),
+            ]:
+                try:
+                    cur.execute(_ddl)
+                except Exception:
+                    pass  # column already exists
 
             # ── positions（头寸信息）──────────────────────────────────────
             cur.execute("""
@@ -193,6 +205,38 @@ def init_db() -> None:
                     KEY idx_created_at (created_at DESC)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
+
+            # ── position_history（持仓历史）───────────────────────────────
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS position_history (
+                    id            BIGINT          NOT NULL AUTO_INCREMENT,
+                    user_id       INT             NOT NULL DEFAULT 0 COMMENT '用户ID',
+                    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+                    symbol        VARCHAR(32)     NOT NULL COMMENT '交易对',
+                    side          VARCHAR(8)      NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT',
+                    entry_price   DECIMAL(30,10)  NOT NULL COMMENT '开仓均价',
+                    close_price   DECIMAL(30,10)  NOT NULL COMMENT '平仓价格',
+                    quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
+                    realized_pnl  DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
+                    commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
+                    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    PRIMARY KEY (id),
+                    KEY idx_user_id (user_id),
+                    KEY idx_username (username),
+                    KEY idx_symbol (symbol),
+                    KEY idx_created_at (created_at DESC)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史'
+            """)
+            # Add columns that may be missing if table was created before this schema version
+            for _col, _ddl in [
+                ("user_id",  "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
+                ("username", "ALTER TABLE position_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
+                ("side",     "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
+            ]:
+                try:
+                    cur.execute(_ddl)
+                except Exception:
+                    pass  # column already exists
 
             # ── ticker_messages（滚动播报文案）───────────────────────────
             cur.execute("""
@@ -414,6 +458,8 @@ def create_order(
     exchange: str = "binance",
     stop_price: Optional[float] = None,
     client_order_id: Optional[str] = None,
+    trade_direction: Optional[str] = None,     # OPEN | CLOSE
+    position_id: Optional[int] = None,         # 关联持仓ID
 ) -> int:
     conn = get_connection()
     try:
@@ -422,12 +468,14 @@ def create_order(
                 """INSERT INTO orders
                    (user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, status,
-                    exchange_order_id, client_order_id, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    exchange_order_id, client_order_id,
+                    trade_direction, position_id, error_message)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, status,
-                    binance_order_id, client_order_id, error_message,
+                    binance_order_id, client_order_id,
+                    trade_direction, position_id, error_message,
                 ),
             )
             conn.commit()
@@ -685,6 +733,24 @@ def get_active_orders(user_id: Optional[int] = None) -> list:
         params.append(user_id)
     sql += " ORDER BY created_at DESC"
 
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_active_orders_for_user(username: str) -> list:
+    """返回指定用户的当前委托（未完结订单），按 username 过滤。"""
+    placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
+    params: list = list(ACTIVE_STATUSES)
+    params.append(username)
+    sql = f"""SELECT * FROM orders
+              WHERE status IN ({placeholders})
+                AND username = %s
+              ORDER BY created_at DESC"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1031,5 +1097,95 @@ def log_operation(
                 (user_id, username, action, details),
             )
             conn.commit()
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────
+# Position History（持仓历史）
+# ──────────────────────────────────────────────
+
+def add_position_history(
+    user_id: int,
+    username: str,
+    symbol: str,
+    side: str,
+    entry_price: float,
+    close_price: float,
+    quantity: float,
+    realized_pnl: float = 0.0,
+    commission: float = 0.0,
+) -> int:
+    """插入一条持仓历史记录，返回新行 id。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO position_history
+                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission),
+            )
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[dict]:
+    """按 username + exchange_order_id 查询单条订单，失败返回 None。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM orders WHERE username = %s AND exchange_order_id = %s LIMIT 1",
+                (username, exchange_order_id),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position(user_id: int, symbol: str, position_side: str, exchange: str = "binance") -> Optional[dict]:
+    """按 user_id + symbol + position_side 查询单条持仓，失败返回 None。兼容旧版表结构。"""
+    columns = _get_table_columns("positions")
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if "user_id" in columns and "exchange" in columns and "position_side" in columns:
+                cur.execute(
+                    """SELECT * FROM positions
+                       WHERE user_id = %s AND exchange = %s AND symbol = %s AND position_side = %s
+                       LIMIT 1""",
+                    (user_id, exchange, symbol, position_side),
+                )
+            else:
+                # Legacy schema: no user_id/exchange, uses side instead of position_side
+                legacy_side = position_side  # LONG/SHORT maps directly to side in legacy
+                cur.execute(
+                    "SELECT * FROM positions WHERE symbol = %s AND side = %s LIMIT 1",
+                    (symbol, legacy_side),
+                )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> list:
+    """返回持仓历史记录。user_id=None 时返回所有用户。"""
+    params: list = []
+    sql = """SELECT id, user_id, username, symbol, side, entry_price, close_price,
+                    quantity, realized_pnl, commission, created_at
+             FROM position_history"""
+    if user_id is not None:
+        sql += " WHERE user_id = %s"
+        params.append(user_id)
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
     finally:
         conn.close()

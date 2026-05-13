@@ -10,8 +10,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from trade_relay import database as db_module
+from trade_relay import config as cfg
 from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
+from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
 
@@ -28,6 +30,7 @@ class OrderRequest(BaseModel):
     quantity: float
     price: Optional[float] = None
     leverage: int = 10
+    position_direction: str = 'OPEN'  # OPEN | CLOSE
 
 class OrderOut(BaseModel):
     id: int
@@ -74,8 +77,8 @@ def _row_to_out(r: dict) -> OrderOut:
 
 @router.post("")
 async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)):
-    _log.info("Place order: user=%s symbol=%s side=%s type=%s qty=%s price=%s",
-              user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price)
+    _log.info("Place order: user=%s symbol=%s side=%s type=%s qty=%s price=%s pos_dir=%s",
+              user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price, body.position_direction)
     session = Session(int(user["sub"]), user["username"], user["role"])
     result = await submit_order(
         session,
@@ -85,6 +88,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.quantity,
         body.price,
         body.leverage,
+        body.position_direction,
     )
     if not result.success:
         _log.warning("Order failed: user=%s reason=%s", user["username"], result.message)
@@ -154,3 +158,50 @@ def get_fills(user: dict = Depends(get_current_user)):
         )
         for r in rows
     ]
+
+
+class CancelOrderRequest(BaseModel):
+    symbol: str
+    exchange_order_id: str
+
+
+@router.post("/{order_id}/cancel")
+async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Depends(get_current_user)):
+    """Cancel an open order on Binance and mark it CANCELED in DB."""
+    username = user["username"]
+
+    # Verify the order belongs to this user (or admin can cancel any)
+    rows = db_module.query_orders(user_id=None, username=username if user["role"] != "admin" else None)
+    order_row = next((r for r in rows if r["id"] == order_id), None)
+    if not order_row:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order_row.get("exchange_order_id") != body.exchange_order_id:
+        raise HTTPException(status_code=400, detail="exchange_order_id mismatch")
+
+    # Determine whose credentials to use (admin acts on behalf of order owner)
+    target_username = order_row["username"]
+
+    mock = cfg.is_mock_mode(target_username)
+    if mock:
+        db_module.update_order_status(order_id, "CANCELED")
+        _log.info("Mock cancel: order_id=%s", order_id)
+        return {"ok": True}
+
+    api_key = cfg.get_api_key(target_username)
+    api_secret = cfg.get_api_secret(target_username)
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="No API credentials configured")
+
+    testnet = cfg.is_testnet(target_username)
+    try:
+        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        import asyncio
+        result = await asyncio.to_thread(client.cancel_order, body.symbol, body.exchange_order_id)
+        _log.info("Binance cancel result: order_id=%s result=%s", order_id, result)
+    except Exception as exc:
+        _log.warning("Cancel order failed on Binance: order_id=%s error=%s", order_id, exc)
+        raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
+
+    db_module.update_order_status(order_id, "CANCELED")
+    return {"ok": True}
+

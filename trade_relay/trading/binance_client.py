@@ -1,10 +1,13 @@
 """
 Binance API wrapper supporting real, testnet, and mock modes.
 """
+import logging
 from typing import Optional
 import asyncio
 
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
+
+logger = logging.getLogger(__name__)
 
 
 class BinanceOrderResult:
@@ -33,6 +36,7 @@ async def place_order(
     price: Optional[float] = None,
     leverage: int = 10,
     testnet: bool = False,
+    position_direction: str = 'OPEN',
 ) -> BinanceOrderResult:
     """
     Place a real order on Binance (or testnet).
@@ -47,37 +51,71 @@ async def place_order(
 
         await asyncio.to_thread(client.set_leverage, symbol, leverage)
 
+        # Derive positionSide for hedge mode:
+        # OPEN  + BUY  -> LONG  (open long)
+        # OPEN  + SELL -> SHORT (open short)
+        # CLOSE + SELL -> LONG  (sell to close long)
+        # CLOSE + BUY  -> SHORT (buy to close short)
+        is_close = position_direction.upper() == 'CLOSE'
+        if is_close:
+            position_side = 'LONG' if side.upper() == 'SELL' else 'SHORT'
+        else:
+            position_side = 'LONG' if side.upper() == 'BUY' else 'SHORT'
+        logger.info(
+            'place_order: symbol=%s side=%s pos_dir=%s -> positionSide=%s type=%s qty=%s price=%s',
+            symbol, side, position_direction, position_side, order_type, quantity, price,
+        )
+
         if order_type == "LIMIT":
             if price is None:
                 return BinanceOrderResult(success=False, error="Price required for LIMIT order")
+            logger.info(
+                'binance request | LIMIT order | symbol=%s side=%s positionSide=%s qty=%s price=%s testnet=%s',
+                symbol, side, position_side, quantity, price, testnet,
+            )
             response = await asyncio.to_thread(
                 client.place_limit_order,
                 symbol,
                 side,
                 quantity,
                 price,
+                position_side,
             )
         elif order_type == "MARKET":
+            logger.info(
+                'binance request | MARKET order | symbol=%s side=%s positionSide=%s qty=%s testnet=%s',
+                symbol, side, position_side, quantity, testnet,
+            )
             response = await asyncio.to_thread(
                 client.place_market_order,
                 symbol,
                 side,
                 quantity,
+                position_side,
             )
         else:
             return BinanceOrderResult(success=False, error=f"Unsupported order type: {order_type}")
 
+        logger.info('binance response | raw=%s', response)
+
         if not response:
+            logger.warning('binance response | empty response for symbol=%s side=%s', symbol, side)
             return BinanceOrderResult(success=False, error="Empty response from Binance Futures")
 
         if response.get("error"):
+            error_msg = response.get("error_message") or str(response)
+            logger.warning('binance response | error | symbol=%s side=%s error=%s', symbol, side, error_msg)
             return BinanceOrderResult(
                 success=False,
-                error=response.get("error_message") or str(response),
+                error=error_msg,
             )
 
         order_id = str(response.get("orderId", ""))
         status = response.get("status", "NEW")
+        logger.info(
+            'binance response | success | orderId=%s status=%s symbol=%s side=%s positionSide=%s',
+            order_id, status, symbol, side, position_side,
+        )
 
         return BinanceOrderResult(
             success=True,
@@ -86,6 +124,8 @@ async def place_order(
         )
 
     except Exception as exc:
+        logger.exception('binance request | exception | symbol=%s side=%s type=%s qty=%s price=%s: %s',
+                         symbol, side, order_type, quantity, price, exc)
         return BinanceOrderResult(success=False, error=str(exc))
 
 

@@ -19,6 +19,19 @@ from backend.logger import get_logger
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 _log = get_logger(__name__)
 
+
+class PositionHistoryOut(BaseModel):
+    id: int
+    username: str
+    symbol: str
+    side: str
+    entry_price: float
+    close_price: float
+    quantity: float
+    realized_pnl: float
+    commission: float
+    created_at: str
+
 # Per-user TTL cache: user_id (None = admin) → (timestamp, result)
 _positions_cache: dict[int | None, tuple[float, list]] = {}
 _POSITIONS_CACHE_TTL = 2.0  # seconds
@@ -117,3 +130,56 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
         pass
     finally:
         unregister_user_stream_listener(username, listener)
+
+
+@router.get("/history", response_model=list[PositionHistoryOut])
+def get_position_history(user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
+    rows = db_module.get_position_history(user_id=user_id)
+    return [
+        PositionHistoryOut(
+            id=int(r["id"]),
+            username=str(r["username"]),
+            symbol=str(r["symbol"]),
+            side=str(r["side"]),
+            entry_price=float(r["entry_price"]),
+            close_price=float(r["close_price"]),
+            quantity=float(r["quantity"]),
+            realized_pnl=float(r["realized_pnl"]),
+            commission=float(r["commission"]),
+            created_at=str(r["created_at"]),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/history", response_model=PositionHistoryOut)
+def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_current_user)):
+    """手动新增一条持仓历史记录（供管理员或测试使用）。"""
+    user_id = int(user["sub"])
+    username = str(user["username"])
+    new_id = db_module.add_position_history(
+        user_id=user_id,
+        username=username,
+        symbol=body.symbol,
+        side=body.side,
+        entry_price=body.entry_price,
+        close_price=body.close_price,
+        quantity=body.quantity,
+        realized_pnl=body.realized_pnl,
+        commission=body.commission,
+    )
+    rows = db_module.get_position_history(user_id=user_id, limit=1)
+    r = next((x for x in rows if x["id"] == new_id), rows[0])
+    return PositionHistoryOut(
+        id=int(r["id"]),
+        username=str(r["username"]),
+        symbol=str(r["symbol"]),
+        side=str(r["side"]),
+        entry_price=float(r["entry_price"]),
+        close_price=float(r["close_price"]),
+        quantity=float(r["quantity"]),
+        realized_pnl=float(r["realized_pnl"]),
+        commission=float(r["commission"]),
+        created_at=str(r["created_at"]),
+    )

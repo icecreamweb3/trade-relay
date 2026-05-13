@@ -107,6 +107,7 @@ class AccountSummaryOut(BaseModel):
     short_position_qty: float | None = None
     long_position_value: float | None = None
     short_position_value: float | None = None
+    rest_mark_price: float | None = None
     available_balance: float | None = None
     margin_ratio: float | None = None
     risk_rate: float | None = None
@@ -189,9 +190,12 @@ def get_account_summary(
         short_position_qty = 0.0
         long_position_value = 0.0
         short_position_value = 0.0
+        rest_mark_price: float | None = None
         for position in positions:
             position_amt = float(position.get("positionAmt", 0) or 0)
             mark_price = float(position.get("markPrice", 0) or 0)
+            if mark_price > 0 and rest_mark_price is None:
+                rest_mark_price = mark_price
             notional = abs(float(position.get("notional", 0) or 0))
             if notional == 0.0:
                 notional = abs(position_amt * mark_price)
@@ -236,6 +240,7 @@ def get_account_summary(
             short_position_qty=short_position_qty,
             long_position_value=long_position_value if long_position_value > 0 else None,
             short_position_value=short_position_value if short_position_value > 0 else None,
+            rest_mark_price=rest_mark_price,
             available_balance=available_balance,
             margin_ratio=margin_ratio,
             risk_rate=risk_rate,

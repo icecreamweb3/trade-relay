@@ -27,6 +27,7 @@ async def submit_order(
     quantity: float,
     price: Optional[float] = None,
     leverage: int = 10,
+    position_direction: str = 'OPEN',
 ) -> OrderResult:
     """
     Validate, place, and record an order for the given session user.
@@ -76,7 +77,20 @@ async def submit_order(
             price=price,
             leverage=leverage,
             testnet=testnet,
+            position_direction=position_direction,
         )
+
+    # When closing a position, look up the matching DB position to record position_id
+    position_id: Optional[int] = None
+    if position_direction and position_direction.upper() == "CLOSE":
+        # CLOSE + SELL closes LONG; CLOSE + BUY closes SHORT
+        closing_position_side = "LONG" if side.upper() == "SELL" else "SHORT"
+        try:
+            pos_row = db.get_position(session.user_id, symbol, closing_position_side)
+            if pos_row:
+                position_id = int(pos_row["id"])
+        except Exception:
+            pass  # non-critical; proceed without position_id
 
     # Persist order record
     order_db_id = db.create_order(
@@ -90,6 +104,8 @@ async def submit_order(
         status=result.status if result.success else "FAILED",
         binance_order_id=result.order_id,
         error_message=result.error,
+        trade_direction=position_direction.upper() if position_direction else None,
+        position_id=position_id,
     )
 
     if result.success and not mock and result.order_id and api_key and api_secret:
