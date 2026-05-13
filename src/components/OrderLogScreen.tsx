@@ -9,7 +9,7 @@ const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
-  quantity: number; price: number; status: string; username: string
+  quantity: number; price: number; status: string; username?: string
   exchange_order_id?: string; created_at?: string; error_message?: string
 }
 
@@ -169,7 +169,7 @@ export function OrderLogScreen() {
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="text-[#858585]">{o.created_at ? new Date(o.created_at).toLocaleString() : '-'}</td>
-                <td className="text-[#cccccc]">{o.username}</td>
+                <td className="text-[#cccccc]">{o.username ?? '—'}</td>
                 <td className="font-semibold">{o.symbol}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>
                 <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>

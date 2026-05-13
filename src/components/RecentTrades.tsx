@@ -10,15 +10,16 @@ const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).ele
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface Fill {
-  username: string
+  username?: string
   symbol: string
   side: string
   quantity: number
   avg_price: number | null
-  created_at: string
+  created_at?: string
 }
 
-function fmtTime(ts: string): string {
+function fmtTime(ts?: string): string {
+  if (!ts) return '—'
   try {
     const d = new Date(ts)
     return d.toLocaleTimeString('en-US', { hour12: false })
@@ -32,13 +33,13 @@ function fmtNum(n: number | null, dp = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 }
 
-export function RecentTrades() {
+export function RecentTrades({ isActive = true }: { isActive?: boolean }) {
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const [fills, setFills] = useState<Fill[]>([])
 
   const load = useCallback(async () => {
-    if (!isAuthenticated) {
+    if (!isActive || !isAuthenticated) {
       setFills([])
       return
     }
@@ -46,14 +47,14 @@ export function RecentTrades() {
       const data = await api.getRecentFills()
       setFills(data.slice(0, 30))
     } catch {}
-  }, [isAuthenticated])
+  }, [isActive, isAuthenticated])
 
   useEffect(() => {
     load()
-    if (!isAuthenticated) return
+    if (!isActive || !isAuthenticated) return
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
-  }, [isAuthenticated, load])
+  }, [isActive, isAuthenticated, load])
 
   return (
     <div className="h-full flex flex-col bg-[#161616] select-none">
@@ -87,7 +88,7 @@ export function RecentTrades() {
                 className="grid px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
                 style={{ gridTemplateColumns: '1fr 1fr 52px 1fr 1fr 1fr' }}
               >
-                <span className="text-[#aaa] truncate pr-1">{f.username}</span>
+                <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
                 <span className="text-[#888] truncate pr-1">{f.symbol}</span>
                 <span className={isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
                 <span className="text-right text-[#aaa]">{fmtNum(f.quantity, 4)}</span>

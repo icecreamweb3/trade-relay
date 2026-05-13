@@ -23,11 +23,11 @@ interface Order {
 
 interface Trade {
   id: number; symbol: string; side: string; order_type: string
-  quantity: number; avg_price: number; commission: number
+  quantity: number; avg_price: number | null; commission: number
   commission_asset: string; created_at?: string
 }
 
-export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) {
+export function PositionsPanel({ refreshTrigger, isActive = true }: { refreshTrigger?: number; isActive?: boolean }) {
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const showToast = useToastStore((state) => state.showToast)
@@ -39,7 +39,7 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
-    if (!isAuthenticated) {
+    if (!isActive || !isAuthenticated) {
       setPositions([])
       setOpenOrders([])
       setHistory([])
@@ -61,14 +61,14 @@ export function PositionsPanel({ refreshTrigger }: { refreshTrigger?: number }) 
       showToast('error', msg)
     }
     setLoading(false)
-  }, [isAuthenticated, showToast, t, tab])
+  }, [isActive, isAuthenticated, showToast, t, tab])
 
   useEffect(() => { load() }, [load, refreshTrigger])
   useEffect(() => {
-    if (!isAuthenticated) return
+    if (!isActive || !isAuthenticated) return
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
-  }, [isAuthenticated, load])
+  }, [isActive, isAuthenticated, load])
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">

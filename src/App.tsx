@@ -40,6 +40,7 @@ function MainApp() {
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? TRADE_TAB
   const activeScreen = activeTab.screen
+  const isTradeScreenActive = activeScreen === 'trade'
 
   const openScreen = (screen: Screen) => {
     if (screen === 'trade') {
@@ -77,12 +78,11 @@ function MainApp() {
   }, [isAuthenticated])
 
   useEffect(() => {
-    const isTrade = activeScreen === 'trade'
-    window.electronAPI?.setBinanceViewVisible?.(isTrade)
-    if (isTrade) {
+    window.electronAPI?.setBinanceViewVisible?.(isTradeScreenActive)
+    if (isTradeScreenActive) {
       notifyElectron()
     }
-  }, [activeScreen])
+  }, [isTradeScreenActive])
 
   // Track both ratios to send both to Electron on any resize
   const leftRatio = useRef(0.67)
@@ -166,7 +166,7 @@ function MainApp() {
               </Panel>
               <PanelResizeHandle className="h-px bg-[#3e3e42] hover:bg-[#007acc] cursor-row-resize" />
               <Panel defaultSize={35} minSize={15} id="positions">
-                <PositionsPanel refreshTrigger={orderRefresh} />
+                <PositionsPanel refreshTrigger={orderRefresh} isActive={isTradeScreenActive} />
               </Panel>
             </PanelGroup>
           </Panel>
@@ -188,6 +188,7 @@ function MainApp() {
                   {/* Trade form — fills remaining width */}
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <OrderFormWidget
+                      isActive={isTradeScreenActive}
                       onOrderPlaced={() => setOrderRefresh(n => n + 1)}
                       selectedOrderBookPrice={selectedOrderBookPrice}
                     />
@@ -199,7 +200,7 @@ function MainApp() {
 
               {/* Bottom-right: recent platform trades */}
               <Panel defaultSize={28} minSize={15} id="right-bottom">
-                <RecentTrades />
+                <RecentTrades isActive={isTradeScreenActive} />
               </Panel>
             </PanelGroup>
           </Panel>

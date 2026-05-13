@@ -85,6 +85,7 @@ export function useMarketData() {
 
   // Stable ref so WS callbacks always call the latest action without re-running effects
   const processRef = useRef(processMarketEvent)
+  const lastRateLimitStatusRef = useRef<number | null>(null)
   useEffect(() => { processRef.current = processMarketEvent })
 
   const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
@@ -125,16 +126,18 @@ export function useMarketData() {
     return () => cleanups.forEach(fn => fn())
   }, [setSymbol, setChartInterval, setChartExpanded])
 
-  // ── markPrice: REST polling via fetch (Chromium network stack, respects proxy) ──
+  // ── markPrice: REST polling for mark price + funding data ─────────────────
   useEffect(() => {
     let alive = true
     let timer: ReturnType<typeof setTimeout> | null = null
 
     async function poll() {
       if (!alive) return
+      let delayMs = 15000
       try {
         const resp = await fetch(`${FAPI_BASE}/premiumIndex?symbol=${symbol}`)
         if (resp.ok) {
+          lastRateLimitStatusRef.current = null
           const d = await resp.json()
           const markPrice = parseFloat(d.markPrice)
           const indexPrice = parseFloat(d.indexPrice)
@@ -142,12 +145,20 @@ export function useMarketData() {
           const nextFundingTime = d.nextFundingTime as number
           processRef.current({ type: 'markPrice', symbol: d.symbol, markPrice, indexPrice, fundingRate, nextFundingTime, timestamp: Date.now() })
         } else {
-          window.electronAPI?.logToMain?.('warn', `markPrice REST HTTP ${resp.status} for ${symbol}`)
+          if (resp.status === 429 || resp.status === 418) {
+            delayMs = resp.status === 418 ? 300000 : 60000
+            if (lastRateLimitStatusRef.current !== resp.status) {
+              window.electronAPI?.logToMain?.('warn', `markPrice REST HTTP ${resp.status} for ${symbol}; backing off to ${Math.round(delayMs / 1000)}s`)
+              lastRateLimitStatusRef.current = resp.status
+            }
+          } else {
+            window.electronAPI?.logToMain?.('warn', `markPrice REST HTTP ${resp.status} for ${symbol}`)
+          }
         }
       } catch (e) {
         window.electronAPI?.logToMain?.('warn', `markPrice REST error: ${e}`)
       }
-      if (alive) timer = setTimeout(poll, 5000)
+      if (alive) timer = setTimeout(poll, delayMs)
     }
 
     poll()

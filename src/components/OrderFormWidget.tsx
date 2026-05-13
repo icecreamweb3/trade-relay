@@ -92,6 +92,29 @@ function describeRequestError(error: unknown) {
   return { value: error }
 }
 
+function getLeverageStorageKey(username: string, symbol: string) {
+  return `trade-relay:leverage:${username}:${symbol.toUpperCase()}`
+}
+
+function readStoredLeverage(username: string, symbol: string): number | null {
+  try {
+    const raw = window.localStorage.getItem(getLeverageStorageKey(username, symbol))
+    if (!raw) return null
+    const value = Number.parseInt(raw, 10)
+    return Number.isFinite(value) && value >= 1 && value <= 125 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredLeverage(username: string, symbol: string, leverage: number) {
+  try {
+    window.localStorage.setItem(getLeverageStorageKey(username, symbol), String(leverage))
+  } catch {
+    // Ignore storage errors so leverage changes still work without persistence.
+  }
+}
+
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
 function TickerStrip() {
@@ -154,9 +177,11 @@ function TickerStrip() {
 export function OrderFormWidget({
   onOrderPlaced,
   selectedOrderBookPrice,
+  isActive = true,
 }: {
   onOrderPlaced?: () => void
   selectedOrderBookPrice?: { value: number; token: number } | null
+  isActive?: boolean
 }) {
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
@@ -205,6 +230,11 @@ export function OrderFormWidget({
       message: null,
     }
 
+    if (!isActive) {
+      setAccountLoading(false)
+      return () => { alive = false }
+    }
+
     if (!user?.username) {
       setAccountSummary(emptyAccountSummary)
       setAccountLoading(false)
@@ -243,7 +273,7 @@ export function OrderFormWidget({
     loadAccountSummary()
     const timer = setInterval(loadAccountSummary, 15000)
     return () => { alive = false; clearInterval(timer) }
-  }, [user?.username, symbol, baseAsset, quoteAsset])
+  }, [isActive, user?.username, symbol, baseAsset, quoteAsset])
 
   const baseTicker = baseAsset
 
@@ -253,10 +283,28 @@ export function OrderFormWidget({
   }
 
   useEffect(() => {
+    if (!user?.username) {
+      setLeverage(10)
+      return
+    }
+
+    const storedLeverage = readStoredLeverage(user.username, symbol)
+    setLeverage(storedLeverage ?? 10)
+  }, [user?.username, symbol])
+
+  useEffect(() => {
     if (accountSummary?.configured_leverage && accountSummary.configured_leverage !== leverage) {
+      if (user?.username) {
+        writeStoredLeverage(user.username, symbol, accountSummary.configured_leverage)
+      }
       setLeverage(accountSummary.configured_leverage)
     }
-  }, [accountSummary?.configured_leverage])
+  }, [accountSummary?.configured_leverage, leverage, symbol, user?.username])
+
+  useEffect(() => {
+    if (!user?.username) return
+    writeStoredLeverage(user.username, symbol, leverage)
+  }, [leverage, symbol, user?.username])
 
   useEffect(() => {
     const message = accountSummary?.message ?? null
@@ -284,9 +332,11 @@ export function OrderFormWidget({
         symbol,
         leverage: nextLeverage,
       })
+      writeStoredLeverage(user.username, symbol, nextLeverage)
       setAccountSummary((current) => current ? { ...current, configured_leverage: nextLeverage } : current)
     } catch (error) {
       setLeverage(previousLeverage)
+      writeStoredLeverage(user.username, symbol, previousLeverage)
       window.electronAPI?.logToMain?.('error', 'account leverage update failed', {
         username: user?.username ?? null,
         symbol,

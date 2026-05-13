@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   login: (username, password) => ipcRenderer.invoke('auth-login', { username, password }),
   logout: () => ipcRenderer.invoke('auth-logout'),
   getToken: () => ipcRenderer.invoke('auth-get-token'),
+  backendRequest: (method, path, options = {}) => ipcRenderer.invoke('backend-request', {
+    method,
+    path,
+    body: options.body ?? null,
+    query: options.query ?? null,
+  }),
   getAuthStatus: () => ipcRenderer.invoke('auth-get-status'),
 
   // ── Window controls ───────────────────────────────────────────────────────

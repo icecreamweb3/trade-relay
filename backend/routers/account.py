@@ -4,6 +4,9 @@ Account router: current-user account summary for the order form Account section.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+import time
+from threading import Lock
+
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
@@ -16,6 +19,9 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 _log = get_logger(__name__)
 
 QUOTE_ASSETS = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH")
+ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = 20.0
+_account_summary_cache: dict[tuple[str, str | None], tuple[float, dict]] = {}
+_account_summary_cache_lock = Lock()
 
 
 def split_trading_symbol(symbol: str | None) -> tuple[str | None, str | None]:
@@ -26,6 +32,46 @@ def split_trading_symbol(symbol: str | None) -> tuple[str | None, str | None]:
         if upper_symbol.endswith(quote_asset) and len(upper_symbol) > len(quote_asset):
             return upper_symbol[: -len(quote_asset)], quote_asset
     return upper_symbol, None
+
+
+def _account_summary_cache_key(username: str, symbol: str | None) -> tuple[str, str | None]:
+    return username, symbol.upper() if symbol else None
+
+
+def _model_to_dict(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def _get_cached_account_summary(username: str, symbol: str | None) -> 'AccountSummaryOut | None':
+    cache_key = _account_summary_cache_key(username, symbol)
+    with _account_summary_cache_lock:
+        cached = _account_summary_cache.get(cache_key)
+        if not cached:
+            return None
+        expires_at, payload = cached
+        if expires_at <= time.monotonic():
+            _account_summary_cache.pop(cache_key, None)
+            return None
+    return AccountSummaryOut(**payload)
+
+
+def _set_cached_account_summary(username: str, symbol: str | None, summary: 'AccountSummaryOut') -> None:
+    cache_key = _account_summary_cache_key(username, symbol)
+    payload = _model_to_dict(summary)
+    with _account_summary_cache_lock:
+        _account_summary_cache[cache_key] = (time.monotonic() + ACCOUNT_SUMMARY_CACHE_TTL_SECONDS, payload)
+
+
+def _invalidate_account_summary_cache(username: str, symbol: str | None = None) -> None:
+    with _account_summary_cache_lock:
+        if symbol is None:
+            stale_keys = [key for key in _account_summary_cache if key[0] == username]
+            for key in stale_keys:
+                _account_summary_cache.pop(key, None)
+            return
+        _account_summary_cache.pop(_account_summary_cache_key(username, symbol), None)
 
 
 class AccountSummaryOut(BaseModel):
@@ -65,14 +111,20 @@ def get_account_summary(
     api_secret = cfg_module.get_api_secret(username)
     testnet = cfg_module.is_testnet(username)
 
+    cached_summary = _get_cached_account_summary(username, normalized_symbol)
+    if cached_summary is not None:
+        return cached_summary
+
     if not api_key or not api_secret:
-        return AccountSummaryOut(
+        summary = AccountSummaryOut(
             symbol=normalized_symbol,
             base_asset=base_asset,
             quote_asset=quote_asset,
             has_api_credentials=False,
             message="No API key configured for this account",
         )
+        _set_cached_account_summary(username, normalized_symbol, summary)
+        return summary
 
     try:
         client = BinanceClient(
@@ -146,7 +198,7 @@ def get_account_summary(
         actual_leverage = leverage_notional / position_value if position_value > 0 else None
         risk_rate = total_maint_margin / wallet_balance if wallet_balance > 0 else None
 
-        return AccountSummaryOut(
+        summary = AccountSummaryOut(
             symbol=normalized_symbol,
             base_asset=base_asset,
             quote_asset=quote_asset,
@@ -164,6 +216,8 @@ def get_account_summary(
             wallet_balance=wallet_balance,
             has_api_credentials=True,
         )
+        _set_cached_account_summary(username, normalized_symbol, summary)
+        return summary
     except Exception as exc:
         _log.exception(
             "Account summary failed for user=%s symbol=%s testnet=%s",
@@ -171,13 +225,15 @@ def get_account_summary(
             normalized_symbol,
             testnet,
         )
-        return AccountSummaryOut(
+        summary = AccountSummaryOut(
             symbol=normalized_symbol,
             base_asset=base_asset,
             quote_asset=quote_asset,
             has_api_credentials=True,
             message=str(exc),
         )
+        _set_cached_account_summary(username, normalized_symbol, summary)
+        return summary
 
 
 @router.post("/leverage")
@@ -206,6 +262,7 @@ def update_account_leverage(
             testnet=cfg_module.is_testnet(username),
         )
         result = client.set_leverage(symbol, leverage)
+        _invalidate_account_summary_cache(username, symbol)
         _log.info("Updated leverage: user=%s symbol=%s leverage=%s", username, symbol, leverage)
         return {"ok": True, "symbol": symbol, "leverage": leverage, "exchange": result}
     except HTTPException:

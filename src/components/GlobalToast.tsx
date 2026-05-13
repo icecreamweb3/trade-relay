@@ -14,7 +14,7 @@ export function GlobalToast() {
   if (!toast) return null
 
   return (
-    <div className="floating-toast fixed right-4 bottom-4 z-50 w-[min(320px,calc(100vw-32px))] overflow-hidden rounded-[18px] border border-white/8 bg-[#3A4048]/96 text-[13px] text-[#F5F5F5] shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-md">
+    <div className="floating-toast fixed right-4 bottom-4 z-50 w-[min(320px,calc(100vw-32px))] overflow-hidden rounded-[24px] border border-white/6 bg-[#3A4048]/94 text-[13px] text-[#F5F5F5] shadow-[0_18px_44px_rgba(8,12,18,0.28)] ring-1 ring-white/5 backdrop-blur-md">
       <div className="flex items-center gap-3 px-4 py-3 pr-11">
         <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[14px] font-semibold ${
           toast.kind === 'success'

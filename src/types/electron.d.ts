@@ -7,6 +7,14 @@ interface ElectronAPI {
   login: (username: string, password: string) => Promise<{ ok: boolean; user?: import('./store/authStore').UserInfo; error?: string }>
   logout: () => Promise<{ ok: boolean }>
   getToken: () => Promise<string | null>
+  backendRequest: (
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    options?: {
+      body?: unknown
+      query?: Record<string, string | number | boolean | null | undefined | Array<string | number | boolean>>
+    }
+  ) => Promise<{ status: number; body: unknown }>
   getAuthStatus: () => Promise<{ authenticated: boolean; user?: import('./store/authStore').UserInfo }>
 
   // Window

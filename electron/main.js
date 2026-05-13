@@ -72,6 +72,23 @@ function httpRequest(method, path, body, token) {
   })
 }
 
+function buildBackendPath(pathname, query) {
+  if (!query || typeof query !== 'object') return pathname
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value == null) continue
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item != null) search.append(key, String(item))
+      }
+      continue
+    }
+    search.append(key, String(value))
+  }
+  const suffix = search.toString()
+  return suffix ? `${pathname}?${suffix}` : pathname
+}
+
 // ── Retryable load ────────────────────────────────────────────────────────────
 const RETRYABLE_ERRORS = new Set([-21, -2, -7, -100, -101, -102, -105, -106])
 
@@ -254,6 +271,12 @@ ipcMain.handle('auth-login', async (_event, { username, password }) => {
 
 ipcMain.handle('auth-logout', () => { clearToken(); return { ok: true } })
 ipcMain.handle('auth-get-token', () => getToken())
+
+ipcMain.handle('backend-request', async (_event, { method = 'GET', path, body = null, query = null }) => {
+  const token = getToken()
+  const requestPath = buildBackendPath(path, query)
+  return httpRequest(method, requestPath, body, token)
+})
 
 ipcMain.handle('auth-get-status', async () => {
   const token = getToken()
