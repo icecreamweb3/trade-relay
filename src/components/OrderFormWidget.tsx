@@ -361,7 +361,7 @@ export function OrderFormWidget({
         if (!refPrice) return
         setQty((posQty * refPrice * pct).toFixed(2))
       } else {
-        setQty((posQty * pct).toFixed(4))
+        setQty((Math.round(posQty * pct * 1000) / 1000).toFixed(3))
       }
       return
     }
@@ -374,7 +374,7 @@ export function OrderFormWidget({
     if (sizeUnit === 'QUOTE') {
       setQty((maxBaseQty * refPrice * pct).toFixed(2))
     } else {
-      setQty((maxBaseQty * pct).toFixed(4))
+      setQty((Math.floor(maxBaseQty * pct * 1000) / 1000).toFixed(3))
     }
   }
 
@@ -389,32 +389,32 @@ export function OrderFormWidget({
     if (availableBalance == null) return '—'
     if (sizeUnit === 'QUOTE') return withAsset(availableBalance * leverage, quoteAsset)
     if (!referencePrice) return '—'
-    return `${fmt((availableBalance * leverage) / referencePrice, 4)} ${baseTicker}`
+    return `${fmt((availableBalance * leverage) / referencePrice, 3)} ${baseTicker}`
   }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
 
   const longCloseDisplay = useMemo(() => {
     const qty = accountSummary?.long_position_qty ?? null
     if (qty == null) return '—'
-    if (sizeUnit === 'BASE') return `${fmt(qty, 4)} ${baseTicker}`
+    if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
     // prefer server-side notional (qty × REST markPrice at last account poll)
     const notional = accountSummary?.long_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
     // fallback: use REST markPrice from account summary, then WS markPrice
     const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
-    if (!price) return `${fmt(qty, 4)} ${baseTicker}`
+    if (!price) return `${fmt(qty, 3)} ${baseTicker}`
     return withAsset(qty * price, quoteAsset)
   }, [accountSummary?.long_position_qty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
     const qty = accountSummary?.short_position_qty ?? null
     if (qty == null) return '—'
-    if (sizeUnit === 'BASE') return `${fmt(qty, 4)} ${baseTicker}`
+    if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
     const notional = accountSummary?.short_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
     const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
-    if (!price) return `${fmt(qty, 4)} ${baseTicker}`
+    if (!price) return `${fmt(qty, 3)} ${baseTicker}`
     return withAsset(qty * price, quoteAsset)
   }, [accountSummary?.short_position_qty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
@@ -453,6 +453,15 @@ export function OrderFormWidget({
       if (!refPrice) { showToast('error', t('order.error.priceUnavailable')); return }
       baseQty = qtyNum / refPrice
     }
+    // Truncate to 0.001 (BTC contract step size).
+    // CLOSE orders: use Math.round because qty→USDC→qty round-trip must be lossless.
+    // OPEN orders: use Math.floor to never exceed available balance.
+    if (posDir === 'CLOSE') {
+      baseQty = Math.round(baseQty * 1000) / 1000
+    } else {
+      baseQty = Math.floor(baseQty * 1000) / 1000
+    }
+    if (baseQty <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
 
     setIsSubmitting(true)
     try {

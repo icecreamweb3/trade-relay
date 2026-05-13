@@ -42,6 +42,9 @@ async def submit_order(
         return OrderResult(False, t("field_required", t("side")))
     if order_type not in ("MARKET", "LIMIT"):
         return OrderResult(False, t("field_required", t("order_type")))
+    # Truncate to step size 0.001 (BTC contract minimum)
+    import math
+    quantity = math.floor(quantity * 1000) / 1000
     if quantity <= 0:
         return OrderResult(False, t("field_required", t("quantity")))
     if order_type == "LIMIT" and (price is None or price <= 0):

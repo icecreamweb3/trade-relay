@@ -150,7 +150,8 @@ def get_fills(user: dict = Depends(get_current_user)):
         OrderOut(
             id=0, username=r["username"], symbol=r["symbol"], side=r["side"],
             order_type="", quantity=float(r.get("filled_qty") or 0),
-            price=None, status="FILLED",
+            price=float(r["price"]) if r.get("price") else None,
+            status="FILLED",
             filled_qty=float(r.get("filled_qty") or 0),
             avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
             exchange_order_id=None, error_message=None,

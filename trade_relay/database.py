@@ -219,6 +219,7 @@ def init_db() -> None:
                     quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
                     realized_pnl  DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
                     commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
+                    position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
                     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                     PRIMARY KEY (id),
                     KEY idx_user_id (user_id),
@@ -229,9 +230,10 @@ def init_db() -> None:
             """)
             # Add columns that may be missing if table was created before this schema version
             for _col, _ddl in [
-                ("user_id",  "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
-                ("username", "ALTER TABLE position_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
-                ("side",     "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
+                ("user_id",     "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
+                ("username",    "ALTER TABLE position_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
+                ("side",        "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
+                ("position_id", "ALTER TABLE position_history ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -875,7 +877,7 @@ def get_recent_platform_trades(limit: int = 30) -> list:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT username, symbol, side, filled_qty, avg_price, created_at
+                SELECT username, symbol, side, filled_qty, price, avg_price, created_at
                 FROM orders
                 WHERE status = 'FILLED'
                   AND filled_qty > 0
@@ -1115,6 +1117,7 @@ def add_position_history(
     quantity: float,
     realized_pnl: float = 0.0,
     commission: float = 0.0,
+    position_id: Optional[int] = None,
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
     conn = get_connection()
@@ -1122,9 +1125,9 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission),
+                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, position_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission, position_id),
             )
             conn.commit()
             return cur.lastrowid

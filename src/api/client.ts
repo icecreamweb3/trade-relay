@@ -56,7 +56,9 @@ interface ApiTrade {
   side: string
   order_type: string
   quantity: number
+  price?: number | null
   avg_price: number | null
+  status?: string
   commission: number
   commission_asset: string
   username?: string
@@ -184,6 +186,10 @@ export const api = {
   // ── Positions ─────────────────────────────────────────────────────────────
   async getPositions(): Promise<ApiPosition[]> {
     return request<ApiPosition[]>('GET', '/api/positions')
+  },
+
+  async syncPositions(): Promise<ApiPosition[]> {
+    return request<ApiPosition[]>('POST', '/api/positions/sync')
   },
 
   async getOpenOrders(): Promise<ApiOrder[]> {

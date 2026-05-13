@@ -207,7 +207,7 @@ function MainApp() {
 
               {/* Bottom-right: recent platform trades */}
               <Panel defaultSize={28} minSize={15} id="right-bottom">
-                <RecentTrades isActive={isTradeScreenActive} />
+                <RecentTrades isActive={isTradeScreenActive} refreshTrigger={orderRefresh} />
               </Panel>
             </PanelGroup>
           </Panel>

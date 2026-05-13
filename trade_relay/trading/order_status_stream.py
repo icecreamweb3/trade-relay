@@ -51,6 +51,15 @@ class UserOrderStatusStream:
         self.connection_timeout = 5 * 60  # seconds without any WS message → trigger reconnect
         self.last_message_time: Optional[float] = None
         self.health_check_thread: Optional[threading.Thread] = None
+        # Track exchange_order_ids for which position_history has already been created,
+        # to prevent duplicate records when both WS and REST poll detect the same fill.
+        self._handled_close_fills: set[str] = set()
+        self._handled_close_fills_lock = threading.Lock()
+        # Cache the last known (position_id, entry_price) per (symbol, position_side).
+        # Needed so that the second of two sequential partial-close fills can still read
+        # entry_price even after _sync_position_from_rest has zeroed/deleted the DB row.
+        self._entry_price_cache: dict[tuple[str, str], tuple[Optional[int], float]] = {}
+        self._entry_price_cache_lock = threading.Lock()
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -117,9 +126,50 @@ class UserOrderStatusStream:
         if not order:
             return
         self._persist_status(order)
-        # Notify frontend so Open Orders / Positions tabs refresh immediately.
-        # Use force=True to bypass cooldown — this is triggered by an explicit action.
         status = str(order.get("status") or "").upper()
+
+        # When the order is fully filled, handle position_history and position sync —
+        # same as the poll path, because the WebSocket ORDER_TRADE_UPDATE may arrive
+        # before this sync runs (race) or may never arrive (reconnect gap).
+        if status == "FILLED":
+            executed_qty = float(order.get("executedQty") or 0)
+            avg_price_raw = order.get("avgPrice")
+            avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
+
+            if executed_qty > 0 and avg_price:
+                db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
+                if db_order and str(db_order.get("trade_direction") or "").upper() == "CLOSE":
+                    # Guard against duplicates when WS path already handled this fill.
+                    already_handled = False
+                    with self._handled_close_fills_lock:
+                        if exchange_order_id in self._handled_close_fills:
+                            logger.debug(
+                                "position_history already created for order=%s (REST path), skipping",
+                                exchange_order_id,
+                            )
+                            already_handled = True
+                        else:
+                            self._handled_close_fills.add(exchange_order_id)
+                    if not already_handled:
+                        # Derive position_side from positionSide field (REST format) or order side
+                        position_side = str(order.get("positionSide") or "BOTH").upper()
+                        if position_side not in ("LONG", "SHORT"):
+                            order_side = str(order.get("side") or "").upper()
+                            position_side = "SHORT" if order_side == "BUY" else "LONG"
+                        self._create_position_history_from_poll(
+                            symbol=symbol,
+                            position_side=position_side,
+                            fill_qty=executed_qty,
+                            fill_price=avg_price,
+                        )
+            # Always sync position from REST for filled orders (clears closed positions)
+            threading.Thread(
+                target=self._sync_position_from_rest,
+                args=(symbol,),
+                daemon=True,
+            ).start()
+
+        # Notify frontend so Open Orders / Positions tabs refresh immediately.
         force = status in ("FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
         self._notify_listeners({
             "type": "order_update",
@@ -349,12 +399,25 @@ class UserOrderStatusStream:
                 }
                 for r in rows
             ]
-            if payload:
-                self._sync_positions(payload)
-                logger.info(
-                    "Synced %d position row(s) from REST for user=%s symbol=%s",
-                    len(payload), self.username, symbol,
-                )
+            # Always sync (even empty payload handles zero-amount entries from Binance)
+            self._sync_positions(payload)
+            logger.info(
+                "Synced %d position row(s) from REST for user=%s symbol=%s",
+                len(payload), self.username, symbol,
+            )
+            # If Binance reports no open positions for this symbol, purge any stale DB rows.
+            # This handles the case where Binance omits zero-amount entries entirely.
+            has_open = any(float(r.get("positionAmt", 0) or 0) != 0 for r in rows)
+            if not has_open:
+                user = db.get_user_by_username(self.username)
+                if user:
+                    user_id = int(user["id"])
+                    for side in ("LONG", "SHORT", "BOTH"):
+                        db.delete_position(user_id, symbol, side)
+                    logger.info(
+                        "Cleared stale DB positions for user=%s symbol=%s (no open positions on Binance)",
+                        self.username, symbol,
+                    )
         except Exception:
             logger.exception("Failed REST position sync for user=%s symbol=%s", self.username, symbol)
 
@@ -371,9 +434,44 @@ class UserOrderStatusStream:
             if not user:
                 return
             user_id = int(user["id"])
-            # Read entry_price from current DB position BEFORE REST sync overwrites it
+            cache_key = (symbol, position_side)
+            # Read entry_price and id from current DB position BEFORE REST sync overwrites it
             position = db.get_position(user_id, symbol, position_side)
+            position_id: Optional[int] = int(position["id"]) if position and position.get("id") else None
             entry_price = float((position or {}).get("avg_entry_price") or 0)
+            # Fallback 1: fetch entry price from Binance REST if DB has none
+            if not entry_price:
+                try:
+                    binance_positions = self.client.get_position_information(symbol)
+                    for bp in (binance_positions or []):
+                        ps = str(bp.get("positionSide") or "").upper()
+                        amt = float(bp.get("positionAmt") or 0)
+                        if ps == position_side and abs(amt) > 0:
+                            entry_price = float(bp.get("entryPrice") or 0)
+                            break
+                except Exception:
+                    pass
+            # Fallback 2: use cached value from a previous fill on the same position
+            # (handles the case where the DB row is already gone by the time a second
+            #  partial-close fill arrives, e.g. two sequential 0.001 BTC closes)
+            if entry_price:
+                with self._entry_price_cache_lock:
+                    # Prefer the cached position_id when position is already gone from DB
+                    if position_id is None:
+                        cached_pid, _ = self._entry_price_cache.get(cache_key, (None, 0.0))
+                        position_id = cached_pid
+                    self._entry_price_cache[cache_key] = (position_id, entry_price)
+            else:
+                with self._entry_price_cache_lock:
+                    cached_pid, cached_ep = self._entry_price_cache.get(cache_key, (None, 0.0))
+                if cached_ep:
+                    entry_price = cached_ep
+                    if position_id is None:
+                        position_id = cached_pid
+                    logger.debug(
+                        "entry_price fallback from cache: user=%s symbol=%s side=%s entry=%.4f",
+                        self.username, symbol, position_side, entry_price,
+                    )
             if position_side == "LONG":
                 realized_pnl = (fill_price - entry_price) * fill_qty
             else:
@@ -388,11 +486,12 @@ class UserOrderStatusStream:
                 quantity=fill_qty,
                 realized_pnl=realized_pnl,
                 commission=0.0,  # commission not available from poll; WS path has it
+                position_id=position_id,
             )
             logger.info(
-                "position_history (poll) created: id=%s user=%s symbol=%s side=%s qty=%s "
+                "position_history (poll) created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "
                 "entry=%.4f close=%.4f rpnl=%.4f",
-                history_id, self.username, symbol, position_side,
+                history_id, position_id, self.username, symbol, position_side,
                 fill_qty, entry_price, fill_price, realized_pnl,
             )
         except Exception:
@@ -450,6 +549,19 @@ class UserOrderStatusStream:
         if not exchange_order_id:
             return
 
+        # For a FULLY FILLED order, check dedup set to avoid double-creating position_history
+        # if both WS and the REST sync_order_status detect the fill.
+        is_full_fill = order_status == "FILLED"
+        if is_full_fill:
+            with self._handled_close_fills_lock:
+                if exchange_order_id in self._handled_close_fills:
+                    logger.debug(
+                        "position_history already created for order=%s (WS path), skipping",
+                        exchange_order_id,
+                    )
+                    return
+                self._handled_close_fills.add(exchange_order_id)
+
         # Look up the DB order to check trade_direction
         db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
         if not db_order:
@@ -474,9 +586,41 @@ class UserOrderStatusStream:
             return
         user_id = int(user["id"])
 
-        # Get the current position to read avg_entry_price
+        cache_key = (symbol, position_side)
+        # Get the current position to read avg_entry_price and id
         position = db.get_position(user_id, symbol, position_side)
+        position_id: Optional[int] = int(position["id"]) if position and position.get("id") else None
         entry_price = _safe_float((position or {}).get("avg_entry_price") or 0) or 0.0
+        # Fallback 1: when DB has no position yet (e.g. first run after restart), read from Binance
+        if not entry_price:
+            try:
+                binance_positions = self.client.get_position_information(symbol)
+                for bp in (binance_positions or []):
+                    ps = str(bp.get("positionSide") or "").upper()
+                    amt = float(bp.get("positionAmt") or 0)
+                    if ps == position_side and abs(amt) > 0:
+                        entry_price = float(bp.get("entryPrice") or 0)
+                        break
+            except Exception:
+                pass
+        # Fallback 2: use cached value from a previous fill on the same position
+        if entry_price:
+            with self._entry_price_cache_lock:
+                if position_id is None:
+                    cached_pid, _ = self._entry_price_cache.get(cache_key, (None, 0.0))
+                    position_id = cached_pid
+                self._entry_price_cache[cache_key] = (position_id, entry_price)
+        else:
+            with self._entry_price_cache_lock:
+                cached_pid, cached_ep = self._entry_price_cache.get(cache_key, (None, 0.0))
+            if cached_ep:
+                entry_price = cached_ep
+                if position_id is None:
+                    position_id = cached_pid
+                logger.debug(
+                    "entry_price fallback from cache (WS): user=%s symbol=%s side=%s entry=%.4f",
+                    self.username, symbol, position_side, entry_price,
+                )
 
         # Realized PnL for this fill
         if position_side == "LONG":
@@ -495,11 +639,12 @@ class UserOrderStatusStream:
                 quantity=last_fill_qty,
                 realized_pnl=realized_pnl,
                 commission=commission,
+                position_id=position_id,
             )
             logger.info(
-                "position_history created: id=%s user=%s symbol=%s side=%s qty=%s "
+                "position_history created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "
                 "entry=%.4f close=%.4f rpnl=%.4f commission=%.6f",
-                history_id, self.username, symbol, position_side,
+                history_id, position_id, self.username, symbol, position_side,
                 last_fill_qty, entry_price, last_fill_price, realized_pnl, commission,
             )
         except Exception:
@@ -507,6 +652,15 @@ class UserOrderStatusStream:
                 "Failed to create position_history for user=%s exchange_order_id=%s",
                 self.username, exchange_order_id,
             )
+
+        # For fully-filled closes, trigger a REST position sync as a fallback in case
+        # the ACCOUNT_UPDATE WebSocket event is delayed or missed.
+        if order_status == "FILLED":
+            threading.Thread(
+                target=self._sync_position_from_rest,
+                args=(symbol,),
+                daemon=True,
+            ).start()
 
     def _sync_positions(self, positions_payload: list[dict]) -> None:
         user = db.get_user_by_username(self.username)
@@ -565,6 +719,14 @@ class UserOrderStatusStream:
                 margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
                 position_side=normalized_side,
             )
+            # Update entry_price cache so close-fill handlers can find it even after
+            # the position row is deleted (e.g. when second of two partial closes arrives).
+            if entry_price:
+                # Fetch the row to get its DB id (upsert may have created it above)
+                upserted = db.get_position(user_id, symbol, normalized_side)
+                pid = int(upserted["id"]) if upserted and upserted.get("id") else None
+                with self._entry_price_cache_lock:
+                    self._entry_price_cache[(symbol, normalized_side)] = (pid, entry_price)
 
     def _persist_status(self, order: dict) -> None:
         exchange_order_id = str(order.get("i") or order.get("orderId") or "")

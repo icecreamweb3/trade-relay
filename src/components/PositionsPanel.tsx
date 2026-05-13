@@ -201,6 +201,24 @@ export function PositionsPanel({
     }
   }
 
+  const handleRefresh = useCallback(async () => {
+    if (!isActive || !isAuthenticated || loading) return
+    setLoading(true)
+    try {
+      const synced = await api.syncPositions()
+      setPositions(synced)
+      if (tab !== 'positions') await loadRef.current()
+    } catch (error: unknown) {
+      const msg =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as { message?: string })?.message ||
+        t('order.error.failed')
+      showToast('error', msg)
+    } finally {
+      setLoading(false)
+    }
+  }, [isActive, isAuthenticated, loading, tab, showToast, t])
+
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">
       {/* Tab bar */}
@@ -214,7 +232,7 @@ export function PositionsPanel({
             {t(`pos.${tabKey === 'positions' ? 'title' : tabKey === 'openOrders' ? 'openOrders' : tabKey === 'history' ? 'history' : 'tradeHistory'}`)}
           </button>
         ))}
-        <button onClick={load} className="ml-auto px-2 text-[#858585] hover:text-[#cccccc] text-xs pr-3">
+        <button onClick={handleRefresh} disabled={loading} className="ml-auto px-2 text-[#858585] hover:text-[#cccccc] text-xs pr-3 disabled:opacity-50">
           {loading ? t('statusbar.refreshing') : `↻ ${t('pos.refresh')}`}
         </button>
       </div>
@@ -377,7 +395,7 @@ function splitTradingSymbol(symbol: string) {
 }
 
 function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE') {
-  if (sizeUnit === 'BASE') return position.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })
+  if (sizeUnit === 'BASE') return position.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const price = Number.isFinite(position.entry_price) ? position.entry_price : 0

@@ -71,6 +71,22 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
     return positions
 
 
+@router.post("/sync", response_model=list[PositionOut])
+def sync_positions(user: dict = Depends(get_current_user)):
+    """从 Binance 拉取最新持仓，写入数据库，并返回更新后的持仓列表。"""
+    username = str(user.get("username") or "")
+    api_key = cfg_module.get_api_key(username)
+    api_secret = cfg_module.get_api_secret(username)
+    if api_key and api_secret:
+        testnet = cfg_module.is_testnet(username)
+        sync_initial_positions_for_user(username, api_key, api_secret, testnet)
+        # Invalidate position cache so the subsequent read sees fresh data
+        user_id = int(user["sub"]) if user["role"] != "admin" else None
+        _positions_cache.pop(user_id, None)
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
+    return _db_positions(user_id=user_id)
+
+
 @router.get("", response_model=list[PositionOut])
 def get_positions(user: dict = Depends(get_current_user)):
     user_id = int(user["sub"]) if user["role"] != "admin" else None

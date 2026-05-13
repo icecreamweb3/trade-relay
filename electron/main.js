@@ -108,8 +108,8 @@ function loadBinanceWithRetry(url, retries = 5, delayMs = 2000) {
 // ── Main window ───────────────────────────────────────────────────────────────
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1850,
-    height: 1080,
+    width: 1920,
+    height: 1200,
     minWidth: 1280,
     minHeight: 800,
     backgroundColor: '#1e1e1e',
