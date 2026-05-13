@@ -105,6 +105,8 @@ class AccountSummaryOut(BaseModel):
     configured_leverage: int | None = None
     long_position_qty: float | None = None
     short_position_qty: float | None = None
+    long_position_value: float | None = None
+    short_position_value: float | None = None
     available_balance: float | None = None
     margin_ratio: float | None = None
     risk_rate: float | None = None
@@ -185,6 +187,8 @@ def get_account_summary(
         configured_leverage = None
         long_position_qty = 0.0
         short_position_qty = 0.0
+        long_position_value = 0.0
+        short_position_value = 0.0
         for position in positions:
             position_amt = float(position.get("positionAmt", 0) or 0)
             mark_price = float(position.get("markPrice", 0) or 0)
@@ -198,12 +202,16 @@ def get_account_summary(
             position_side = str(position.get("positionSide", "BOTH") or "BOTH").upper()
             if position_side == "LONG":
                 long_position_qty += abs(position_amt)
+                long_position_value += notional
             elif position_side == "SHORT":
                 short_position_qty += abs(position_amt)
+                short_position_value += notional
             elif position_amt > 0:
                 long_position_qty += position_amt
+                long_position_value += notional
             elif position_amt < 0:
                 short_position_qty += abs(position_amt)
+                short_position_value += notional
 
             leverage = float(position.get("leverage", 0) or 0)
             if configured_leverage is None and leverage > 0:
@@ -226,6 +234,8 @@ def get_account_summary(
             configured_leverage=configured_leverage,
             long_position_qty=long_position_qty,
             short_position_qty=short_position_qty,
+            long_position_value=long_position_value if long_position_value > 0 else None,
+            short_position_value=short_position_value if short_position_value > 0 else None,
             available_balance=available_balance,
             margin_ratio=margin_ratio,
             risk_rate=risk_rate,

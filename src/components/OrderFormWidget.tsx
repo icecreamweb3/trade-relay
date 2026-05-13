@@ -20,6 +20,8 @@ interface AccountSummary {
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null
+  long_position_value?: number | null
+  short_position_value?: number | null
   available_balance: number | null
   margin_ratio: number | null
   risk_rate: number | null
@@ -347,6 +349,21 @@ export function OrderFormWidget({
   }, [qty, price, orderType, currentPrice, leverage, sizeUnit])
 
   const fillPct = (pct: number) => {
+    if (posDir === 'CLOSE') {
+      const longQty = accountSummary?.long_position_qty ?? 0
+      const shortQty = accountSummary?.short_position_qty ?? 0
+      const posQty = Math.max(longQty, shortQty)
+      if (sizeUnit === 'QUOTE') {
+        const refPrice = orderType === 'MARKET'
+          ? (currentPrice ?? 0)
+          : (parseFloat(price) || (currentPrice ?? markPrice ?? 0))
+        if (!refPrice) return
+        setQty((posQty * refPrice * pct).toFixed(2))
+      } else {
+        setQty((posQty * pct).toFixed(4))
+      }
+      return
+    }
     const refPrice = orderType === 'MARKET'
       ? (currentPrice ?? 0)
       : (parseFloat(price) || (currentPrice ?? 0))
@@ -377,22 +394,28 @@ export function OrderFormWidget({
   const longCloseDisplay = useMemo(() => {
     const qty = accountSummary?.long_position_qty ?? null
     if (qty == null) return '—'
-    if (sizeUnit === 'QUOTE') {
-      if (!referencePrice) return '—'
-      return withAsset(qty * referencePrice, quoteAsset)
-    }
-    return `${fmt(qty, 4)} ${baseTicker}`
-  }, [accountSummary?.long_position_qty, sizeUnit, referencePrice, quoteAsset, baseTicker])
+    if (sizeUnit === 'BASE') return `${fmt(qty, 4)} ${baseTicker}`
+    // qty=0 → value is always 0 QUOTE, no price lookup needed
+    if (qty === 0) return withAsset(0, quoteAsset)
+    // prefer server-side notional; fall back to qty × market price
+    const notional = accountSummary?.long_position_value ?? null
+    if (notional != null) return withAsset(notional, quoteAsset)
+    const mktPrice = markPrice ?? currentPrice
+    if (!mktPrice) return `${fmt(qty, 4)} ${baseTicker}`
+    return withAsset(qty * mktPrice, quoteAsset)
+  }, [accountSummary?.long_position_qty, accountSummary?.long_position_value, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
     const qty = accountSummary?.short_position_qty ?? null
     if (qty == null) return '—'
-    if (sizeUnit === 'QUOTE') {
-      if (!referencePrice) return '—'
-      return withAsset(qty * referencePrice, quoteAsset)
-    }
-    return `${fmt(qty, 4)} ${baseTicker}`
-  }, [accountSummary?.short_position_qty, sizeUnit, referencePrice, quoteAsset, baseTicker])
+    if (sizeUnit === 'BASE') return `${fmt(qty, 4)} ${baseTicker}`
+    if (qty === 0) return withAsset(0, quoteAsset)
+    const notional = accountSummary?.short_position_value ?? null
+    if (notional != null) return withAsset(notional, quoteAsset)
+    const mktPrice = markPrice ?? currentPrice
+    if (!mktPrice) return `${fmt(qty, 4)} ${baseTicker}`
+    return withAsset(qty * mktPrice, quoteAsset)
+  }, [accountSummary?.short_position_qty, accountSummary?.short_position_value, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)

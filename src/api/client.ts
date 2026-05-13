@@ -70,6 +70,8 @@ interface ApiAccountSummary {
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null
+  long_position_value?: number | null
+  short_position_value?: number | null
   available_balance: number | null
   margin_ratio: number | null
   risk_rate: number | null
