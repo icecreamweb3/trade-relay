@@ -62,6 +62,23 @@ def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
         root.addHandler(console_handler)
 
     root.info("Logging initialised → %s", log_file)
+
+    # ── Patch uvicorn access log to include timestamps ──────────────────────
+    # uvicorn.access uses its own propagation-off logger by default; we attach
+    # a formatter that matches our application log style.
+    access_fmt = logging.Formatter(
+        fmt="%(asctime)s.%(msecs)03d | ACCESS   | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    access_fmt.converter = time.localtime
+
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_handler = logging.StreamHandler()
+    access_handler.setFormatter(access_fmt)
+    access_logger.addHandler(access_handler)
+    access_logger.propagate = False
+
     return root
 
 

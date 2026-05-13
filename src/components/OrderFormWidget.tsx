@@ -377,14 +377,22 @@ export function OrderFormWidget({
   const longCloseDisplay = useMemo(() => {
     const qty = accountSummary?.long_position_qty ?? null
     if (qty == null) return '—'
+    if (sizeUnit === 'QUOTE') {
+      if (!referencePrice) return '—'
+      return withAsset(qty * referencePrice, quoteAsset)
+    }
     return `${fmt(qty, 4)} ${baseTicker}`
-  }, [accountSummary?.long_position_qty, baseTicker])
+  }, [accountSummary?.long_position_qty, sizeUnit, referencePrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
     const qty = accountSummary?.short_position_qty ?? null
     if (qty == null) return '—'
+    if (sizeUnit === 'QUOTE') {
+      if (!referencePrice) return '—'
+      return withAsset(qty * referencePrice, quoteAsset)
+    }
     return `${fmt(qty, 4)} ${baseTicker}`
-  }, [accountSummary?.short_position_qty, baseTicker])
+  }, [accountSummary?.short_position_qty, sizeUnit, referencePrice, quoteAsset, baseTicker])
 
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)

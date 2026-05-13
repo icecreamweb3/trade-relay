@@ -7,7 +7,7 @@ import logging
 import ssl
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import websocket
@@ -134,10 +134,84 @@ class UserOrderStatusStream:
         except json.JSONDecodeError:
             logger.debug("Invalid order status payload for user=%s: %s", self.username, message[:200])
             return
-        if data.get("e") != "ORDER_TRADE_UPDATE":
+        event_type = str(data.get("e") or "")
+        if event_type == "ORDER_TRADE_UPDATE":
+            order = data.get("o") or {}
+            self._persist_status(order)
+            self._notify_listeners({
+                "type": "order_update",
+                "event": event_type,
+                "symbol": order.get("s") or order.get("symbol"),
+            })
             return
-        order = data.get("o") or {}
-        self._persist_status(order)
+        if event_type == "ACCOUNT_UPDATE":
+            account = data.get("a") or {}
+            positions = account.get("P") or []
+            self._sync_positions(positions)
+            self._notify_listeners({
+                "type": "account_update",
+                "event": event_type,
+                "reason": account.get("m"),
+                "symbols": [str(position.get("s") or "") for position in positions if position.get("s")],
+            })
+
+    def _sync_positions(self, positions_payload: list[dict]) -> None:
+        user = db.get_user_by_username(self.username)
+        if not user:
+            return
+
+        user_id = int(user["id"])
+        existing_rows = db.get_positions(user_id=user_id)
+        existing_by_key = {
+            (str(row.get("symbol") or ""), str(row.get("position_side") or "BOTH").upper()): row
+            for row in existing_rows
+        }
+
+        for position in positions_payload:
+            symbol = str(position.get("s") or position.get("symbol") or "")
+            if not symbol:
+                continue
+
+            raw_side = str(position.get("ps") or position.get("positionSide") or "BOTH").upper()
+            amount = _safe_float(position.get("pa") or position.get("positionAmt"))
+            entry_price = _safe_float(position.get("ep") or position.get("entryPrice"))
+            unrealized_pnl = _safe_float(position.get("up") or position.get("unrealizedProfit"))
+            realized_pnl = _safe_float(position.get("cr") or position.get("realizedPnl")) or 0.0
+            margin_type = str(position.get("mt") or position.get("marginType") or "CROSS").upper()
+
+            normalized_side = raw_side
+            if normalized_side not in ("LONG", "SHORT"):
+                if amount is not None and amount > 0:
+                    normalized_side = "LONG"
+                elif amount is not None and amount < 0:
+                    normalized_side = "SHORT"
+                else:
+                    normalized_side = "BOTH"
+
+            if amount is None or amount == 0:
+                delete_sides = {raw_side, normalized_side}
+                if raw_side == "BOTH":
+                    delete_sides.update({"LONG", "SHORT"})
+                for side in delete_sides:
+                    if side in ("LONG", "SHORT", "BOTH"):
+                        db.delete_position(user_id, symbol, side)
+                continue
+
+            existing = existing_by_key.get((symbol, normalized_side)) or existing_by_key.get((symbol, raw_side)) or {}
+            leverage = int(existing.get("leverage") or 1)
+
+            db.upsert_position(
+                user_id=user_id,
+                username=self.username,
+                symbol=symbol,
+                quantity=abs(amount),
+                avg_entry_price=entry_price,
+                unrealized_pnl=unrealized_pnl,
+                realized_pnl=realized_pnl,
+                leverage=leverage,
+                margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
+                position_side=normalized_side,
+            )
 
     def _persist_status(self, order: dict) -> None:
         exchange_order_id = str(order.get("i") or order.get("orderId") or "")
@@ -183,9 +257,28 @@ class UserOrderStatusStream:
                 message,
             )
 
+    def _notify_listeners(self, event: dict) -> None:
+        now = time.time()
+        with _listeners_lock:
+            last = _notify_last.get(self.username, 0.0)
+            if now - last < _notify_cooldown:
+                return
+            _notify_last[self.username] = now
+            listeners = list(_listeners.get(self.username, ()))
+        logger.debug("Notifying %d listeners for user=%s event=%s", len(listeners), self.username, event.get("type"))
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception:
+                logger.debug("Failed to notify user stream listener for user=%s", self.username, exc_info=True)
+
 
 _streams: dict[str, UserOrderStatusStream] = {}
 _streams_lock = threading.Lock()
+_listeners: dict[str, set[Callable[[dict], None]]] = {}
+_listeners_lock = threading.Lock()
+_notify_last: dict[str, float] = {}   # username → last notify timestamp
+_notify_cooldown = 2.0                # minimum seconds between notifications
 
 
 def ensure_user_order_status_stream(username: str, api_key: str, api_secret: str, testnet: bool) -> None:
@@ -218,12 +311,91 @@ def restore_active_order_status_streams() -> None:
         ensure_user_order_status_stream(username, api_key, api_secret, cfg.is_testnet(username))
 
 
+def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str, testnet: bool) -> None:
+    """Pull current positions from Binance for a single user and write to DB.
+    Called when the user's WebSocket connection is established (they are authenticated).
+    """
+    try:
+        client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        rows = client.get_position_information()
+        open_rows = [r for r in rows if float(r.get("positionAmt", 0) or 0) != 0]
+        logger.info("Initial position sync for user=%s: %d open positions", username, len(open_rows))
+        stream = UserOrderStatusStream(username, api_key, api_secret, testnet)
+        # Only sync rows with a non-zero position; REST API uses "unRealizedProfit" (capital R)
+        payload = [
+            {
+                "s": r.get("symbol"),
+                "ps": r.get("positionSide", "BOTH"),
+                "pa": r.get("positionAmt"),
+                "ep": r.get("entryPrice"),
+                "up": r.get("unRealizedProfit") or r.get("unrealizedProfit") or "0",
+                "cr": "0",
+                "mt": r.get("marginType", "cross").upper(),
+            }
+            for r in open_rows
+        ]
+        stream._sync_positions(payload)
+    except Exception:
+        logger.exception("Failed initial position sync for user=%s", username)
+
+
+def sync_all_initial_positions() -> None:
+    """Pull current open positions from Binance for every configured user and write to DB.
+    Called once at backend startup so the DB is populated before any WS events arrive.
+    """
+    from trade_relay.config import get_api_key, get_api_secret, is_testnet
+    for username in db.get_all_active_usernames():
+        api_key = get_api_key(username)
+        api_secret = get_api_secret(username)
+        if not api_key or not api_secret:
+            continue
+        try:
+            client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=is_testnet(username))
+            rows = client.get_position_information()
+            open_rows = [r for r in rows if float(r.get("positionAmt", 0) or 0) != 0]
+            logger.info("Initial position sync for user=%s: %d open positions", username, len(open_rows))
+            # Re-use _sync_positions via a temporary stream object
+            stream = UserOrderStatusStream(username, api_key, api_secret, is_testnet(username))
+            # Convert REST format → ACCOUNT_UPDATE "P" array format
+            payload = [
+                {
+                    "s": r.get("symbol"),
+                    "ps": r.get("positionSide", "BOTH"),
+                    "pa": r.get("positionAmt"),
+                    "ep": r.get("entryPrice"),
+                    "up": r.get("unrealizedProfit"),
+                    "cr": "0",
+                    "mt": r.get("marginType", "cross").upper(),
+                }
+                for r in rows
+            ]
+            stream._sync_positions(payload)
+        except Exception:
+            logger.exception("Failed initial position sync for user=%s", username)
+
+
 def stop_all_order_status_streams() -> None:
     with _streams_lock:
         streams = list(_streams.values())
         _streams.clear()
     for stream in streams:
         stream.stop()
+
+
+def register_user_stream_listener(username: str, listener: Callable[[dict], None]) -> None:
+    with _listeners_lock:
+        listeners = _listeners.setdefault(username, set())
+        listeners.add(listener)
+
+
+def unregister_user_stream_listener(username: str, listener: Callable[[dict], None]) -> None:
+    with _listeners_lock:
+        listeners = _listeners.get(username)
+        if not listeners:
+            return
+        listeners.discard(listener)
+        if not listeners:
+            _listeners.pop(username, None)
 
 
 def _safe_float(value) -> Optional[float]:

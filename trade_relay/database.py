@@ -714,6 +714,20 @@ def get_active_order_usernames() -> list[str]:
         conn.close()
 
 
+def get_all_active_usernames() -> list[str]:
+    """Return usernames for all active (non-disabled) users."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT username FROM users WHERE is_active = 1 AND username IS NOT NULL AND username <> ''"
+            )
+            rows = cur.fetchall()
+            return [str(row["username"]) for row in rows if row.get("username")]
+    finally:
+        conn.close()
+
+
 def get_order_history(user_id: Optional[int] = None, limit: int = 200) -> list:
     """返回历史订单（已完结：FILLED / CANCELED / EXPIRED / REJECTED / FAILED / ERROR）。"""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
@@ -860,30 +874,60 @@ def upsert_position(
     position_side: str = "BOTH",
     exchange: str = "binance",
 ) -> None:
-    """插入或更新头寸记录（以 user_id + exchange + symbol + position_side 为唯一键）。"""
+    """插入或更新头寸记录，兼容新版（含 user_id）和旧版（side/entry_price）表结构。"""
+    columns = _get_table_columns("positions")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO positions
-                   (user_id, username, exchange, symbol, position_side,
-                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
-                    leverage, margin_type)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON DUPLICATE KEY UPDATE
-                       quantity        = VALUES(quantity),
-                       avg_entry_price = VALUES(avg_entry_price),
-                       unrealized_pnl  = VALUES(unrealized_pnl),
-                       realized_pnl    = VALUES(realized_pnl),
-                       leverage        = VALUES(leverage),
-                       margin_type     = VALUES(margin_type),
-                       updated_at      = CURRENT_TIMESTAMP""",
-                (
-                    user_id, username, exchange, symbol, position_side,
-                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
-                    leverage, margin_type,
-                ),
-            )
+            if "user_id" in columns:
+                # New schema
+                cur.execute(
+                    """INSERT INTO positions
+                       (user_id, username, exchange, symbol, position_side,
+                        quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                        leverage, margin_type)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON DUPLICATE KEY UPDATE
+                           quantity        = VALUES(quantity),
+                           avg_entry_price = VALUES(avg_entry_price),
+                           unrealized_pnl  = VALUES(unrealized_pnl),
+                           realized_pnl    = VALUES(realized_pnl),
+                           leverage        = VALUES(leverage),
+                           margin_type     = VALUES(margin_type),
+                           updated_at      = CURRENT_TIMESTAMP""",
+                    (
+                        user_id, username, exchange, symbol, position_side,
+                        quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                        leverage, margin_type,
+                    ),
+                )
+            else:
+                # Legacy schema: id, symbol, side, quantity, entry_price,
+                #                liquidation_price, unrealized_pnl, leverage, margin_type
+                side = position_side if position_side in ("LONG", "SHORT") else "LONG"
+                cur.execute(
+                    "SELECT id FROM positions WHERE symbol = %s AND side = %s",
+                    (symbol, side),
+                )
+                row = cur.fetchone()
+                if row:
+                    cur.execute(
+                        """UPDATE positions
+                           SET quantity = %s, entry_price = %s,
+                               unrealized_pnl = %s, leverage = %s, margin_type = %s
+                           WHERE id = %s""",
+                        (quantity, avg_entry_price, unrealized_pnl, leverage,
+                         margin_type.upper(), row["id"]),
+                    )
+                else:
+                    cur.execute(
+                        """INSERT INTO positions
+                           (symbol, side, quantity, entry_price,
+                            unrealized_pnl, leverage, margin_type, opened_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())""",
+                        (symbol, side, quantity, avg_entry_price,
+                         unrealized_pnl, leverage, margin_type.upper()),
+                    )
             conn.commit()
     finally:
         conn.close()

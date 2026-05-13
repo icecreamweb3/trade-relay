@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -6,14 +6,15 @@ import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+const POSITIONS_WS_URL = 'ws://127.0.0.1:8000/api/positions/ws'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
-  entry_price: number; liquidation_price: number; unrealized_pnl: number
-  leverage: number; margin_type: string; margin: number
+  entry_price: number | null; liquidation_price: number | null; unrealized_pnl: number | null
+  leverage: number; margin_type: string; margin: number | null
 }
 
 interface Order {
@@ -46,6 +47,7 @@ export function PositionsPanel({
   const [history, setHistory] = useState<Order[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [loading, setLoading] = useState(false)
+  const loadRef = useRef<() => Promise<void>>(async () => {})
 
   const load = useCallback(async () => {
     if (!isActive) {
@@ -76,12 +78,75 @@ export function PositionsPanel({
     setLoading(false)
   }, [isActive, isAuthenticated, showToast, t, tab])
 
-  useEffect(() => { load() }, [load, refreshTrigger])
+  useEffect(() => {
+    loadRef.current = load
+  }, [load])
+
+  // Trigger load on mount and when refreshTrigger or tab changes.
+  // Intentionally NOT including `load` in deps — we call it via loadRef to avoid
+  // re-triggering on every internal state change (which in dev HMR would cause
+  // dozens of concurrent requests from stale component instances).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadRef.current() }, [refreshTrigger, tab])
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
-    const t = setInterval(load, 5000)
-    return () => clearInterval(t)
-  }, [isActive, isAuthenticated, load])
+
+    let alive = true
+    let socket: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null
+    let lastReloadAt = 0
+    const RELOAD_COOLDOWN_MS = 2000 // 两次重载之间最短间隔
+
+    const scheduleReload = () => {
+      if (!alive) return
+      if (reloadTimer) clearTimeout(reloadTimer)
+      const now = Date.now()
+      const delay = Math.max(250, lastReloadAt + RELOAD_COOLDOWN_MS - now)
+      reloadTimer = setTimeout(() => {
+        lastReloadAt = Date.now()
+        void loadRef.current()
+      }, delay)
+    }
+
+    const connect = async () => {
+      const token = await window.electronAPI?.getToken?.()
+      if (!alive || !token) return
+
+      socket = new WebSocket(`${POSITIONS_WS_URL}?token=${encodeURIComponent(token)}`)
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string) as { type?: string }
+          if (data.type === 'account_update' || data.type === 'order_update') {
+            scheduleReload()
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      }
+
+      socket.onerror = () => {
+        socket?.close()
+      }
+
+      socket.onclose = () => {
+        if (!alive) return
+        reconnectTimer = setTimeout(() => {
+          void connect()
+        }, 3000)
+      }
+    }
+
+    void connect()
+
+    return () => {
+      alive = false
+      if (reloadTimer) clearTimeout(reloadTimer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [isActive, isAuthenticated])
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">
@@ -117,10 +182,10 @@ export function PositionsPanel({
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
                     <td className="font-mono">{formatPositionSize(p, sizeUnit)}</td>
-                    <td className="font-mono">{p.entry_price.toFixed(2)}</td>
-                    <td className="font-mono text-orange-400">{p.liquidation_price ? p.liquidation_price.toFixed(2) : '-'}</td>
-                    <td className={`font-mono font-semibold ${p.unrealized_pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
-                      {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toFixed(2)}
+                    <td className="font-mono">{p.entry_price != null ? p.entry_price.toFixed(2) : '-'}</td>
+                    <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
+                    <td className={`font-mono font-semibold ${(p.unrealized_pnl ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
+                      {p.unrealized_pnl != null ? `${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}` : '-'}
                     </td>
                     <td>{p.leverage}x</td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
