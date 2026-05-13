@@ -2,11 +2,9 @@ import { useEffect, useRef } from 'react'
 import { useMarketStore, MarketEvent } from '../store/marketStore'
 
 // ── Direct Binance Futures WebSocket subscription ─────────────────────────────
-// Two separate connections:
-//   1. markPrice WS  — depends only on symbol, never disrupted by interval change
-//   2. kline+trade WS — depends on symbol+interval, reconnects on interval change
+// One direct connection is kept here for kline + trade data.
+// Mark price / funding REST polling was removed to reduce extra Binance requests.
 
-const FAPI_BASE = 'https://fapi.binance.com/fapi/v1'
 const FSTREAM_BASE = 'wss://fstream.binance.com'
 
 function makeWs(
@@ -85,7 +83,6 @@ export function useMarketData() {
 
   // Stable ref so WS callbacks always call the latest action without re-running effects
   const processRef = useRef(processMarketEvent)
-  const lastRateLimitStatusRef = useRef<number | null>(null)
   useEffect(() => { processRef.current = processMarketEvent })
 
   const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
@@ -125,45 +122,6 @@ export function useMarketData() {
 
     return () => cleanups.forEach(fn => fn())
   }, [setSymbol, setChartInterval, setChartExpanded])
-
-  // ── markPrice: REST polling for mark price + funding data ─────────────────
-  useEffect(() => {
-    let alive = true
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    async function poll() {
-      if (!alive) return
-      let delayMs = 15000
-      try {
-        const resp = await fetch(`${FAPI_BASE}/premiumIndex?symbol=${symbol}`)
-        if (resp.ok) {
-          lastRateLimitStatusRef.current = null
-          const d = await resp.json()
-          const markPrice = parseFloat(d.markPrice)
-          const indexPrice = parseFloat(d.indexPrice)
-          const fundingRate = parseFloat(d.lastFundingRate)
-          const nextFundingTime = d.nextFundingTime as number
-          processRef.current({ type: 'markPrice', symbol: d.symbol, markPrice, indexPrice, fundingRate, nextFundingTime, timestamp: Date.now() })
-        } else {
-          if (resp.status === 429 || resp.status === 418) {
-            delayMs = resp.status === 418 ? 300000 : 60000
-            if (lastRateLimitStatusRef.current !== resp.status) {
-              window.electronAPI?.logToMain?.('warn', `markPrice REST HTTP ${resp.status} for ${symbol}; backing off to ${Math.round(delayMs / 1000)}s`)
-              lastRateLimitStatusRef.current = resp.status
-            }
-          } else {
-            window.electronAPI?.logToMain?.('warn', `markPrice REST HTTP ${resp.status} for ${symbol}`)
-          }
-        }
-      } catch (e) {
-        window.electronAPI?.logToMain?.('warn', `markPrice REST error: ${e}`)
-      }
-      if (alive) timer = setTimeout(poll, delayMs)
-    }
-
-    poll()
-    return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [symbol])
 
   // ── kline + aggTrade: combined stream with depth20 keep-alive ────────────
   // Including @depth20@100ms forces the proxy to flush TCP buffers every 100ms,

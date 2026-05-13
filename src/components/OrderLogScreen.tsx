@@ -68,9 +68,7 @@ export function OrderLogScreen() {
       try {
         const users = await api.getOrderUsers()
         setUserOptions(users.map((item: UserOption) => ({ id: item.id, username: item.username })))
-      } catch {
-        setUserOptions([])
-      }
+      } catch {}
     }
 
     loadUsers()
@@ -164,7 +162,7 @@ export function OrderLogScreen() {
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
-              <tr><td colSpan={10} className="text-center text-[#858585] py-6">{loading ? '...' : t('log.empty')}</td></tr>
+              <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>

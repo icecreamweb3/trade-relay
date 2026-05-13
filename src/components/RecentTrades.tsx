@@ -39,7 +39,10 @@ export function RecentTrades({ isActive = true }: { isActive?: boolean }) {
   const [fills, setFills] = useState<Fill[]>([])
 
   const load = useCallback(async () => {
-    if (!isActive || !isAuthenticated) {
+    if (!isActive) {
+      return
+    }
+    if (!isAuthenticated) {
       setFills([])
       return
     }

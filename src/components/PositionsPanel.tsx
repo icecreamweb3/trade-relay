@@ -8,6 +8,7 @@ const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).ele
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
+const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
@@ -27,7 +28,15 @@ interface Trade {
   commission_asset: string; created_at?: string
 }
 
-export function PositionsPanel({ refreshTrigger, isActive = true }: { refreshTrigger?: number; isActive?: boolean }) {
+export function PositionsPanel({
+  refreshTrigger,
+  isActive = true,
+  sizeUnit = 'QUOTE',
+}: {
+  refreshTrigger?: number
+  isActive?: boolean
+  sizeUnit?: 'QUOTE' | 'BASE'
+}) {
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const showToast = useToastStore((state) => state.showToast)
@@ -39,7 +48,11 @@ export function PositionsPanel({ refreshTrigger, isActive = true }: { refreshTri
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
-    if (!isActive || !isAuthenticated) {
+    if (!isActive) {
+      setLoading(false)
+      return
+    }
+    if (!isAuthenticated) {
       setPositions([])
       setOpenOrders([])
       setHistory([])
@@ -103,7 +116,7 @@ export function PositionsPanel({ refreshTrigger, isActive = true }: { refreshTri
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
-                    <td className="font-mono">{p.quantity}</td>
+                    <td className="font-mono">{formatPositionSize(p, sizeUnit)}</td>
                     <td className="font-mono">{p.entry_price.toFixed(2)}</td>
                     <td className="font-mono text-orange-400">{p.liquidation_price ? p.liquidation_price.toFixed(2) : '-'}</td>
                     <td className={`font-mono font-semibold ${p.unrealized_pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
@@ -213,4 +226,24 @@ function formatMarginType(marginType: string, t: (key: string) => string) {
   if (marginType === 'CROSS') return t('pos.marginType.cross')
   if (marginType === 'ISOLATED') return t('pos.marginType.isolated')
   return marginType
+}
+
+function splitTradingSymbol(symbol: string) {
+  const upperSymbol = symbol.toUpperCase()
+  for (const quoteAsset of QUOTE_ASSETS) {
+    if (upperSymbol.endsWith(quoteAsset) && upperSymbol.length > quoteAsset.length) {
+      return { baseAsset: upperSymbol.slice(0, -quoteAsset.length), quoteAsset }
+    }
+  }
+  return { baseAsset: upperSymbol, quoteAsset: 'USDT' }
+}
+
+function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE') {
+  if (sizeUnit === 'BASE') return position.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })
+
+  const { quoteAsset } = splitTradingSymbol(position.symbol)
+  const price = Number.isFinite(position.entry_price) ? position.entry_price : 0
+  const quoteValue = position.quantity * price
+  if (!quoteValue) return `— ${quoteAsset}`
+  return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
 }

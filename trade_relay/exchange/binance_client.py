@@ -811,12 +811,39 @@ class BinanceClient:
     
     def get_account_info(self) -> dict:
         """Get account information (supports sub-account if configured)"""
-        try:
-            data = self.client.futures_account()
-            return data
-        except Exception as e:
-            logger.debug(f"Failed to get account info: {e}")
-            return {}
+        for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
+            try:
+                self.set_timestamp_offset(force=(attempt > 0))
+                data = self.client.futures_account(recvWindow=self.DEFAULT_RECV_WINDOW)
+                return data
+            except Exception as e:
+                if self._is_timestamp_error_exception(e) and attempt < self.MAX_TIMESTAMP_RETRIES:
+                    logger.warning(f"⏰ get_account_info 时间戳错误重试 (attempt {attempt + 1}/{self.MAX_TIMESTAMP_RETRIES + 1})")
+                    self.set_timestamp_offset(force=True)
+                    continue
+                logger.debug(f"Failed to get account info: {e}")
+                return {}
+
+    def get_position_information(self, symbol: str | None = None, recv_window: int | None = None) -> List[dict]:
+        """Get raw futures position information with timestamp sync and retry support."""
+        request_kwargs: Dict[str, object] = {
+            'recvWindow': recv_window or self.DEFAULT_RECV_WINDOW,
+        }
+        if symbol:
+            request_kwargs['symbol'] = symbol
+
+        for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
+            try:
+                self.set_timestamp_offset(force=(attempt > 0))
+                rows = self.client.futures_position_information(**request_kwargs)
+                return rows or []
+            except Exception as e:
+                if self._is_timestamp_error_exception(e) and attempt < self.MAX_TIMESTAMP_RETRIES:
+                    logger.warning(f"⏰ get_position_information 时间戳错误重试 (attempt {attempt + 1}/{self.MAX_TIMESTAMP_RETRIES + 1})")
+                    self.set_timestamp_offset(force=True)
+                    continue
+                logger.debug(f"Failed to get raw position information: {e}")
+                return []
 
     def get_account_balance(self, asset: str = "USDT") -> float:
         """Return available balance for *asset* in the futures wallet."""

@@ -4,6 +4,7 @@ Account router: current-user account summary for the order form Account section.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+import re
 import time
 from threading import Lock
 
@@ -20,6 +21,7 @@ _log = get_logger(__name__)
 
 QUOTE_ASSETS = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH")
 ACCOUNT_SUMMARY_CACHE_TTL_SECONDS = 20.0
+ACCOUNT_SUMMARY_RATE_LIMIT_TTL_SECONDS = 60.0
 _account_summary_cache: dict[tuple[str, str | None], tuple[float, dict]] = {}
 _account_summary_cache_lock = Lock()
 
@@ -57,11 +59,33 @@ def _get_cached_account_summary(username: str, symbol: str | None) -> 'AccountSu
     return AccountSummaryOut(**payload)
 
 
+def _account_summary_cache_ttl(summary: 'AccountSummaryOut') -> float:
+    message = (summary.message or '').strip()
+    if not message:
+        return ACCOUNT_SUMMARY_CACHE_TTL_SECONDS
+
+    if '-1003' not in message:
+        return ACCOUNT_SUMMARY_CACHE_TTL_SECONDS
+
+    banned_until_match = re.search(r'banned until (\d+)', message)
+    if banned_until_match:
+        try:
+            banned_until_ms = int(banned_until_match.group(1))
+            remaining_seconds = (banned_until_ms - int(time.time() * 1000)) / 1000
+            if remaining_seconds > 0:
+                return max(remaining_seconds, ACCOUNT_SUMMARY_RATE_LIMIT_TTL_SECONDS)
+        except ValueError:
+            pass
+
+    return ACCOUNT_SUMMARY_RATE_LIMIT_TTL_SECONDS
+
+
 def _set_cached_account_summary(username: str, symbol: str | None, summary: 'AccountSummaryOut') -> None:
     cache_key = _account_summary_cache_key(username, symbol)
     payload = _model_to_dict(summary)
+    ttl_seconds = _account_summary_cache_ttl(summary)
     with _account_summary_cache_lock:
-        _account_summary_cache[cache_key] = (time.monotonic() + ACCOUNT_SUMMARY_CACHE_TTL_SECONDS, payload)
+        _account_summary_cache[cache_key] = (time.monotonic() + ttl_seconds, payload)
 
 
 def _invalidate_account_summary_cache(username: str, symbol: str | None = None) -> None:
@@ -133,10 +157,7 @@ def get_account_summary(
             testnet=testnet,
         )
         account = client.get_account_info() or {}
-        position_kwargs = {"recvWindow": 5000}
-        if normalized_symbol:
-            position_kwargs["symbol"] = normalized_symbol
-        positions = client.client.futures_position_information(**position_kwargs) or []
+        positions = client.get_position_information(symbol=normalized_symbol, recv_window=5000) or []
 
         assets = account.get("assets", []) or []
         selected_asset = None

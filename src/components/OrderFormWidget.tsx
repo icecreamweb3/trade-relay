@@ -119,17 +119,7 @@ function writeStoredLeverage(username: string, symbol: string, leverage: number)
 
 function TickerStrip() {
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, markPrice, fundingRate, nextFundingTime, klines } = useMarketStore()
-  const [countdown, setCountdown] = useState(() => nextFundingSeconds(nextFundingTime))
-
-  useEffect(() => {
-    setCountdown(nextFundingSeconds(nextFundingTime))
-  }, [nextFundingTime])
-
-  useEffect(() => {
-    const t = setInterval(() => setCountdown(nextFundingSeconds(nextFundingTime)), 1000)
-    return () => clearInterval(t)
-  }, [nextFundingTime])
+  const { symbol, currentPrice, klines } = useMarketStore()
 
   const change24h = useMemo(() => {
     if (klines.length < 2 || currentPrice == null) return null
@@ -154,22 +144,6 @@ function TickerStrip() {
           </span>
         )}
       </div>
-      <div className="grid grid-cols-2 gap-x-3">
-        <div>
-          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">{t('order.markPrice')}</div>
-          <div className="text-[11px] text-[#EAECEF] font-mono tabular-nums">{markPrice != null ? fmt(markPrice, 2) : '—'}</div>
-        </div>
-        <div>
-          <div className="text-[9px] text-[#848E9C] uppercase tracking-wider mb-0.5">{t('order.fundingCountdown')}</div>
-          <div className="text-[11px] font-mono tabular-nums">
-            <span className={fundingRate != null && fundingRate >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
-              {fmtRate(fundingRate)}
-            </span>
-            <span className="text-[#848E9C] mx-1">·</span>
-            <span className="text-[#848E9C]">{fmtCountdown(countdown)}</span>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }
@@ -178,10 +152,14 @@ export function OrderFormWidget({
   onOrderPlaced,
   selectedOrderBookPrice,
   isActive = true,
+  sizeUnit,
+  onSizeUnitChange,
 }: {
   onOrderPlaced?: () => void
   selectedOrderBookPrice?: { value: number; token: number } | null
   isActive?: boolean
+  sizeUnit: 'QUOTE' | 'BASE'
+  onSizeUnitChange: (nextUnit: 'QUOTE' | 'BASE') => void
 }) {
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
@@ -201,7 +179,6 @@ export function OrderFormWidget({
   const [leverage, setLeverage] = useState(10)
   const [leverageUpdating, setLeverageUpdating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [sizeUnit, setSizeUnit] = useState<'USDT' | 'BASE'>('USDT')
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
   const [accountLoading, setAccountLoading] = useState(false)
   const showToast = useToastStore((state) => state.showToast)
@@ -260,7 +237,10 @@ export function OrderFormWidget({
           error: describeRequestError(error),
         })
         if (alive) {
-          setAccountSummary({
+          setAccountSummary((current) => current ? {
+            ...current,
+            message: t('order.error.loadAccount'),
+          } : {
             ...emptyAccountSummary,
             message: t('order.error.loadAccount'),
           })
@@ -362,7 +342,7 @@ export function OrderFormWidget({
     const priceNum = orderType === 'MARKET' ? (currentPrice ?? 0) : parseFloat(price)
     if (!qtyNum || !priceNum) return null
     // qty is in USDT → convert to base first
-    const baseQty = sizeUnit === 'USDT' ? qtyNum / priceNum : qtyNum
+    const baseQty = sizeUnit === 'QUOTE' ? qtyNum / priceNum : qtyNum
     return (baseQty * priceNum) / leverage
   }, [qty, price, orderType, currentPrice, leverage, sizeUnit])
 
@@ -373,7 +353,7 @@ export function OrderFormWidget({
     if (!refPrice) return
     const availableQuoteBalance = accountSummary?.available_balance ?? 0
     const maxBaseQty = (availableQuoteBalance * leverage) / refPrice
-    if (sizeUnit === 'USDT') {
+    if (sizeUnit === 'QUOTE') {
       setQty((maxBaseQty * refPrice * pct).toFixed(2))
     } else {
       setQty((maxBaseQty * pct).toFixed(4))
@@ -389,7 +369,7 @@ export function OrderFormWidget({
   const openAvailableDisplay = useMemo(() => {
     const availableBalance = accountSummary?.available_balance ?? null
     if (availableBalance == null) return '—'
-    if (sizeUnit === 'USDT') return withAsset(availableBalance * leverage, quoteAsset)
+    if (sizeUnit === 'QUOTE') return withAsset(availableBalance * leverage, quoteAsset)
     if (!referencePrice) return '—'
     return `${fmt((availableBalance * leverage) / referencePrice, 4)} ${baseTicker}`
   }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
@@ -412,7 +392,7 @@ export function OrderFormWidget({
 
     // API 始终接收 base 数量（BTC）；若用户以 USDT 输入则按参考价格换算
     let baseQty = qtyNum
-    if (sizeUnit === 'USDT') {
+    if (sizeUnit === 'QUOTE') {
       const refPrice = orderType === 'MARKET'
         ? (currentPrice ?? 0)
         : (parseFloat(price) || (currentPrice ?? 0))
@@ -563,9 +543,9 @@ export function OrderFormWidget({
               className="flex-1 min-w-0 bg-[#1E2026] border border-[#2B2F36] border-r-0 focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded-l px-2.5 py-1.5 outline-none selectable" />
             <select
               value={sizeUnit}
-              onChange={e => { setSizeUnit(e.target.value as 'USDT' | 'BASE'); setQty('') }}
+              onChange={e => { onSizeUnitChange(e.target.value as 'QUOTE' | 'BASE'); setQty('') }}
               className="bg-[#2B2F36] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded-r px-2 py-1.5 outline-none cursor-pointer shrink-0">
-              <option value="USDT">{quoteAsset}</option>
+              <option value="QUOTE">{quoteAsset}</option>
               <option value="BASE">{baseTicker}</option>
             </select>
           </div>
@@ -649,32 +629,40 @@ export function OrderFormWidget({
         <div className="grid grid-cols-2 gap-x-2 pt-1">
           {/* Long side */}
           <div className="space-y-1">
-            <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
-              <span className="text-[#0ECB81]">— {quoteAsset}</span>
-            </div>
-            <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">{t('pos.margin')}</span>
-              <span className="text-[#EAECEF]">— {quoteAsset}</span>
-            </div>
+            {posDir === 'OPEN' && (
+              <>
+                <div className="flex justify-between text-[9px]">
+                  <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
+                  <span className="text-[#0ECB81]">— {quoteAsset}</span>
+                </div>
+                <div className="flex justify-between text-[9px]">
+                  <span className="text-[#848E9C]">{t('pos.margin')}</span>
+                  <span className="text-[#EAECEF]">— {quoteAsset}</span>
+                </div>
+              </>
+            )}
             <div className="flex justify-between text-[9px]">
               <span className="text-[#848E9C]">{posDir === 'OPEN' ? t('order.availOpen') : t('order.availClose')}</span>
-              <span className="text-[#EAECEF]">{accountLoading ? t('order.loading') : (posDir === 'OPEN' ? openAvailableDisplay : shortCloseDisplay)}</span>
+              <span className="text-[#EAECEF]">{posDir === 'OPEN' ? openAvailableDisplay : shortCloseDisplay}</span>
             </div>
           </div>
           {/* Short side */}
           <div className="space-y-1">
-            <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
-              <span className="text-[#F6465D]">— {quoteAsset}</span>
-            </div>
-            <div className="flex justify-between text-[9px]">
-              <span className="text-[#848E9C]">{t('pos.margin')}</span>
-              <span className="text-[#EAECEF]">— {quoteAsset}</span>
-            </div>
+            {posDir === 'OPEN' && (
+              <>
+                <div className="flex justify-between text-[9px]">
+                  <span className="text-[#848E9C]">{t('order.liqPrice')}</span>
+                  <span className="text-[#F6465D]">— {quoteAsset}</span>
+                </div>
+                <div className="flex justify-between text-[9px]">
+                  <span className="text-[#848E9C]">{t('pos.margin')}</span>
+                  <span className="text-[#EAECEF]">— {quoteAsset}</span>
+                </div>
+              </>
+            )}
             <div className="flex justify-between text-[9px]">
               <span className="text-[#848E9C]">{posDir === 'OPEN' ? t('order.availOpen') : t('order.availClose')}</span>
-              <span className="text-[#EAECEF]">{accountLoading ? t('order.loading') : (posDir === 'OPEN' ? openAvailableDisplay : longCloseDisplay)}</span>
+              <span className="text-[#EAECEF]">{posDir === 'OPEN' ? openAvailableDisplay : longCloseDisplay}</span>
             </div>
           </div>
         </div>
@@ -684,21 +672,16 @@ export function OrderFormWidget({
           <div className="py-1 mb-1">
             <span className="text-[10px] font-semibold text-[#848E9C] uppercase tracking-wider">{t('order.account')}</span>
           </div>
-          {accountSummary?.message && (
-            <div className="mb-2 rounded border border-[#2B2F36] bg-[#161A1E] px-2.5 py-1.5 text-[10px] text-[#848E9C]">
-              {accountSummary.message}
-            </div>
-          )}
           <div className="space-y-1 pb-2">
             {[
-              [t('order.account.marginRatio'),    accountLoading ? t('order.loading') : fmtRate(accountSummary?.margin_ratio ?? null)],
-              [t('order.account.riskRate'),       accountLoading ? t('order.loading') : fmtRate(accountSummary?.risk_rate ?? null)],
-              [t('order.account.maintMargin'),   accountLoading ? t('order.loading') : withAsset(accountSummary?.maint_margin, quoteAsset)],
-              [t('order.account.totalEquity'),    accountLoading ? t('order.loading') : withAsset(accountSummary?.total_equity, quoteAsset)],
-              [t('order.account.positionValue'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.position_value, quoteAsset)],
-              [t('order.account.actualLeverage'), accountLoading ? t('order.loading') : withTimes(accountSummary?.actual_leverage)],
-              [t('order.account.unrealizedPnl'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.unrealized_pnl, quoteAsset)],
-              [t('order.account.walletBalance'),  accountLoading ? t('order.loading') : withAsset(accountSummary?.wallet_balance, quoteAsset)],
+              [t('order.account.marginRatio'),    fmtRate(accountSummary?.margin_ratio ?? null)],
+              [t('order.account.riskRate'),       fmtRate(accountSummary?.risk_rate ?? null)],
+              [t('order.account.maintMargin'),    withAsset(accountSummary?.maint_margin, quoteAsset)],
+              [t('order.account.totalEquity'),    withAsset(accountSummary?.total_equity, quoteAsset)],
+              [t('order.account.positionValue'),  withAsset(accountSummary?.position_value, quoteAsset)],
+              [t('order.account.actualLeverage'), withTimes(accountSummary?.actual_leverage)],
+              [t('order.account.unrealizedPnl'),  withAsset(accountSummary?.unrealized_pnl, quoteAsset)],
+              [t('order.account.walletBalance'),  withAsset(accountSummary?.wallet_balance, quoteAsset)],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">
                 <span className="text-[10px] text-[#848E9C]">{k}</span>

@@ -37,6 +37,7 @@ function MainApp() {
   const [orderRefresh, setOrderRefresh] = useState(0)
   const [showLogin, setShowLogin] = useState(false)
   const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
+  const [tradeSizeUnit, setTradeSizeUnit] = useState<'QUOTE' | 'BASE'>('QUOTE')
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? TRADE_TAB
   const activeScreen = activeTab.screen
@@ -166,7 +167,11 @@ function MainApp() {
               </Panel>
               <PanelResizeHandle className="h-px bg-[#3e3e42] hover:bg-[#007acc] cursor-row-resize" />
               <Panel defaultSize={35} minSize={15} id="positions">
-                <PositionsPanel refreshTrigger={orderRefresh} isActive={isTradeScreenActive} />
+                <PositionsPanel
+                  refreshTrigger={orderRefresh}
+                  isActive={isTradeScreenActive}
+                  sizeUnit={tradeSizeUnit}
+                />
               </Panel>
             </PanelGroup>
           </Panel>
@@ -191,6 +196,8 @@ function MainApp() {
                       isActive={isTradeScreenActive}
                       onOrderPlaced={() => setOrderRefresh(n => n + 1)}
                       selectedOrderBookPrice={selectedOrderBookPrice}
+                      sizeUnit={tradeSizeUnit}
+                      onSizeUnitChange={setTradeSizeUnit}
                     />
                   </div>
                 </div>
