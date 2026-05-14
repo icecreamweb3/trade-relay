@@ -45,11 +45,26 @@ interface ApiOrder {
   order_type: string
   quantity: number
   price: number
+  stop_price?: number | null
+  reduce_only?: boolean
+  post_only?: boolean
   status: string
   username?: string
   exchange_order_id?: string
   created_at?: string
   error_message?: string
+}
+
+export interface ApiConditionalOrder {
+  algo_id: number
+  symbol: string
+  side: string
+  position_side: string
+  order_type: string
+  quantity: number
+  trigger_price: number
+  status: string
+  created_at: string
 }
 
 interface ApiTrade {
@@ -208,6 +223,16 @@ export const api = {
   async cancelOrder(orderId: number, symbol: string, exchangeOrderId: string): Promise<ApiResult> {
     return request<ApiResult>('POST', `/api/orders/${orderId}/cancel`, {
       body: { symbol, exchange_order_id: exchangeOrderId },
+    })
+  },
+
+  async getConditionalOrders(): Promise<ApiConditionalOrder[]> {
+    return request<ApiConditionalOrder[]>('GET', '/api/orders/conditional')
+  },
+
+  async cancelConditionalOrder(algoId: number): Promise<ApiResult> {
+    return request<ApiResult>('POST', '/api/orders/conditional/cancel', {
+      body: { algo_id: algoId },
     })
   },
 

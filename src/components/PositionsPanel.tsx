@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { api } from '../api/client'
+import { api, ApiConditionalOrder } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -21,8 +21,9 @@ interface Position {
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
-  quantity: number; price: number; status: string; username?: string
-  created_at?: string; exchange_order_id?: string
+  quantity: number; price: number; stop_price?: number | null
+  reduce_only?: boolean; post_only?: boolean
+  status: string; username?: string; created_at?: string; exchange_order_id?: string
 }
 
 interface Trade {
@@ -58,6 +59,9 @@ export function PositionsPanel({
   const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([])
   const [loading, setLoading] = useState(false)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
+  const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
+  const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
+  const [openOrdersSubTab, setOpenOrdersSubTab] = useState<'basic' | 'conditional'>('basic')
   const [tpslPosition, setTpslPosition] = useState<Position | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
 
@@ -81,6 +85,7 @@ export function PositionsPanel({
     if (!isAuthenticated) {
       setPositions([])
       setOpenOrders([])
+      setConditionalOrders([])
       setHistory([])
       setTrades([])
       setLoading(false)
@@ -89,7 +94,11 @@ export function PositionsPanel({
     setLoading(true)
     try {
       if (tab === 'positions') setPositions(await api.getPositions())
-      else if (tab === 'openOrders') setOpenOrders(await api.getOpenOrders())
+      else if (tab === 'openOrders') {
+        const [basic, conditional] = await Promise.all([api.getOpenOrders(), api.getConditionalOrders()])
+        setOpenOrders(basic)
+        setConditionalOrders(conditional)
+      }
       else if (tab === 'history') setHistory(await api.getOrderHistory())
       else if (tab === 'tradeHistory') setPositionHistory(await api.getPositionHistory())
     } catch (error: unknown) {
@@ -218,6 +227,21 @@ export function PositionsPanel({
     }
   }
 
+  const handleCancelConditional = async (o: ApiConditionalOrder) => {
+    setCancellingAlgoId(o.algo_id)
+    try {
+      await api.cancelConditionalOrder(o.algo_id)
+      showToast('Conditional order cancelled', 'success')
+      setConditionalOrders(prev => prev.filter(x => x.algo_id !== o.algo_id))
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        || (err as { message?: string })?.message || 'Cancel failed'
+      showToast(`Cancel failed: ${msg}`, 'error')
+    } finally {
+      setCancellingAlgoId(null)
+    }
+  }
+
   const handleRefresh = useCallback(async () => {
     if (!isActive || !isAuthenticated || loading) return
     setLoading(true)
@@ -307,44 +331,122 @@ export function PositionsPanel({
           </table>
         )}
         {(tab === 'openOrders' || tab === 'history') && (
-          <table className="trade-table w-full">
-            <thead><tr>
-              <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
-              <th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th>
-              {tab === 'openOrders' && <th>Order Id</th>}
-              {tab === 'openOrders' && <th></th>}
-            </tr></thead>
-            <tbody>
-              {(tab === 'openOrders' ? openOrders : history).length === 0
-                ? <tr><td colSpan={tab === 'openOrders' ? 9 : 7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
-                : (tab === 'openOrders' ? openOrders : history).map(o => (
-                  <tr key={o.id}>
-                    <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
-                    <td className="font-semibold">{o.symbol}</td>
-                    <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
-                    <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
-                    <td className="font-mono">{o.quantity}</td>
-                    <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
-                    <td><StatusBadge status={o.status} t={t} /></td>
-                    {tab === 'openOrders' && <td className="font-mono text-[10px] text-[#858585]">{o.exchange_order_id ?? '—'}</td>}
-                    {tab === 'openOrders' && (
-                      <td>
-                        {o.status === 'NEW' || o.status === 'PARTIALLY_FILLED' ? (
+          <>
+          {tab === 'openOrders' && (
+            <div className="flex gap-0 border-b border-[#3e3e42] bg-[#252526] px-2 pt-1">
+              {(['basic', 'conditional'] as const).map(sub => (
+                <button
+                  key={sub}
+                  onClick={() => setOpenOrdersSubTab(sub)}
+                  className={`px-3 py-1 text-[11px] font-medium border-b-2 transition-colors ${
+                    openOrdersSubTab === sub ? 'border-[#F0B90B] text-[#F0B90B]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
+                  }`}
+                >
+                  {sub === 'basic'
+                    ? `Basic(${openOrders.length})`
+                    : `Conditional(${conditionalOrders.length})`}
+                </button>
+              ))}
+            </div>
+          )}
+          {(tab === 'history' || openOrdersSubTab === 'basic') && (
+            <table className="trade-table w-full">
+              <thead><tr>
+                <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
+                <th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th>
+                {tab === 'openOrders' && <th>Reduce Only</th>}
+                {tab === 'openOrders' && <th>Post Only</th>}
+                {tab === 'openOrders' && <th>Trigger Conditions</th>}
+                {tab === 'openOrders' && <th>Order Id</th>}
+                {tab === 'openOrders' && <th></th>}
+              </tr></thead>
+              <tbody>
+                {(tab === 'openOrders' ? openOrders : history).length === 0
+                  ? <tr><td colSpan={tab === 'openOrders' ? 12 : 7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                  : (tab === 'openOrders' ? openOrders : history).map(o => (
+                    <tr key={o.id}>
+                      <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
+                      <td className="font-semibold">{o.symbol}</td>
+                      <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
+                      <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
+                      <td className="font-mono">{o.quantity}</td>
+                      <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
+                      <td><StatusBadge status={o.status} t={t} /></td>
+                      {tab === 'openOrders' && <td className="text-center">{o.reduce_only ? 'Yes' : 'No'}</td>}
+                      {tab === 'openOrders' && <td className="text-center">{o.post_only ? 'Yes' : 'No'}</td>}
+                      {tab === 'openOrders' && (
+                        <td className="font-mono text-[11px]">
+                          {o.stop_price ? `Last Price <= ${o.stop_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}` : '—'}
+                        </td>
+                      )}
+                      {tab === 'openOrders' && <td className="font-mono text-[10px] text-[#858585]">{o.exchange_order_id ?? '—'}</td>}
+                      {tab === 'openOrders' && (
+                        <td>
+                          {o.status === 'NEW' || o.status === 'PARTIALLY_FILLED' ? (
+                            <button
+                              disabled={cancellingId === o.id}
+                              onClick={() => void handleCancelOrder(o)}
+                              className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {cancellingId === o.id ? '…' : 'Cancel'}
+                            </button>
+                          ) : null}
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          )}
+          {tab === 'openOrders' && openOrdersSubTab === 'conditional' && (
+            <table className="trade-table w-full">
+              <thead><tr>
+                <th>{t('log.time')}</th>
+                <th>{t('log.symbol')}</th>
+                <th>Type</th>
+                <th>{t('log.side')}</th>
+                <th>Amount</th>
+                <th>{t('log.price')}</th>
+                <th>Trigger Conditions</th>
+                <th></th>
+              </tr></thead>
+              <tbody>
+                {conditionalOrders.length === 0
+                  ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                  : conditionalOrders.map(o => {
+                    const isTp = o.order_type === 'TAKE_PROFIT_MARKET'
+                    const isShortClose = o.side === 'BUY'
+                    return (
+                      <tr key={o.algo_id}>
+                        <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
+                        <td className="font-semibold">{o.symbol}<br/><span className="text-[10px] text-[#858585]">Perp</span></td>
+                        <td>{isTp ? 'Take Profit Market' : 'Stop Market'}</td>
+                        <td className={isShortClose ? 'text-buy' : 'text-sell'}>
+                          {isShortClose ? 'Close Short' : 'Close Long'}
+                        </td>
+                        <td className="font-mono">Close Position</td>
+                        <td className="font-mono">Market</td>
+                        <td className="font-mono text-[11px]">
+                          Last Price {isTp ? (isShortClose ? '>=' : '<=') : (isShortClose ? '<=' : '>=')} {o.trigger_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}
+                        </td>
+                        <td>
                           <button
-                            disabled={cancellingId === o.id}
-                            onClick={() => void handleCancelOrder(o)}
+                            disabled={cancellingAlgoId === o.algo_id}
+                            onClick={() => void handleCancelConditional(o)}
                             className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           >
-                            {cancellingId === o.id ? '…' : 'Cancel'}
+                            {cancellingAlgoId === o.algo_id ? '…' : 'Cancel'}
                           </button>
-                        ) : null}
-                      </td>
-                    )}
-                  </tr>
-                ))
-              }
-            </tbody>
-          </table>
+                        </td>
+                      </tr>
+                    )
+                  })
+                }
+              </tbody>
+            </table>
+          )}
+          </>
         )}
         {tab === 'tradeHistory' && (
           <table className="trade-table w-full">
@@ -467,10 +569,9 @@ function TpSlModal({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div
         className="bg-[#1E2026] border border-[#2B2F36] rounded-lg w-[420px] shadow-2xl"
-        onClick={e => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#2B2F36]">

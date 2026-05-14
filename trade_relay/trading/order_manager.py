@@ -109,6 +109,8 @@ async def submit_order(
         error_message=result.error,
         trade_direction=position_direction.upper() if position_direction else None,
         position_id=position_id,
+        reduce_only=(position_direction or "").upper() == "CLOSE",
+        post_only=False,
     )
 
     if result.success and not mock and result.order_id and api_key and api_secret:

@@ -41,6 +41,10 @@ class OrderOut(BaseModel):
     trade_direction: Optional[str] = None
     quantity: float
     price: Optional[float]
+    stop_price: Optional[float] = None
+    reduce_only: bool = False
+    post_only: bool = False
+    order_category: str = 'Basic'
     status: str
     filled_qty: float
     avg_price: Optional[float]
@@ -57,15 +61,20 @@ class OrderUserOption(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_out(r: dict) -> OrderOut:
+    trade_dir = str(r["trade_direction"]).upper() if r.get("trade_direction") else None
     return OrderOut(
         id=r["id"],
         username=r["username"],
         symbol=r["symbol"],
         side=r["side"],
         order_type=r["order_type"],
-        trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
+        trade_direction=trade_dir,
         quantity=float(r["quantity"]),
         price=float(r["price"]) if r.get("price") is not None else None,
+        stop_price=float(r["stop_price"]) if r.get("stop_price") is not None else None,
+        reduce_only=bool(r.get("reduce_only") or False),
+        post_only=bool(r.get("post_only") or False),
+        order_category=str(r.get("order_category") or "Basic"),
         status=r["status"],
         filled_qty=float(r.get("filled_qty") or 0),
         avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
@@ -208,5 +217,109 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
         raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
 
     db_module.update_order_status(order_id, "CANCELED")
+    return {"ok": True}
+
+
+class ConditionalOrderOut(BaseModel):
+    algo_id: int
+    symbol: str
+    side: str
+    position_side: str
+    order_type: str       # TAKE_PROFIT_MARKET | STOP_MARKET
+    quantity: float
+    trigger_price: float
+    status: str
+    created_at: str
+
+
+@router.get("/conditional", response_model=list[ConditionalOrderOut])
+async def get_conditional_orders(user: dict = Depends(get_current_user)):
+    """Fetch open conditional (algo) orders — merged from Binance Algo API and local DB."""
+    username = user["username"]
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
+
+    result: list[ConditionalOrderOut] = []
+    seen_algo_ids: set[int] = set()
+
+    # 1. Try Binance Algo Order API (may not be available for all accounts)
+    api_key = cfg.get_api_key(username)
+    api_secret = cfg.get_api_secret(username)
+    if api_key and api_secret:
+        testnet = cfg.is_testnet(username)
+        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        binance_orders = await asyncio.to_thread(client.get_open_algo_orders)
+        for o in binance_orders:
+            try:
+                algo_id = int(o.get("algoId") or 0)
+                seen_algo_ids.add(algo_id)
+                result.append(ConditionalOrderOut(
+                    algo_id=algo_id,
+                    symbol=str(o.get("symbol") or ""),
+                    side=str(o.get("side") or ""),
+                    position_side=str(o.get("positionSide") or "BOTH"),
+                    order_type=str(o.get("type") or ""),
+                    quantity=float(o.get("executedQty") or o.get("qty") or 0),
+                    trigger_price=float(o.get("triggerPrice") or 0),
+                    status=str(o.get("algoStatus") or o.get("status") or ""),
+                    created_at=str(o.get("bookTime") or o.get("time") or ""),
+                ))
+            except Exception:
+                continue
+
+    # 2. Merge DB-stored TP/SL orders (order_type IN TAKE_PROFIT_MARKET, STOP_MARKET, status=NEW)
+    _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
+    db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+    for row in db_rows:
+        if str(row.get("order_type") or "") not in _TPSL_TYPES:
+            continue
+        exchange_id = row.get("exchange_order_id")
+        try:
+            algo_id = int(exchange_id) if exchange_id else 0
+        except (ValueError, TypeError):
+            algo_id = 0
+        # Skip if already returned from Binance
+        if algo_id and algo_id in seen_algo_ids:
+            continue
+        order_type = str(row.get("order_type") or "")
+        side = str(row.get("side") or "")
+        # TP uses price as trigger; SL uses stop_price
+        if order_type == "TAKE_PROFIT_MARKET":
+            trigger = float(row["price"] or 0) if row.get("price") is not None else 0.0
+        else:
+            trigger = float(row["stop_price"] or 0) if row.get("stop_price") is not None else 0.0
+        # Infer position_side: BUY closes SHORT, SELL closes LONG
+        position_side = "SHORT" if side == "BUY" else "LONG"
+        result.append(ConditionalOrderOut(
+            algo_id=algo_id,
+            symbol=str(row.get("symbol") or ""),
+            side=side,
+            position_side=position_side,
+            order_type=order_type,
+            quantity=float(row.get("quantity") or 0),
+            trigger_price=trigger,
+            status=str(row.get("status") or "NEW"),
+            created_at=str(row.get("created_at") or ""),
+        ))
+
+    return result
+
+
+class CancelConditionalOrderRequest(BaseModel):
+    algo_id: int
+
+
+@router.post("/conditional/cancel")
+async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: dict = Depends(get_current_user)):
+    """Cancel an open conditional (algo) order on Binance."""
+    username = user["username"]
+    api_key = cfg.get_api_key(username)
+    api_secret = cfg.get_api_secret(username)
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="No API credentials configured")
+    testnet = cfg.is_testnet(username)
+    client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+    ok = await asyncio.to_thread(client.cancel_algo_order, body.algo_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to cancel algo order on Binance")
     return {"ok": True}
 

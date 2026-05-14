@@ -8,9 +8,29 @@ Trade Relay — Backend Logging Setup
 import logging
 import logging.handlers
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
+
+
+# Suppress urllib3 connectionpool DEBUG noise for routine polling endpoints
+# (account & positionRisk) when they return HTTP 200.  Error responses are
+# still allowed through so failures remain visible.
+_QUIET_PATTERN = re.compile(
+    r'"GET /fapi/v2/(account|positionRisk)\?.*HTTP/\d\.\d"\s+200\b'
+)
+
+
+class _SuppressRoutinePollingFilter(logging.Filter):
+    """Drop urllib3 DEBUG records for successful account/positionRisk polls."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.DEBUG and record.name.startswith("urllib3"):
+            msg = record.getMessage()
+            if _QUIET_PATTERN.search(msg):
+                return False
+        return True
 
 # 日志目录: <project_root>/logs/
 _LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -43,11 +63,13 @@ def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
     )
     file_handler.setFormatter(fmt)
     file_handler.setLevel(level)
+    file_handler.addFilter(_SuppressRoutinePollingFilter())
 
     # 控制台 handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(fmt)
     console_handler.setLevel(logging.INFO)
+    console_handler.addFilter(_SuppressRoutinePollingFilter())
 
     root = logging.getLogger()
     root.setLevel(level)

@@ -2690,6 +2690,57 @@ class BinanceClient:
             logger.debug(f"Failed to get position for {symbol}: {e}")
             return None
     
+    # Class-level flag: once we get a 404 for algoOrder, stop calling it
+    _algo_order_unavailable: bool = False
+
+    def get_open_algo_orders(self, symbol: str | None = None) -> List[dict]:
+        """Get open conditional (algo) orders from /fapi/v1/algoOrder/openOrders."""
+        if BinanceClient._algo_order_unavailable:
+            return []
+        try:
+            import requests as _req
+            params: dict[str, object] = {}
+            if symbol:
+                params["symbol"] = symbol
+            _, query = self._generate_signed_request_body(params, debug=False)
+            url = f"{self.base_url}/fapi/v1/algoOrder/openOrders"
+            resp = _req.get(
+                f"{url}?{query}",
+                headers={"X-MBX-APIKEY": self.api_key},
+                proxies=self.proxy_config,
+                timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
+            )
+            if resp.status_code == 404:
+                BinanceClient._algo_order_unavailable = True
+                logger.info("Algo Order API not available for this account (404), will skip future calls")
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+            # Response: {"total": N, "orders": [...]}
+            return data.get("orders") or []
+        except Exception as e:
+            logger.debug(f"Failed to get open algo orders: {e}")
+            return []
+
+    def cancel_algo_order(self, algo_id: int) -> bool:
+        """Cancel an algo (conditional) order by algoId via DELETE /fapi/v1/algoOrder."""
+        try:
+            import requests as _req
+            params: dict[str, object] = {"algoId": algo_id}
+            _, query = self._generate_signed_request_body(params, debug=False)
+            url = f"{self.base_url}/fapi/v1/algoOrder"
+            resp = _req.delete(
+                f"{url}?{query}",
+                headers={"X-MBX-APIKEY": self.api_key},
+                proxies=self.proxy_config,
+                timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
+            )
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.debug(f"Failed to cancel algo order {algo_id}: {e}")
+            return False
+
     def get_open_orders(self, symbol: str) -> List[dict]:
         """Get all open orders for a symbol
         

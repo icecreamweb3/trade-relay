@@ -147,7 +147,10 @@ def init_db() -> None:
                     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
                     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
                     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
+                    reduce_only       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只减仓',
+                    post_only         TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只做Maker',
                     position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
+                    order_category    ENUM('Basic','Condition') NOT NULL DEFAULT 'Basic' COMMENT '订单分类',
                     error_message     TEXT            COMMENT '错误信息',
                     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -163,6 +166,9 @@ def init_db() -> None:
             for _col, _ddl in [
                 ("trade_direction", "ALTER TABLE orders ADD COLUMN trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset"),
                 ("position_id",     "ALTER TABLE orders ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction"),
+                ("reduce_only",     "ALTER TABLE orders ADD COLUMN reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction"),
+                ("post_only",       "ALTER TABLE orders ADD COLUMN post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only"),
+                ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Condition') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -462,6 +468,9 @@ def create_order(
     client_order_id: Optional[str] = None,
     trade_direction: Optional[str] = None,     # OPEN | CLOSE
     position_id: Optional[int] = None,         # 关联持仓ID
+    reduce_only: bool = False,
+    post_only: bool = False,
+    order_category: str = 'Basic',             # Basic | Condition
 ) -> int:
     conn = get_connection()
     try:
@@ -471,13 +480,13 @@ def create_order(
                    (user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, status,
                     exchange_order_id, client_order_id,
-                    trade_direction, position_id, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    trade_direction, reduce_only, post_only, position_id, order_category, error_message)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, status,
                     binance_order_id, client_order_id,
-                    trade_direction, position_id, error_message,
+                    trade_direction, int(reduce_only), int(post_only), position_id, order_category, error_message,
                 ),
             )
             conn.commit()
