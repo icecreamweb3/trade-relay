@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 import { useAuthStore } from './store/authStore'
+import { Locale, useTranslation } from './i18n/translations'
 import { useMarketData } from './hooks/useMarketData'
 import { LoginModal } from './components/LoginModal'
 import { TitleBar } from './components/TitleBar'
@@ -219,9 +220,13 @@ function MainApp() {
   )
 }
 
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const appLocale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+
 export default function App() {
   const { checkAuth } = useAuthStore()
   const [initializing, setInitializing] = useState(true)
+  const { t } = useTranslation(appLocale)
 
   useEffect(() => {
     checkAuth().finally(() => setInitializing(false))
@@ -230,7 +235,7 @@ export default function App() {
   if (initializing) {
     return (
       <div className="h-screen bg-[#1e1e1e] flex items-center justify-center text-[#858585] text-sm">
-        正在验证身份...
+        {t('app.initializing')}
       </div>
     )
   }

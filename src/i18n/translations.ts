@@ -9,6 +9,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'login.password': '密码',
     'login.submit': '登录',
     'login.loading': '登录中...',
+    'app.initializing': '正在加载中...',
     'login.error.required': '请输入用户名和密码',
     'login.error.failed': '用户名或密码错误',
 
@@ -223,6 +224,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'login.password': 'Password',
     'login.submit': 'Login',
     'login.loading': 'Logging in...',
+    'app.initializing': 'Loading...',
     'login.error.required': 'Please enter username and password',
     'login.error.failed': 'Invalid username or password',
 
