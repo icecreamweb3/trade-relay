@@ -187,6 +187,8 @@ export function OrderFormWidget({
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
   const [accountLoading, setAccountLoading] = useState(false)
   const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
+  const [positionLongQty, setPositionLongQty] = useState<number | null>(null)
+  const [positionShortQty, setPositionShortQty] = useState<number | null>(null)
   const showToast = useToastStore((state) => state.showToast)
   const lastAccountErrorRef = useRef<string | null>(null)
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
@@ -270,6 +272,36 @@ export function OrderFormWidget({
     if (!refreshTrigger || !isActive || !user?.username) return
     void forceLoadAccountSummaryRef.current?.()
   }, [refreshTrigger, isActive, user?.username])
+
+  // Load positions for current symbol to compute Avail. Close instantly (without waiting for account summary)
+  useEffect(() => {
+    if (!isActive || !user?.username || !symbol) {
+      setPositionLongQty(null)
+      setPositionShortQty(null)
+      return
+    }
+    let alive = true
+    const load = async () => {
+      try {
+        const all = await api.getPositions()
+        if (!alive) return
+        const sym = symbol.toUpperCase()
+        let longQty = 0
+        let shortQty = 0
+        for (const p of all) {
+          if (p.symbol.toUpperCase() !== sym) continue
+          if (p.side === 'LONG') longQty += p.quantity
+          else if (p.side === 'SHORT') shortQty += p.quantity
+        }
+        setPositionLongQty(longQty)
+        setPositionShortQty(shortQty)
+      } catch {
+        // silently ignore — account summary is fallback
+      }
+    }
+    void load()
+    return () => { alive = false }
+  }, [isActive, user?.username, symbol, refreshTrigger])
 
   const baseTicker = baseAsset
 
@@ -406,30 +438,35 @@ export function OrderFormWidget({
   }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
 
   const longCloseDisplay = useMemo(() => {
-    const qty = accountSummary?.long_position_qty ?? null
+    // Prefer live positions data (fast); fall back to account summary (slow)
+    const qty = positionLongQty ?? accountSummary?.long_position_qty ?? null
     if (qty == null) return '—'
     if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
-    // prefer server-side notional (qty × REST markPrice at last account poll)
+    // Use live WS price first for immediate response
+    const livePrice = markPrice ?? currentPrice
+    if (livePrice != null) return withAsset(qty * livePrice, quoteAsset)
+    // Fallback: server-side notional from account summary
     const notional = accountSummary?.long_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
-    // fallback: use REST markPrice from account summary, then WS markPrice
-    const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
-    if (!price) return `${fmt(qty, 3)} ${baseTicker}`
-    return withAsset(qty * price, quoteAsset)
-  }, [accountSummary?.long_position_qty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    const restPrice = accountSummary?.rest_mark_price ?? null
+    if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
+    return `${fmt(qty, 3)} ${baseTicker}`
+  }, [positionLongQty, accountSummary?.long_position_qty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
-    const qty = accountSummary?.short_position_qty ?? null
+    const qty = positionShortQty ?? accountSummary?.short_position_qty ?? null
     if (qty == null) return '—'
     if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
+    const livePrice = markPrice ?? currentPrice
+    if (livePrice != null) return withAsset(qty * livePrice, quoteAsset)
     const notional = accountSummary?.short_position_value ?? null
     if (notional != null) return withAsset(notional, quoteAsset)
-    const price = accountSummary?.rest_mark_price ?? markPrice ?? currentPrice
-    if (!price) return `${fmt(qty, 3)} ${baseTicker}`
-    return withAsset(qty * price, quoteAsset)
-  }, [accountSummary?.short_position_qty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    const restPrice = accountSummary?.rest_mark_price ?? null
+    if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
+    return `${fmt(qty, 3)} ${baseTicker}`
+  }, [positionShortQty, accountSummary?.short_position_qty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   // Unrealized PnL adjusted in real-time using the latest available price.
   // base_pnl comes from the REST poll; we add the delta caused by price movement
