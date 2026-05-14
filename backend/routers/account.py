@@ -306,3 +306,43 @@ def update_account_leverage(
     except Exception as exc:
         _log.exception("Set leverage failed for user=%s symbol=%s leverage=%s", username, symbol, leverage)
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+_mark_price_cache: dict[str, tuple[float, float]] = {}  # symbol → (timestamp, price)
+_MARK_PRICE_CACHE_TTL = 3.0  # seconds
+
+
+@router.get("/mark-price")
+def get_mark_price(symbol: str = Query(), user: dict = Depends(get_current_user)):
+    """
+    Return the current mark price for a symbol using Binance public API (no API key required).
+    Cached for a few seconds to avoid hammering the exchange.
+    """
+    symbol = symbol.strip().upper()
+    now = time.time()
+    cached = _mark_price_cache.get(symbol)
+    if cached and now - cached[0] < _MARK_PRICE_CACHE_TTL:
+        return {"symbol": symbol, "mark_price": cached[1]}
+
+    testnet = cfg_module.is_testnet(user["username"])
+    base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    try:
+        import requests as _requests
+        proxy_cfg = None
+        proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        if proxy_url:
+            proxy_cfg = {"http": proxy_url, "https": proxy_url}
+        resp = _requests.get(
+            f"{base_url}/fapi/v1/premiumIndex",
+            params={"symbol": symbol},
+            proxies=proxy_cfg,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        price = float(data.get("markPrice") or data.get("price") or 0)
+        _mark_price_cache[symbol] = (now, price)
+        return {"symbol": symbol, "mark_price": price}
+    except Exception as exc:
+        _log.warning("get_mark_price failed for symbol=%s: %s", symbol, exc)
+        raise HTTPException(status_code=502, detail=f"Could not fetch mark price: {exc}")

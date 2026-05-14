@@ -25,7 +25,13 @@ function fmtTime(ts?: string): string {
   if (!ts) return '—'
   try {
     const d = new Date(ts)
-    return d.toLocaleTimeString('en-US', { hour12: false })
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const min = String(d.getMinutes()).padStart(2, '0')
+    const ss = String(d.getSeconds()).padStart(2, '0')
+    return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`
   } catch {
     return ts
   }
@@ -78,16 +84,16 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
 
       {/* Column labels */}
       <div className="grid px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]"
-        style={{ gridTemplateColumns: '1fr 1fr 52px 44px 1fr 1fr 1fr 60px 1fr' }}>
+        style={{ gridTemplateColumns: '1fr 1fr 52px 36px 0.7fr 1fr 1fr 60px 130px' }}>
         <span>{t('log.user')}</span>
         <span>{t('log.symbol')}</span>
         <span>{t('log.side')}</span>
         <span>{t('log.dir')}</span>
-        <span className="text-right">{t('log.qty')}</span>
-        <span className="text-right">{t('log.price')}</span>
-        <span className="text-right">{t('recentTrades.value')}</span>
+        <span className="text-center">{t('log.qty')}</span>
+        <span className="text-center">{t('log.price')}</span>
+        <span className="text-center">{t('recentTrades.value')}</span>
         <span className="text-center">{t('log.status')}</span>
-        <span className="text-right">{t('log.time')}</span>
+        <span className="text-center">{t('log.time')}</span>
       </div>
 
       {/* Rows */}
@@ -102,7 +108,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
               <div
                 key={i}
                 className="grid px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
-                style={{ gridTemplateColumns: '1fr 1fr 52px 44px 1fr 1fr 1fr 60px 1fr' }}
+                style={{ gridTemplateColumns: '1fr 1fr 52px 36px 0.7fr 1fr 1fr 60px 130px' }}
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
                 <span className="text-[#888] truncate pr-1">{f.symbol}</span>
@@ -110,15 +116,15 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                 <span className={f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}>
                   {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </span>
-                <span className="text-right text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
-                <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
-                <span className="text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
+                <span className="text-center text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
+                <span className="text-center text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
+                <span className="text-center text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
                 <span className={`text-center truncate ${
                   f.status === 'FILLED' ? 'text-[#0ecb81]' :
                   f.status === 'NEW' || f.status === 'PARTIALLY_FILLED' ? 'text-[#f0b90b]' :
                   'text-[#555]'
                 }`}>{f.status ?? '—'}</span>
-                <span className="text-right text-[#555]">{fmtTime(f.created_at)}</span>
+                <span className="text-center text-[#555]">{fmtTime(f.created_at)}</span>
               </div>
             )
           })

@@ -184,6 +184,7 @@ export function OrderFormWidget({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
   const [accountLoading, setAccountLoading] = useState(false)
+  const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
   const showToast = useToastStore((state) => state.showToast)
   const lastAccountErrorRef = useRef<string | null>(null)
 
@@ -356,8 +357,8 @@ export function OrderFormWidget({
       const posQty = Math.max(longQty, shortQty)
       if (sizeUnit === 'QUOTE') {
         const refPrice = orderType === 'MARKET'
-          ? (currentPrice ?? 0)
-          : (parseFloat(price) || (currentPrice ?? markPrice ?? 0))
+          ? (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0)
+          : (parseFloat(price) || (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0))
         if (!refPrice) return
         setQty((posQty * refPrice * pct).toFixed(2))
       } else {
@@ -366,8 +367,8 @@ export function OrderFormWidget({
       return
     }
     const refPrice = orderType === 'MARKET'
-      ? (currentPrice ?? 0)
-      : (parseFloat(price) || (currentPrice ?? 0))
+      ? (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0)
+      : (parseFloat(price) || (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0))
     if (!refPrice) return
     const availableQuoteBalance = accountSummary?.available_balance ?? 0
     const maxBaseQty = (availableQuoteBalance * leverage) / refPrice
@@ -447,9 +448,16 @@ export function OrderFormWidget({
     // API 始终接收 base 数量（BTC）；若用户以 USDT 输入则按参考价格换算
     let baseQty = qtyNum
     if (sizeUnit === 'QUOTE') {
-      const refPrice = orderType === 'MARKET'
-        ? (currentPrice ?? 0)
-        : (parseFloat(price) || (currentPrice ?? 0))
+      let refPrice = orderType === 'MARKET'
+        // For market orders use the best available price: WS last price → mark price → REST mark price
+        ? (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0)
+        : (parseFloat(price) || (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0))
+      // If still no price (WS not ready and account summary stale), fetch a fresh mark price
+      if (!refPrice && orderType === 'MARKET') {
+        try {
+          refPrice = await api.getMarkPrice(symbol)
+        } catch { /* ignore */ }
+      }
       if (!refPrice) { showToast('error', t('order.error.priceUnavailable')); return }
       baseQty = qtyNum / refPrice
     }
@@ -463,21 +471,31 @@ export function OrderFormWidget({
     }
     if (baseQty <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
 
+    const body: Parameters<typeof api.submitOrder>[0] = {
+      symbol, side: submitSide,
+      order_type: orderType === 'STOP' ? 'STOP_MARKET' : orderType,
+      quantity: baseQty,
+      leverage,
+      margin_type: marginType,
+      position_direction: posDir,
+    }
+    if ((orderType === 'LIMIT' || orderType === 'STOP') && price) body.price = parseFloat(price)
+    if (orderType === 'STOP' && stopPrice) body.stop_price = parseFloat(stopPrice)
+    if (showTpSl && tp) body.tp_price = parseFloat(tp)
+    if (showTpSl && sl) body.sl_price = parseFloat(sl)
+
+    // Market orders require confirmation before submission
+    if (orderType === 'MARKET') {
+      setMarketConfirm({ side: submitSide, baseQty, body })
+      return
+    }
+
+    await doSubmit(submitSide, baseQty, body)
+  }
+
+  const doSubmit = async (submitSide: Side, baseQty: number, body: Parameters<typeof api.submitOrder>[0]) => {
     setIsSubmitting(true)
     try {
-      const body: Parameters<typeof api.submitOrder>[0] = {
-        symbol, side: submitSide,
-        order_type: orderType === 'STOP' ? 'STOP_MARKET' : orderType,
-        quantity: baseQty,
-        leverage,
-        margin_type: marginType,
-        position_direction: posDir,
-      }
-      if ((orderType === 'LIMIT' || orderType === 'STOP') && price) body.price = parseFloat(price)
-      if (orderType === 'STOP' && stopPrice) body.stop_price = parseFloat(stopPrice)
-      if (showTpSl && tp) body.tp_price = parseFloat(tp)
-      if (showTpSl && sl) body.sl_price = parseFloat(sl)
-
       window.electronAPI?.logToMain?.('info', 'submit order', {
         username: user?.username ?? null,
         body,
@@ -508,10 +526,66 @@ export function OrderFormWidget({
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#0B0E11] overflow-hidden">
+    <div className="relative h-full flex flex-col bg-[#0B0E11] overflow-hidden">
 
       {/* ── Ticker strip ── */}
       <TickerStrip />
+
+      {/* ── Market order confirmation modal ── */}
+      {marketConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70" style={{ position: 'absolute' }}>
+          <div className="bg-[#1E2026] border border-[#474D57] rounded-lg shadow-xl w-72 p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-bold text-[#EAECEF]">{t('order.market.confirm.title')}</span>
+              <span className={`ml-auto text-[11px] font-bold px-2 py-0.5 rounded ${
+                marketConfirm.side === 'BUY' ? 'bg-[#0ecb81]/20 text-[#0ecb81]' : 'bg-[#f6465d]/20 text-[#f6465d]'
+              }`}>{marketConfirm.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
+            </div>
+            <div className="space-y-2 text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-[#848E9C]">{t('log.symbol')}</span>
+                <span className="text-[#EAECEF] font-mono">{symbol}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#848E9C]">{t('order.size')}</span>
+                <span className="text-[#EAECEF] font-mono">{marketConfirm.baseQty} {baseAsset}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#848E9C]">{t('order.marketPrice')}</span>
+                <span className="text-[#F0B90B] font-mono">{currentPrice != null ? fmt(currentPrice, 2) : '—'} {quoteAsset}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#848E9C]">{t('order.open')} / {t('order.close')}</span>
+                <span className="text-[#EAECEF]">{posDir === 'OPEN' ? t('order.open') : t('order.close')}</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-[#F6465D] bg-[#F6465D]/10 rounded px-2.5 py-1.5 leading-relaxed">
+              {t('order.market.confirm.warning')}
+            </p>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                onClick={() => setMarketConfirm(null)}
+                className="py-2 text-[12px] font-medium rounded border border-[#474D57] text-[#848E9C] hover:text-[#EAECEF] hover:border-[#848E9C] transition-colors">
+                {t('order.market.confirm.cancel')}
+              </button>
+              <button
+                onClick={async () => {
+                  const c = marketConfirm
+                  setMarketConfirm(null)
+                  await doSubmit(c.side, c.baseQty, c.body)
+                }}
+                disabled={isSubmitting}
+                className={`py-2 text-[12px] font-bold rounded transition-colors disabled:opacity-50 ${
+                  marketConfirm.side === 'BUY'
+                    ? 'bg-[#0ecb81] hover:bg-[#0ab36d] text-white'
+                    : 'bg-[#f6465d] hover:bg-[#d93a4e] text-white'
+                }`}>
+                {isSubmitting ? t('order.submitting') : t('order.market.confirm.submit')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Open / Close tabs ── */}
       <div className="grid grid-cols-2 shrink-0 border-b border-[#2B2F36]">
@@ -603,12 +677,15 @@ export function OrderFormWidget({
         )}
 
         {/* Market price info */}
-        {orderType === 'MARKET' && currentPrice != null && (
-          <div className="flex items-center justify-between px-2 py-1.5 bg-[#1E2026] rounded text-[11px]">
-            <span className="text-[#848E9C]">{t('order.marketPrice')}</span>
-            <span className="text-[#EAECEF] font-mono tabular-nums">{fmt(currentPrice, 2)}</span>
-          </div>
-        )}
+        {orderType === 'MARKET' && (() => {
+          const displayPrice = currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? null
+          return displayPrice != null ? (
+            <div className="flex items-center justify-between px-2 py-1.5 bg-[#1E2026] rounded text-[11px]">
+              <span className="text-[#848E9C]">{t('order.marketPrice')}</span>
+              <span className="text-[#EAECEF] font-mono tabular-nums">{fmt(displayPrice, 2)}</span>
+            </div>
+          ) : null
+        })()}
 
         {/* Size */}
         <div>
@@ -681,6 +758,11 @@ export function OrderFormWidget({
           </div>
         )}
         {/* Submit */}
+        {!user ? (
+          <div className="col-span-2 flex flex-col items-center justify-center gap-2 py-3 px-3 rounded bg-[#1E2026] border border-[#2B2F36]">
+            <span className="text-[12px] text-[#848E9C]">{t('order.loginRequired')}</span>
+          </div>
+        ) : (
         <div className="grid grid-cols-2 gap-2">
           {posDir === 'OPEN' ? (<>
             <button type="button" onClick={() => handleSubmit('BUY')} disabled={isSubmitting || !qty}
@@ -702,6 +784,7 @@ export function OrderFormWidget({
             </button>
           </>)}
         </div>
+        )}
 
         {/* Position info */}
         <div className="grid grid-cols-2 gap-x-2 pt-1">

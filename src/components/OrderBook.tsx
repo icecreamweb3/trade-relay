@@ -28,7 +28,7 @@ function buildLevels(raw: [string, string][], side: 'ask' | 'bid'): Level[] {
     .map(([p, q]) => ({ price: parseFloat(p), qty: parseFloat(q) }))
     .filter(l => l.qty > 0)
     .sort((a, b) => side === 'ask' ? a.price - b.price : b.price - a.price)
-    .slice(0, 17)
+    .slice(0, 19)
 
   let cum = 0
   return sorted.map(l => {

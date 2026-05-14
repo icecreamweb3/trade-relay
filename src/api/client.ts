@@ -225,6 +225,13 @@ export const api = {
     })
   },
 
+  async getMarkPrice(symbol: string): Promise<number> {
+    const data = await request<{ symbol: string; mark_price: number }>('GET', '/api/account/mark-price', {
+      params: { symbol },
+    })
+    return data.mark_price
+  },
+
   async setAccountLeverage(symbol: string, leverage: number): Promise<ApiResult> {
     return request<ApiResult>('POST', '/api/account/leverage', {
       body: {

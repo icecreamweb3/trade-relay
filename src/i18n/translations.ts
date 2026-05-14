@@ -82,6 +82,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'order.error.priceUnavailable': '当前无法按报价资产换算数量',
     'order.error.loadAccount': '账户信息加载失败',
     'order.error.failed': '操作失败',
+    'order.market.confirm.title': '确认市价单',
+    'order.market.confirm.warning': '市价单将立即以当前最优市场价强制成交，不支持沦价，请确认后提交。',
+    'order.market.confirm.cancel': '取消',
+    'order.market.confirm.submit': '确认下单',
+    'order.loginRequired': '请登录后下单',
 
     // Positions
     'pos.title': '持仓',
@@ -288,6 +293,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'order.error.priceUnavailable': 'Price unavailable for quote conversion',
     'order.error.loadAccount': 'Failed to load account',
     'order.error.failed': 'Failed',
+    'order.market.confirm.title': 'Confirm Market Order',
+    'order.market.confirm.warning': 'Market orders execute immediately at the best available price with no guaranteed fill price. Please confirm before submitting.',
+    'order.market.confirm.cancel': 'Cancel',
+    'order.market.confirm.submit': 'Confirm Order',
+    'order.loginRequired': 'Please log in to place orders',
 
     'pos.title': 'Positions',
     'pos.openOrders': 'Open Orders',
