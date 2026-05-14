@@ -206,6 +206,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'recentTrades.title': '最新成交',
     'recentTrades.value': '成交额',
     'recentTrades.empty': '暂无最新成交',
+    'recentTrades.filterUser': '全部用户',
 
     // Binance panel
     'binance.connected': 'Binance 数据流已连接',
@@ -410,6 +411,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'recentTrades.title': 'Recent Trades',
     'recentTrades.value': 'Value',
     'recentTrades.empty': 'No recent trades',
+    'recentTrades.filterUser': 'All Users',
 
     'binance.connected': 'Binance data stream connected',
     'binance.loading': 'Loading...',

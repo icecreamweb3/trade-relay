@@ -46,6 +46,10 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const [fills, setFills] = useState<Fill[]>([])
+  const [userFilter, setUserFilter] = useState('')
+
+  // Derive unique user list from loaded fills
+  const userOptions = Array.from(new Set(fills.map(f => f.username).filter(Boolean) as string[])).sort()
 
   const load = useCallback(async () => {
     if (!isActive) {
@@ -78,8 +82,18 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
   return (
     <div className="h-full flex flex-col bg-[#161616] select-none">
       {/* Header */}
-      <div className="px-3 py-1.5 border-b border-[#3e3e42] shrink-0">
-        <span className="text-[11px] font-semibold text-[#cccccc]">{t('recentTrades.title')}</span>
+      <div className="px-3 py-1.5 border-b border-[#3e3e42] shrink-0 flex items-center gap-2">
+        <span className="text-[11px] font-semibold text-[#cccccc] shrink-0">{t('recentTrades.title')}</span>
+        <select
+          value={userFilter}
+          onChange={e => setUserFilter(e.target.value)}
+          className="ml-auto w-28 bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[10px] text-[#EAECEF] rounded px-2 py-0.5 outline-none cursor-pointer"
+        >
+          <option value="">{t('recentTrades.filterUser')}</option>
+          {userOptions.map(u => (
+            <option key={u} value={u}>{u}</option>
+          ))}
+        </select>
       </div>
 
       {/* Column labels */}
@@ -98,10 +112,14 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
 
       {/* Rows */}
       <div className="flex-1 overflow-y-auto">
-        {fills.length === 0 ? (
-          <div className="px-3 py-4 text-[10px] text-[#444]">{t('recentTrades.empty')}</div>
-        ) : (
-          fills.map((f, i) => {
+        {(() => {
+          const filtered = userFilter.trim()
+            ? fills.filter(f => (f.username ?? '').toLowerCase().includes(userFilter.trim().toLowerCase()))
+            : fills
+          if (filtered.length === 0) return (
+            <div className="px-3 py-4 text-[10px] text-[#444]">{t('recentTrades.empty')}</div>
+          )
+          return filtered.map((f, i) => {
             const isBuy = f.side === 'BUY'
             const value = f.avg_price != null ? f.quantity * f.avg_price : null
             return (
@@ -124,11 +142,11 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                   f.status === 'NEW' || f.status === 'PARTIALLY_FILLED' ? 'text-[#f0b90b]' :
                   'text-[#555]'
                 }`}>{f.status ?? '—'}</span>
-                <span className="text-center text-[#555]">{fmtTime(f.created_at)}</span>
+                <span className="text-center text-[#aaa]">{fmtTime(f.created_at)}</span>
               </div>
             )
           })
-        )}
+        })()}
       </div>
     </div>
   )
