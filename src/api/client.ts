@@ -219,9 +219,12 @@ export const api = {
     return request<ApiTrade[]>('GET', '/api/orders/fills')
   },
 
-  async getAccountSummary(symbol?: string): Promise<ApiAccountSummary> {
+  async getAccountSummary(symbol?: string, force = false): Promise<ApiAccountSummary> {
+    const params: Record<string, string | boolean> = {}
+    if (symbol) params.symbol = symbol
+    if (force) params.force = true
     return request<ApiAccountSummary>('GET', '/api/account/summary', {
-      params: symbol ? { symbol } : undefined,
+      params: Object.keys(params).length ? params : undefined,
     })
   },
 

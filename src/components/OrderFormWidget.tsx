@@ -157,12 +157,14 @@ export function OrderFormWidget({
   isActive = true,
   sizeUnit,
   onSizeUnitChange,
+  refreshTrigger,
 }: {
   onOrderPlaced?: () => void
   selectedOrderBookPrice?: { value: number; token: number } | null
   isActive?: boolean
   sizeUnit: 'QUOTE' | 'BASE'
   onSizeUnitChange: (nextUnit: 'QUOTE' | 'BASE') => void
+  refreshTrigger?: number
 }) {
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
@@ -187,6 +189,8 @@ export function OrderFormWidget({
   const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
   const showToast = useToastStore((state) => state.showToast)
   const lastAccountErrorRef = useRef<string | null>(null)
+  const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
+  const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -222,10 +226,10 @@ export function OrderFormWidget({
       return () => { alive = false }
     }
 
-    const loadAccountSummary = async () => {
+    const loadAccountSummary = async (force = false) => {
       setAccountLoading(true)
       try {
-        const data = await api.getAccountSummary(symbol)
+        const data = await api.getAccountSummary(symbol, force)
         if (data?.message) {
           window.electronAPI?.logToMain?.('warn', 'account summary returned message', {
             username: user?.username ?? null,
@@ -255,9 +259,17 @@ export function OrderFormWidget({
     }
 
     loadAccountSummary()
+    loadAccountSummaryRef.current = loadAccountSummary
+    forceLoadAccountSummaryRef.current = () => loadAccountSummary(true)
     const timer = setInterval(loadAccountSummary, 15000)
     return () => { alive = false; clearInterval(timer) }
   }, [isActive, user?.username, symbol, baseAsset, quoteAsset])
+
+  // Refresh account summary immediately when external trigger fires (e.g. position closed)
+  useEffect(() => {
+    if (!refreshTrigger || !isActive || !user?.username) return
+    void forceLoadAccountSummaryRef.current?.()
+  }, [refreshTrigger, isActive, user?.username])
 
   const baseTicker = baseAsset
 

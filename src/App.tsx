@@ -36,6 +36,7 @@ function MainApp() {
   const [tabs, setTabs] = useState<WorkspaceTab[]>([TRADE_TAB])
   const [activeTabId, setActiveTabId] = useState<Screen>('trade')
   const [orderRefresh, setOrderRefresh] = useState(0)
+  const [positionRefresh, setPositionRefresh] = useState(0)
   const [showLogin, setShowLogin] = useState(false)
   const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
   const [tradeSizeUnit, setTradeSizeUnit] = useState<'QUOTE' | 'BASE'>('QUOTE')
@@ -169,7 +170,7 @@ function MainApp() {
               <PanelResizeHandle className="h-px bg-[#3e3e42] hover:bg-[#007acc] cursor-row-resize" />
               <Panel defaultSize={35} minSize={15} id="positions">
                 <PositionsPanel
-                  refreshTrigger={orderRefresh}
+                  refreshTrigger={orderRefresh + positionRefresh}
                   isActive={isTradeScreenActive}
                   sizeUnit={tradeSizeUnit}
                 />
@@ -199,6 +200,7 @@ function MainApp() {
                       selectedOrderBookPrice={selectedOrderBookPrice}
                       sizeUnit={tradeSizeUnit}
                       onSizeUnitChange={setTradeSizeUnit}
+                      refreshTrigger={orderRefresh + positionRefresh}
                     />
                   </div>
                 </div>
@@ -208,7 +210,7 @@ function MainApp() {
 
               {/* Bottom-right: recent platform trades */}
               <Panel defaultSize={28} minSize={15} id="right-bottom">
-                <RecentTrades isActive={isTradeScreenActive} refreshTrigger={orderRefresh} />
+                <RecentTrades isActive={isTradeScreenActive} refreshTrigger={orderRefresh} onFillsLoaded={() => setPositionRefresh(n => n + 1)} />
               </Panel>
             </PanelGroup>
           </Panel>

@@ -129,6 +129,7 @@ class LeverageUpdateIn(BaseModel):
 @router.get("/summary", response_model=AccountSummaryOut)
 def get_account_summary(
     symbol: str | None = Query(default=None),
+    force: bool = Query(default=False),
     user: dict = Depends(get_current_user),
 ):
     username = user["username"]
@@ -137,6 +138,9 @@ def get_account_summary(
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)
     testnet = cfg_module.is_testnet(username)
+
+    if force:
+        _invalidate_account_summary_cache(username, normalized_symbol)
 
     cached_summary = _get_cached_account_summary(username, normalized_symbol)
     if cached_summary is not None:

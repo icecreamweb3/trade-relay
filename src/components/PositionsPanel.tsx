@@ -109,9 +109,17 @@ export function PositionsPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadRef.current() }, [refreshTrigger, tab])
 
-  // Periodic poll for Open Orders tab so missed WebSocket notifications don't leave stale status
+  // When refreshTrigger fires and we're NOT on the positions tab, still refresh positions
+  // (load() only fetches the active tab's data)
   const tabRef = useRef<Tab>('positions')
   useEffect(() => { tabRef.current = tab }, [tab])
+  useEffect(() => {
+    if (!refreshTrigger) return
+    if (tabRef.current !== 'positions') void loadPositionsRef.current()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshTrigger])
+
+  // Periodic poll for Open Orders tab so missed WebSocket notifications don't leave stale status
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
     const POLL_MS = 30_000

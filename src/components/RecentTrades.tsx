@@ -42,7 +42,7 @@ function fmtNum(n: number | null, dp = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 }
 
-export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: boolean; refreshTrigger?: number }) {
+export function RecentTrades({ isActive = true, refreshTrigger, onFillsLoaded }: { isActive?: boolean; refreshTrigger?: number; onFillsLoaded?: () => void }) {
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const [fills, setFills] = useState<Fill[]>([])
@@ -62,6 +62,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
     try {
       const data = await api.getRecentFills()
       setFills(data.slice(0, 30))
+      onFillsLoaded?.()
     } catch {}
   }, [isActive, isAuthenticated])
 
