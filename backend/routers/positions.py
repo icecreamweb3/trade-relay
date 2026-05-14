@@ -19,6 +19,10 @@ from backend.logger import get_logger
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 _log = get_logger(__name__)
 
+# In-memory TP/SL store: position_id → (tp_price or None, sl_price or None)
+_tpsl_store: dict[int, tuple[float | None, float | None]] = {}
+_tpsl_store_lock = __import__('threading').Lock()
+
 
 class PositionHistoryOut(BaseModel):
     id: int
@@ -48,15 +52,20 @@ class PositionOut(BaseModel):
     leverage: int
     margin_type: str
     margin: Optional[float]
+    tp_price: Optional[float] = None
+    sl_price: Optional[float] = None
 
 
 def _db_positions(user_id: int | None) -> list[PositionOut]:
     rows = db_module.get_positions(user_id=user_id)
     positions: list[PositionOut] = []
     for index, row in enumerate(rows, start=1):
+        pos_id = int(row.get("id") or index)
+        with _tpsl_store_lock:
+            tp, sl = _tpsl_store.get(pos_id, (None, None))
         positions.append(
             PositionOut(
-                id=int(row.get("id") or index),
+                id=pos_id,
                 symbol=str(row.get("symbol", "") or ""),
                 side=str(row.get("position_side", "") or "").upper(),
                 quantity=float(row["quantity"]),
@@ -66,6 +75,8 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
                 leverage=int(row.get("leverage") or 0),
                 margin_type=str(row.get("margin_type", "") or "").upper(),
                 margin=None,
+                tp_price=tp,
+                sl_price=sl,
             )
         )
     return positions
@@ -97,6 +108,98 @@ def get_positions(user: dict = Depends(get_current_user)):
     result = _db_positions(user_id=user_id)
     _positions_cache[user_id] = (now, result)
     return result
+
+
+class TpSlIn(BaseModel):
+    tp_price: Optional[float] = None
+    sl_price: Optional[float] = None
+
+
+@router.post("/{position_id}/tpsl")
+def set_position_tpsl(
+    position_id: int,
+    body: TpSlIn,
+    user: dict = Depends(get_current_user),
+):
+    """Set TP/SL orders for a position. Places orders on Binance and records prices."""
+    username = str(user.get("username") or "")
+    api_key = cfg_module.get_api_key(username)
+    api_secret = cfg_module.get_api_secret(username)
+    if not api_key or not api_secret:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="No API credentials configured")
+
+    # Find the position row to get symbol, side, quantity
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
+    rows = db_module.get_positions(user_id=user_id)
+    position_row = None
+    for idx, row in enumerate(rows, start=1):
+        rid = int(row.get("id") or idx)
+        if rid == position_id:
+            position_row = row
+            break
+
+    if position_row is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    symbol = str(position_row.get("symbol", "") or "").upper()
+    position_side = str(position_row.get("position_side", "") or "").upper()  # LONG or SHORT
+    quantity = float(position_row.get("quantity") or 0)
+
+    # Determine order side to close the position
+    close_side = "SELL" if position_side == "LONG" else "BUY"
+
+    from trade_relay.exchange.binance_client import BinanceClient
+    from fastapi import HTTPException
+    client = BinanceClient(
+        api_key=api_key,
+        secret_key=api_secret,
+        testnet=cfg_module.is_testnet(username),
+    )
+
+    errors = []
+
+    if body.tp_price is not None and body.tp_price > 0:
+        try:
+            client.place_take_profit_order(
+                symbol=symbol,
+                side=close_side,
+                price=body.tp_price,
+                quantity=quantity,
+                position_side=position_side,
+            )
+        except Exception as exc:
+            errors.append(f"TP: {exc}")
+            _log.warning("TP order failed for %s pos=%d: %s", username, position_id, exc)
+
+    if body.sl_price is not None and body.sl_price > 0:
+        try:
+            client.place_stop_loss_order(
+                symbol=symbol,
+                side=close_side,
+                stop_price=body.sl_price,
+                quantity=quantity,
+                position_side=position_side,
+            )
+        except Exception as exc:
+            errors.append(f"SL: {exc}")
+            _log.warning("SL order failed for %s pos=%d: %s", username, position_id, exc)
+
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Store the set prices in memory
+    with _tpsl_store_lock:
+        _tpsl_store[position_id] = (
+            body.tp_price if body.tp_price and body.tp_price > 0 else None,
+            body.sl_price if body.sl_price and body.sl_price > 0 else None,
+        )
+    # Invalidate position cache
+    _positions_cache.pop(user_id, None)
+
+    _log.info("TP/SL set for %s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
+    return {"ok": True, "tp_price": body.tp_price, "sl_price": body.sl_price}
 
 
 @router.websocket("/ws")

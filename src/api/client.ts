@@ -34,6 +34,8 @@ interface ApiPosition {
   leverage: number
   margin_type: string
   margin: number
+  tp_price?: number | null
+  sl_price?: number | null
 }
 
 interface ApiOrder {
@@ -191,6 +193,12 @@ export const api = {
 
   async syncPositions(): Promise<ApiPosition[]> {
     return request<ApiPosition[]>('POST', '/api/positions/sync')
+  },
+
+  async setPositionTpSl(positionId: number, tpPrice: number | null, slPrice: number | null): Promise<ApiResult> {
+    return request<ApiResult>('POST', `/api/positions/${positionId}/tpsl`, {
+      body: { tp_price: tpPrice, sl_price: slPrice },
+    })
   },
 
   async getOpenOrders(): Promise<ApiOrder[]> {

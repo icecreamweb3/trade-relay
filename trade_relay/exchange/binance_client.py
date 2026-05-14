@@ -825,25 +825,51 @@ class BinanceClient:
                 return {}
 
     def get_position_information(self, symbol: str | None = None, recv_window: int | None = None) -> List[dict]:
-        """Get raw futures position information with timestamp sync and retry support."""
-        request_kwargs: Dict[str, object] = {
-            'recvWindow': recv_window or self.DEFAULT_RECV_WINDOW,
-        }
-        if symbol:
-            request_kwargs['symbol'] = symbol
+        """Get raw futures position information (all positions including zero-qty).
 
+        Uses /fapi/v2/positionRisk directly so the response includes the
+        ``leverage`` field (the SDK's futures_position_information targets v3
+        which does not expose leverage).  Falls back to the SDK if the direct
+        request fails.
+        """
+        import requests as _requests
         for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
             try:
                 self.set_timestamp_offset(force=(attempt > 0))
-                rows = self.client.futures_position_information(**request_kwargs)
-                return rows or []
+                url = f"{self.base_url}/fapi/v2/positionRisk"
+                params: dict[str, object] = {}
+                if symbol:
+                    params["symbol"] = symbol
+                _, query = self._generate_signed_request_body(params, debug=False)
+                response = _requests.get(
+                    f"{url}?{query}",
+                    headers={"X-MBX-APIKEY": self.api_key},
+                    proxies=self.proxy_config,
+                    timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
+                )
+                response.raise_for_status()
+                return response.json() or []
             except Exception as e:
                 if self._is_timestamp_error_exception(e) and attempt < self.MAX_TIMESTAMP_RETRIES:
                     logger.warning(f"⏰ get_position_information 时间戳错误重试 (attempt {attempt + 1}/{self.MAX_TIMESTAMP_RETRIES + 1})")
                     self.set_timestamp_offset(force=True)
                     continue
-                logger.debug(f"Failed to get raw position information: {e}")
-                return []
+                logger.debug(f"get_position_information v2 failed, falling back to SDK: {e}")
+                break
+
+        # Fallback: SDK (v3, no leverage field)
+        request_kwargs: Dict[str, object] = {
+            'recvWindow': recv_window or self.DEFAULT_RECV_WINDOW,
+        }
+        if symbol:
+            request_kwargs['symbol'] = symbol
+        try:
+            self.set_timestamp_offset(force=True)
+            rows = self.client.futures_position_information(**request_kwargs)
+            return rows or []
+        except Exception as e:
+            logger.debug(f"Failed to get raw position information: {e}")
+            return []
 
     def get_account_balance(self, asset: str = "USDT") -> float:
         """Return available balance for *asset* in the futures wallet."""

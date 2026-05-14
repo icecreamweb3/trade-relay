@@ -396,6 +396,7 @@ class UserOrderStatusStream:
                     "up": r.get("unRealizedProfit") or r.get("unrealizedProfit") or "0",
                     "cr": str(r.get("realizedPnl", 0)),
                     "mt": r.get("marginType", "cross").upper(),
+                    "l": r.get("leverage"),
                 }
                 for r in rows
             ]
@@ -712,7 +713,12 @@ class UserOrderStatusStream:
                 continue
 
             existing = existing_by_key.get((symbol, normalized_side)) or existing_by_key.get((symbol, raw_side)) or {}
-            leverage = int(existing.get("leverage") or 1)
+            # Prefer leverage from the Binance payload ("l" key from REST, or "leverage"); fall back to DB value
+            payload_leverage = _safe_float(position.get("l") or position.get("leverage"))
+            if payload_leverage and payload_leverage > 0:
+                leverage = int(payload_leverage)
+            else:
+                leverage = int(existing.get("leverage") or 1)
 
             db.upsert_position(
                 user_id=user_id,
@@ -943,6 +949,7 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
                 "up": r.get("unRealizedProfit") or r.get("unrealizedProfit") or "0",
                 "cr": "0",
                 "mt": r.get("marginType", "cross").upper(),
+                "l": r.get("leverage"),
             }
             for r in rows
         ]
@@ -1003,6 +1010,7 @@ def sync_all_initial_positions() -> None:
                     "up": r.get("unrealizedProfit"),
                     "cr": "0",
                     "mt": r.get("marginType", "cross").upper(),
+                    "l": r.get("leverage"),
                 }
                 for r in rows
             ]
