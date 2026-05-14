@@ -38,6 +38,7 @@ class OrderOut(BaseModel):
     symbol: str
     side: str
     order_type: str
+    trade_direction: Optional[str] = None
     quantity: float
     price: Optional[float]
     status: str
@@ -62,6 +63,7 @@ def _row_to_out(r: dict) -> OrderOut:
         symbol=r["symbol"],
         side=r["side"],
         order_type=r["order_type"],
+        trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
         quantity=float(r["quantity"]),
         price=float(r["price"]) if r.get("price") is not None else None,
         status=r["status"],
@@ -149,7 +151,9 @@ def get_fills(user: dict = Depends(get_current_user)):
     return [
         OrderOut(
             id=0, username=r["username"], symbol=r["symbol"], side=r["side"],
-            order_type="", quantity=float(r.get("filled_qty") or 0),
+            order_type="",
+            trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
+            quantity=float(r.get("filled_qty") or 0),
             price=float(r["price"]) if r.get("price") else None,
             status="FILLED",
             filled_qty=float(r.get("filled_qty") or 0),

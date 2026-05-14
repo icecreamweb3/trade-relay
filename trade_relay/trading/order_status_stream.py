@@ -418,6 +418,13 @@ class UserOrderStatusStream:
                         "Cleared stale DB positions for user=%s symbol=%s (no open positions on Binance)",
                         self.username, symbol,
                     )
+            # Notify frontend that positions have been updated.  This covers the edge case
+            # where ACCOUNT_UPDATE was delayed or missed (e.g. WS reconnect gap).
+            self._notify_listeners({
+                "type": "account_update",
+                "event": "REST_SYNC",
+                "symbol": symbol,
+            }, force=True)
         except Exception:
             logger.exception("Failed REST position sync for user=%s symbol=%s", self.username, symbol)
 
@@ -532,7 +539,7 @@ class UserOrderStatusStream:
                 "event": event_type,
                 "reason": account.get("m"),
                 "symbols": [str(position.get("s") or "") for position in positions if position.get("s")],
-            })
+            }, force=True)  # Position data just written to DB; never suppress this notification
 
     def _handle_close_fill(self, order: dict) -> None:
         """When a CLOSE-direction order fills (fully or partially), write a position_history

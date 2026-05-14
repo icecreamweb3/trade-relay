@@ -34,7 +34,7 @@ class PositionHistoryOut(BaseModel):
 
 # Per-user TTL cache: user_id (None = admin) → (timestamp, result)
 _positions_cache: dict[int | None, tuple[float, list]] = {}
-_POSITIONS_CACHE_TTL = 2.0  # seconds
+_POSITIONS_CACHE_TTL = 0.5  # seconds — short enough that an account_update fetch always sees fresh DB data
 
 
 class PositionOut(BaseModel):

@@ -13,6 +13,7 @@ interface Fill {
   username?: string
   symbol: string
   side: string
+  trade_direction?: string | null
   quantity: number
   price?: number | null
   avg_price: number | null
@@ -77,10 +78,11 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
 
       {/* Column labels */}
       <div className="grid px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]"
-        style={{ gridTemplateColumns: '1fr 1fr 52px 1fr 1fr 1fr 60px 1fr' }}>
+        style={{ gridTemplateColumns: '1fr 1fr 52px 44px 1fr 1fr 1fr 60px 1fr' }}>
         <span>{t('log.user')}</span>
         <span>{t('log.symbol')}</span>
         <span>{t('log.side')}</span>
+        <span>{t('log.dir')}</span>
         <span className="text-right">{t('log.qty')}</span>
         <span className="text-right">{t('log.price')}</span>
         <span className="text-right">{t('recentTrades.value')}</span>
@@ -100,11 +102,14 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
               <div
                 key={i}
                 className="grid px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
-                style={{ gridTemplateColumns: '1fr 1fr 52px 1fr 1fr 1fr 60px 1fr' }}
+                style={{ gridTemplateColumns: '1fr 1fr 52px 44px 1fr 1fr 1fr 60px 1fr' }}
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
                 <span className="text-[#888] truncate pr-1">{f.symbol}</span>
                 <span className={isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
+                <span className={f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}>
+                  {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
+                </span>
                 <span className="text-right text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
                 <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
                 <span className="text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>

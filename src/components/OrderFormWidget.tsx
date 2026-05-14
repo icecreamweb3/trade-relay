@@ -633,7 +633,7 @@ export function OrderFormWidget({
         <div className="grid grid-cols-4 gap-1">
           {[0.25, 0.5, 0.75, 1.0].map(pct => (
             <button key={pct} type="button" onClick={() => fillPct(pct)}
-              className="py-1 text-[10px] rounded bg-[#1E2026] text-[#848E9C] hover:bg-[#2B2F36] hover:text-[#EAECEF] transition-colors border border-[#2B2F36]">
+              className="py-1 text-[10px] rounded bg-[#2B2F36] text-[#C7CCD3] hover:bg-[#363C45] hover:text-[#F0B90B] hover:border-[#F0B90B] active:scale-95 transition-all border border-[#474D57] cursor-pointer select-none">
               {pct * 100}%
             </button>
           ))}

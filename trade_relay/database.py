@@ -877,7 +877,7 @@ def get_recent_platform_trades(limit: int = 30) -> list:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT username, symbol, side, filled_qty, price, avg_price, created_at
+                SELECT username, symbol, side, trade_direction, filled_qty, price, avg_price, created_at
                 FROM orders
                 WHERE status = 'FILLED'
                   AND filled_qty > 0

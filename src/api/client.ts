@@ -55,6 +55,7 @@ interface ApiTrade {
   symbol: string
   side: string
   order_type: string
+  trade_direction?: string | null
   quantity: number
   price?: number | null
   avg_price: number | null

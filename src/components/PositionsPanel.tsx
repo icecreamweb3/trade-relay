@@ -150,14 +150,19 @@ export function PositionsPanel({
 
       socket.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data as string) as { type?: string }
-          if (data.type === 'account_update' || data.type === 'order_update') {
-            scheduleReload()
-          }
-          // When an order status changes, always refresh positions immediately
-          // regardless of which tab is currently active.
-          if (data.type === 'order_update') {
+          const data = JSON.parse(event.data as string) as { type?: string; event?: string }
+          if (data.type === 'account_update') {
+            // Positions are already written to DB before this message is sent.
+            // loadPositionsRef always fetches positions regardless of which tab is active.
             void loadPositionsRef.current()
+            // Also reload whatever tab is currently shown (e.g. open orders).
+            scheduleReload()
+          } else if (data.type === 'order_update') {
+            scheduleReload()
+            // For poll-based or REST-sync updates, positions are already updated in DB.
+            if (data.event === 'POLL' || data.event === 'SYNC' || data.event === 'REST_SYNC') {
+              void loadPositionsRef.current()
+            }
           }
         } catch {
           // ignore malformed messages
