@@ -8,12 +8,17 @@ version = "1.0.0"
 description = "Multi-user trading terminal powered by Binance"
 requires-python = ">=3.11"
 dependencies = [
-    "PyQt6>=6.6.0",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pyjwt==2.10.1",
     "bcrypt>=4.0.0",
     "pyyaml>=6.0",
     "PyMySQL>=1.1.0",
+    "cryptography>=43.0.0",
     "python-binance>=1.0.19",
     "python-dotenv>=1.0.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
     "websocket-client>=1.8.0",
 ]
 

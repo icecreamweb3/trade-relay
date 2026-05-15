@@ -216,7 +216,7 @@ trading:
 ```bash
 cd /path/to/trade-relay
 source .venv/bin/activate
-uvicorn backend.main:app --reload --port 8000
+python main.py --reload --port 8000
 ```
 
 **终端 2 — Electron + React**
@@ -234,7 +234,7 @@ npm run dev
 #!/bin/bash
 # start.sh
 source .venv/bin/activate
-uvicorn backend.main:app --port 8000 &
+python main.py --port 8000 &
 npm run dev
 ```
 

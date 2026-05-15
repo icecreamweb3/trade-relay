@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  Trade Relay — Windows 环境初始化 + 打包脚本
+REM  Trade Relay — Windows 环境初始化 + Electron 打包脚本
 REM  用法：双击运行或在命令行执行 build_windows.bat
 REM ============================================================
 chcp 65001
@@ -23,16 +23,19 @@ if not exist "%VENV_DIR%\Scripts\activate.bat" (
     echo       虚拟环境已存在，跳过创建
 )
 
-echo [3/5] 安装依赖...
+echo [3/5] 安装 Python 依赖...
 %VENV_DIR%\Scripts\pip install --upgrade pip -q
-%VENV_DIR%\Scripts\pip install -r requirements.txt pyinstaller
+%VENV_DIR%\Scripts\pip install -r requirements.txt
 
-echo [4/5] 打包可执行文件...
-%VENV_DIR%\Scripts\pyinstaller trade_relay.spec --clean
+echo [4/5] 安装 Node.js 依赖...
+call npm install
 
-echo [5/5] 完成！
-echo 可执行文件位于 dist\TradeRelay\TradeRelay.exe
+echo [5/5] 打包 Electron Windows 应用...
+call npm run build:win
+
+echo 完成！
+echo Electron 安装包位于 dist-electron\
 echo.
-echo 直接运行程序（不打包）：
-echo   %VENV_DIR%\Scripts\python main.py
+echo 本地启动后端：
+echo   %VENV_DIR%\Scripts\python main.py --reload
 pause
