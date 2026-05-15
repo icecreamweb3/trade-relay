@@ -100,6 +100,7 @@ interface ApiTrade {
   symbol: string
   side: string
   order_type: string
+  order_category?: string | null
   trade_direction?: string | null
   quantity: number
   price?: number | null

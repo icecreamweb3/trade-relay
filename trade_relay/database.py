@@ -1359,14 +1359,15 @@ def query_orders(
 
 def get_recent_platform_trades(limit: int = 30) -> list:
     """返回平台内所有用户最近的已成交订单。
-    每行包含: username, symbol, side, filled_qty, avg_price, created_at
+    每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price, created_at
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT username, symbol, side, trade_direction, filled_qty, price, avg_price, created_at
+                SELECT username, symbol, side, trade_direction, order_type, order_category,
+                       filled_qty, price, avg_price, created_at
                 FROM orders
                 WHERE status = 'FILLED'
                   AND filled_qty > 0

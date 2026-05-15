@@ -15,7 +15,7 @@ const isDev = process.env.NODE_ENV === 'development'
 let mainWindow = null
 let binanceView = null
 let _autoExpandDone = false
-let _splitRatio = 0.67   // default left panel 67% horizontal
+let _splitRatio = 0.60   // default left panel 60% horizontal
 let _chartRatio = 0.65   // default chart 65% vertical within left panel
 
 // Map TRADE_RELAY_LANG (zh|en) → Binance locale path segment

@@ -119,7 +119,6 @@ def list_orders(
     username: Optional[str] = None,
     order_id: Optional[str] = None,
     start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
     status: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
@@ -165,10 +164,11 @@ def get_fills(user: dict = Depends(get_current_user)):
     return [
         OrderOut(
             id=0, username=r["username"], symbol=r["symbol"], side=r["side"],
-            order_type="",
+            order_type=str(r.get("order_type") or ""),
             trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
             quantity=float(r.get("filled_qty") or 0),
             price=float(r["price"]) if r.get("price") else None,
+            order_category=str(r.get("order_category") or "Basic"),
             status="FILLED",
             filled_qty=float(r.get("filled_qty") or 0),
             avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,

@@ -88,7 +88,7 @@ function MainApp() {
   }, [isTradeScreenActive])
 
   // Track both ratios to send both to Electron on any resize
-  const leftRatio = useRef(0.67)
+  const leftRatio = useRef(0.60)
   const chartRatio = useRef(0.65)
 
   const notifyElectron = () => {

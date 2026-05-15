@@ -13,6 +13,8 @@ interface Fill {
   username?: string
   symbol: string
   side: string
+  order_type?: string | null
+  order_category?: string | null
   trade_direction?: string | null
   quantity: number
   price?: number | null
@@ -21,17 +23,46 @@ interface Fill {
   created_at?: string
 }
 
+const GRID_TEMPLATE = 'minmax(40px, 0.8fr) minmax(64px, 0.95fr) 68px 42px 42px 46px 70px 66px 56px 88px'
+
+function getTradeKind(fill: Fill, t: (key: string) => string): { label: string; className: string } {
+  const orderCategory = String(fill.order_category || '').toUpperCase()
+  const orderType = String(fill.order_type || '').toUpperCase()
+
+  if (orderCategory === 'CONDITIONAL' || orderType.includes('STOP') || orderType.includes('TAKE_PROFIT')) {
+    return {
+      label: t('type.conditional'),
+      className: 'border-[#5c4b19] bg-[#2b2412] text-[#f0b90b]',
+    }
+  }
+  if (orderType === 'LIMIT') {
+    return {
+      label: t('type.limit'),
+      className: 'border-[#244a3a] bg-[#14261f] text-[#0ecb81]',
+    }
+  }
+  if (orderType === 'MARKET') {
+    return {
+      label: t('type.market'),
+      className: 'border-[#3b4454] bg-[#1f2430] text-[#c7d0df]',
+    }
+  }
+  return {
+    label: '—',
+    className: 'border-[#2f3440] bg-[#1a1d23] text-[#7f8896]',
+  }
+}
+
 function fmtTime(ts?: string): string {
   if (!ts) return '—'
   try {
     const d = new Date(ts)
-    const yyyy = d.getFullYear()
     const mm = String(d.getMonth() + 1).padStart(2, '0')
     const dd = String(d.getDate()).padStart(2, '0')
     const hh = String(d.getHours()).padStart(2, '0')
     const min = String(d.getMinutes()).padStart(2, '0')
     const ss = String(d.getSeconds()).padStart(2, '0')
-    return `${yyyy}/${mm}/${dd} ${hh}:${min}:${ss}`
+    return `${mm}/${dd} ${hh}:${min}:${ss}`
   } catch {
     return ts
   }
@@ -135,16 +166,17 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
       </div>
 
       {/* Column labels */}
-      <div className="grid px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]"
-        style={{ gridTemplateColumns: '1fr 1fr 52px 36px 0.7fr 1fr 1fr 60px 130px' }}>
+      <div className="grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]"
+        style={{ gridTemplateColumns: GRID_TEMPLATE }}>
         <span>{t('log.user')}</span>
-        <span>{t('log.symbol')}</span>
-        <span>{t('log.side')}</span>
-        <span>{t('log.dir')}</span>
-        <span className="text-center">{t('log.qty')}</span>
-        <span className="text-center">{t('log.price')}</span>
-        <span className="text-center">{t('recentTrades.value')}</span>
-        <span className="text-center">{t('log.status')}</span>
+        <span className="-ml-[5px] text-left">{t('log.symbol')}</span>
+        <span className="text-left">{t('recentTrades.kind')}</span>
+        <span className="-ml-[7px] text-left">{t('log.side')}</span>
+        <span className="pl-[5px] text-left">{t('log.qty')}</span>
+        <span className="pl-[5px] text-left">{t('log.dir')}</span>
+        <span className="-ml-[7px] text-center">{t('log.price')}</span>
+        <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
+        <span className="text-left">{t('log.status')}</span>
         <span className="text-center">{t('log.time')}</span>
       </div>
 
@@ -160,27 +192,33 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
           return filtered.map((f, i) => {
             const isBuy = f.side === 'BUY'
             const value = f.avg_price != null ? f.quantity * f.avg_price : null
+            const tradeKind = getTradeKind(f, t)
             return (
               <div
                 key={i}
-                className="grid px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
-                style={{ gridTemplateColumns: '1fr 1fr 52px 36px 0.7fr 1fr 1fr 60px 130px' }}
+                className="grid gap-x-[2px] px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
+                style={{ gridTemplateColumns: GRID_TEMPLATE }}
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
-                <span className="text-[#888] truncate pr-1">{f.symbol}</span>
-                <span className={isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
-                <span className={f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}>
+                <span className="pl-[5px] text-[#888] truncate pr-1">{f.symbol}</span>
+                <span className="truncate pr-1">
+                  <span className={`inline-flex min-w-[64px] items-center justify-center rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
+                    {tradeKind.label}
+                  </span>
+                </span>
+                <span className={`${isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'} truncate pl-[10px] text-left`}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
+                <span className="pl-[15px] text-left text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
+                <span className={`pl-[15px] text-left ${f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
                   {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </span>
-                <span className="text-center text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
-                <span className="text-center text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
-                <span className="text-center text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
-                <span className={`text-center truncate ${
+                <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
+                <span className="-ml-[10px] text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
+                <span className={`pl-[10px] text-left truncate ${
                   f.status === 'FILLED' ? 'text-[#0ecb81]' :
                   f.status === 'NEW' || f.status === 'PARTIALLY_FILLED' ? 'text-[#f0b90b]' :
                   'text-[#555]'
                 }`}>{f.status ?? '—'}</span>
-                <span className="text-center text-[#aaa]">{fmtTime(f.created_at)}</span>
+                <span className="text-right text-[#aaa]" title={f.created_at ?? ''}>{fmtTime(f.created_at)}</span>
               </div>
             )
           })
