@@ -6,6 +6,7 @@ const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, shell } = require
 const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
+const https = require('https')
 require('dotenv').config({ path: path.join(__dirname, '../.env') })
 const { logger } = require('./logger')
 
@@ -24,7 +25,16 @@ const BINANCE_LANG   = process.env.BINANCE_LANG   || _defaultBinanceLang
 const UI_LANG        = process.env.UI_LANG        || _defaultBinanceLang
 const BINANCE_SYMBOL = process.env.BINANCE_SYMBOL || 'BTCUSDC'
 const BACKEND_PORT   = process.env.BACKEND_PORT   || '8000'
+const BACKEND_BASE_URL = normalizeBaseUrl(
+  process.env.TRADE_RELAY_API_BASE_URL
+  || process.env.BACKEND_BASE_URL
+  || `http://127.0.0.1:${BACKEND_PORT}`
+)
 const BINANCE_URL    = `https://www.binance.com/${BINANCE_LANG}/futures/${BINANCE_SYMBOL}`
+
+function normalizeBaseUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '')
+}
 
 // ── JWT token storage (in-memory + safeStorage) ──────────────────────────────
 let _tokenStore = null
@@ -47,7 +57,7 @@ function getToken() {
 
 function clearToken() { _tokenStore = null }
 
-// ── HTTP helper for localhost backend ─────────────────────────────────────────
+// ── HTTP helper for backend API ───────────────────────────────────────────────
 function httpRequest(method, path, body, token) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null
@@ -55,8 +65,18 @@ function httpRequest(method, path, body, token) {
     if (token) headers['Authorization'] = `Bearer ${token}`
     if (data) headers['Content-Length'] = Buffer.byteLength(data)
 
-    const req = http.request(
-      { hostname: '127.0.0.1', port: BACKEND_PORT, path, method, headers },
+    const targetUrl = new URL(path, `${BACKEND_BASE_URL}/`)
+    const transport = targetUrl.protocol === 'https:' ? https : http
+
+    const req = transport.request(
+      {
+        protocol: targetUrl.protocol,
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || undefined,
+        path: `${targetUrl.pathname}${targetUrl.search}`,
+        method,
+        headers,
+      },
       (res) => {
         let chunks = ''
         res.on('data', d => (chunks += d))
@@ -300,6 +320,8 @@ ipcMain.on('log-to-main', (_event, level, msg, extra) => {
 
 ipcMain.handle('get-ui-lang', () => UI_LANG)
 ipcMain.on('get-ui-lang-sync', (event) => { event.returnValue = UI_LANG })
+ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
+ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   if (splitRatio === 0) {

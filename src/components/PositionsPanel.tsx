@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { api, ApiConditionalOrder } from '../api/client'
+import { api, ApiConditionalOrder, getBackendWebSocketUrl } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -8,7 +8,6 @@ import { perfSignalDone } from '../utils/perf'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
-const POSITIONS_WS_URL = 'ws://127.0.0.1:8000/api/positions/ws'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -181,7 +180,9 @@ export function PositionsPanel({
       const token = await window.electronAPI?.getToken?.()
       if (!alive || !token) return
 
-      socket = new WebSocket(`${POSITIONS_WS_URL}?token=${encodeURIComponent(token)}`)
+      const wsUrl = new URL(getBackendWebSocketUrl('/api/positions/ws'))
+      wsUrl.searchParams.set('token', token)
+      socket = new WebSocket(wsUrl.toString())
 
       socket.onmessage = (event) => {
         try {

@@ -8,7 +8,9 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   // Sync language for initial store state
   uiLang: ipcRenderer.sendSync('get-ui-lang-sync'),
+  backendBaseUrl: ipcRenderer.sendSync('get-backend-base-url-sync'),
   getUILang: () => ipcRenderer.invoke('get-ui-lang'),
+  getBackendBaseUrl: () => ipcRenderer.invoke('get-backend-base-url'),
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   login: (username, password) => ipcRenderer.invoke('auth-login', { username, password }),

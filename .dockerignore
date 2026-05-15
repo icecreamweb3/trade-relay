@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+node_modules
+dist
+dist-electron
+logs
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+tests
+docs
+data

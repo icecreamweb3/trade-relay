@@ -2,7 +2,31 @@
 import axios from 'axios'
 import { perf } from '../utils/perf'
 
-const BASE_URL = 'http://127.0.0.1:8000'
+const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '')
+}
+
+function resolveBaseUrl(): string {
+  const electronBaseUrl = window.electronAPI?.backendBaseUrl?.trim()
+  if (electronBaseUrl) return normalizeBaseUrl(electronBaseUrl)
+
+  const viteBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
+  if (viteBaseUrl) return normalizeBaseUrl(viteBaseUrl)
+
+  return DEFAULT_BASE_URL
+}
+
+export function getBackendBaseUrl(): string {
+  return resolveBaseUrl()
+}
+
+export function getBackendWebSocketUrl(path: string): string {
+  const url = new URL(path, `${getBackendBaseUrl()}/`)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
+}
 
 type QueryValue = string | number | boolean | null | undefined | Array<string | number | boolean>
 
@@ -173,7 +197,7 @@ async function request<T>(
       const token = await getToken()
       const res = await axios.request<T>({
         method,
-        url: `${BASE_URL}${path}`,
+        url: `${getBackendBaseUrl()}${path}`,
         data: options.body,
         params: options.params,
         headers: getHeaders(token),

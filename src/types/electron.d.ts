@@ -1,7 +1,9 @@
 // Global typings for Electron IPC bridge exposed via contextBridge
 interface ElectronAPI {
   uiLang?: string
+  backendBaseUrl?: string
   getUILang: () => Promise<string>
+  getBackendBaseUrl: () => Promise<string>
 
   // Auth
   login: (username: string, password: string) => Promise<{ ok: boolean; user?: import('./store/authStore').UserInfo; error?: string }>
