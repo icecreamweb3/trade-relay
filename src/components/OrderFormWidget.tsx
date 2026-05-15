@@ -161,6 +161,7 @@ function TickerStrip() {
 
 export function OrderFormWidget({
   onOrderPlaced,
+  onLoginClick,
   selectedOrderBookPrice,
   isActive = true,
   sizeUnit,
@@ -168,6 +169,7 @@ export function OrderFormWidget({
   refreshTrigger,
 }: {
   onOrderPlaced?: () => void
+  onLoginClick?: () => void
   selectedOrderBookPrice?: { value: number; token: number } | null
   isActive?: boolean
   sizeUnit: 'QUOTE' | 'BASE'
@@ -935,10 +937,14 @@ export function OrderFormWidget({
               className="py-2.5 text-[13px] font-bold rounded bg-[#f6465d]/20 text-[#f6465d]/40 cursor-not-allowed border border-[#f6465d]/20">
               {t('order.openShort')}
             </button>
-            <div className="col-span-2 flex items-center justify-center gap-1.5 py-1.5 rounded bg-[#F0B90B]/10 border border-[#F0B90B]/40">
+            <button
+              type="button"
+              onClick={onLoginClick}
+              className="col-span-2 flex items-center justify-center gap-1.5 py-1.5 rounded bg-[#F0B90B]/10 border border-[#F0B90B]/40 hover:bg-[#F0B90B]/15 hover:border-[#F0B90B]/60 transition-colors"
+            >
               <span className="text-[#F0B90B] text-[11px]">⚠</span>
               <span className="text-[12px] font-medium text-[#F0B90B]">{t('order.loginRequired')}</span>
-            </div>
+            </button>
           </div>
         ) : (
         <div className="grid grid-cols-2 gap-2">

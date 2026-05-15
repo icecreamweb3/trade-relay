@@ -77,7 +77,7 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
             className="flex items-center gap-1 px-2.5 h-6 text-xs font-medium rounded bg-[#007acc] hover:bg-[#0069b3] text-white transition-colors"
           >
             <LogIn size={11} />
-            Login
+            {t('nav.login')}
           </button>
         )}
         <div className="w-px h-4 bg-[#3e3e42] mx-1" />

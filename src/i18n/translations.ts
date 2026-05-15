@@ -28,6 +28,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'nav.users': '用户管理',
     'nav.profile': '我的收益',
     'nav.settings': '设置',
+    'nav.login': '登录',
     'nav.logout': '退出',
 
     // Order form
@@ -322,6 +323,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'nav.users': 'Users',
     'nav.profile': 'Profile',
     'nav.settings': 'Settings',
+    'nav.login': 'Login',
     'nav.logout': 'Logout',
 
     'order.symbol': 'Symbol',

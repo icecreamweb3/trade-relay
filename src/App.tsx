@@ -17,23 +17,30 @@ import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
 import { GlobalToast } from './components/GlobalToast'
 
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const appLocale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+
 type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
 type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
-
-const TRADE_TAB: WorkspaceTab = { id: 'trade', screen: 'trade', title: 'Trade', closable: false }
-const SCREEN_TITLES: Record<Screen, string> = {
-  trade: 'Trade',
-  orders: 'Orders',
-  users: 'Users',
-  profile: 'Profile',
-  settings: 'Settings',
-}
 
 function MainApp() {
   useMarketData()
 
+  const { t } = useTranslation(appLocale)
   const { isAuthenticated } = useAuthStore()
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([TRADE_TAB])
+  const getScreenTitle = (screen: Screen) => {
+    switch (screen) {
+      case 'trade': return t('nav.trade')
+      case 'orders': return t('nav.orders')
+      case 'users': return t('nav.users')
+      case 'profile': return t('nav.profile')
+      case 'settings': return t('nav.settings')
+    }
+  }
+
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([
+    { id: 'trade', screen: 'trade', title: getScreenTitle('trade'), closable: false },
+  ])
   const [activeTabId, setActiveTabId] = useState<Screen>('trade')
   const [orderRefresh, setOrderRefresh] = useState(0)
   const [positionRefresh, setPositionRefresh] = useState(0)
@@ -41,7 +48,7 @@ function MainApp() {
   const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
   const [tradeSizeUnit, setTradeSizeUnit] = useState<'QUOTE' | 'BASE'>('QUOTE')
 
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? TRADE_TAB
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? { id: 'trade', screen: 'trade', title: getScreenTitle('trade'), closable: false }
   const activeScreen = activeTab.screen
   const isTradeScreenActive = activeScreen === 'trade'
 
@@ -51,9 +58,14 @@ function MainApp() {
       return
     }
 
+    if (!isAuthenticated) {
+      openLogin()
+      return
+    }
+
     setTabs((current) => {
       if (current.some((tab) => tab.id === screen)) return current
-      return [...current, { id: screen, screen, title: SCREEN_TITLES[screen], closable: true }]
+      return [...current, { id: screen, screen, title: getScreenTitle(screen), closable: true }]
     })
     setActiveTabId(screen)
   }
@@ -197,6 +209,7 @@ function MainApp() {
                     <OrderFormWidget
                       isActive={isTradeScreenActive}
                       onOrderPlaced={() => setOrderRefresh(n => n + 1)}
+                      onLoginClick={openLogin}
                       selectedOrderBookPrice={selectedOrderBookPrice}
                       sizeUnit={tradeSizeUnit}
                       onSizeUnitChange={setTradeSizeUnit}
@@ -221,9 +234,6 @@ function MainApp() {
     </div>
   )
 }
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const appLocale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 export default function App() {
   const { checkAuth } = useAuthStore()
