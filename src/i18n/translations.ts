@@ -295,6 +295,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     'statusbar.markPrice': '标记价',
     'statusbar.fundingRate': '资金费率',
     'statusbar.refreshing': '刷新中',
+    'statusbar.version': 'Version',
+    'statusbar.buildTime': 'Build Time',
   },
   'en': {
     'login.title': 'Trade Relay',
@@ -577,6 +579,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     'statusbar.markPrice': 'Mark',
     'statusbar.fundingRate': 'Funding',
     'statusbar.refreshing': 'Refreshing',
+    'statusbar.version': 'Version',
+    'statusbar.buildTime': 'Build Time',
   },
 }
 

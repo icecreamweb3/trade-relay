@@ -3,10 +3,26 @@ import { Locale, useTranslation } from '../i18n/translations'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+const appVersion = __APP_VERSION__
+
+function formatBuildTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
 
 export function StatusBar() {
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice, fundingRate, isConnected, klines } = useMarketStore()
+  const buildTime = formatBuildTime(__BUILD_TIME__)
 
   const lastKline = klines[klines.length - 1]
   const prevKline = klines[klines.length - 2]
@@ -38,6 +54,10 @@ export function StatusBar() {
           {t('statusbar.fundingRate')}: {(fundingRate * 100).toFixed(4)}%
         </span>
       )}
+      <div className="ml-auto flex items-center gap-3 text-[11px] text-blue-100 whitespace-nowrap">
+        <span>{t('statusbar.version')}: <span className="font-mono text-white">{appVersion}</span></span>
+        <span>{t('statusbar.buildTime')}: <span className="font-mono text-white">{buildTime}</span></span>
+      </div>
     </div>
   )
 }

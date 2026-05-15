@@ -10,12 +10,13 @@
  */
 
 const fs   = require('fs')
+const os   = require('os')
 const path = require('path')
 
 // ── 配置 ──────────────────────────────────────────────────────────────────────
-const LOG_DIR       = path.join(__dirname, '../logs')
 const MAX_BYTES     = 100 * 1024 * 1024   // 100 MB
 const BACKUP_COUNT  = 9
+const APP_NAME      = 'Trade Relay'
 
 const LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
 
@@ -24,13 +25,32 @@ let _fd        = null   // 当前日志文件描述符
 let _filePath  = null   // 当前日志文件路径
 let _written   = 0      // 已写入字节数
 
+function _resolveLogDir() {
+  const packagedDir = __dirname.includes('app.asar')
+  if (!packagedDir) return path.join(__dirname, '../logs')
+
+  if (process.platform === 'win32') {
+    const base = process.env.APPDATA || process.env.LOCALAPPDATA
+    if (base) return path.join(base, APP_NAME, 'logs')
+  }
+
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Logs', APP_NAME)
+  }
+
+  const xdgStateHome = process.env.XDG_STATE_HOME
+  if (xdgStateHome) return path.join(xdgStateHome, 'trade-relay', 'logs')
+  return path.join(os.homedir(), '.local', 'state', 'trade-relay', 'logs')
+}
+
 /** 确保日志目录存在，创建初始日志文件 */
 function _init() {
   if (_fd !== null) return
-  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true })
+  const logDir = _resolveLogDir()
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
 
   const ts = _timestamp().replace(/[: ]/g, '-').replace(/\./g, '')
-  _filePath = path.join(LOG_DIR, `electron_${ts}.log`)
+  _filePath = path.join(logDir, `electron_${ts}.log`)
   _fd = fs.openSync(_filePath, 'a')
   _written = fs.fstatSync(_fd).size
 }
