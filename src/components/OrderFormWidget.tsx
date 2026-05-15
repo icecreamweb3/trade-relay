@@ -57,6 +57,12 @@ function fmt(n: number | null | undefined, decimals = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
+function fmtSigned(n: number | null | undefined, decimals = 2): string {
+  if (n == null || isNaN(n)) return '—'
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${fmt(n, decimals)}`
+}
+
 function fmtRate(r: number | null): string {
   if (r == null) return '—'
   return (r * 100).toFixed(4) + '%'
@@ -409,6 +415,40 @@ export function OrderFormWidget({
     const baseQty = sizeUnit === 'QUOTE' ? qtyNum / priceNum : qtyNum
     return (baseQty * priceNum) / leverage
   }, [qty, price, orderType, currentPrice, leverage, sizeUnit])
+
+  const tpSlEntryPrice = useMemo(() => {
+    const entryPrice = orderType === 'MARKET'
+      ? (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? null)
+      : (parseFloat(price) || (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? null))
+    return entryPrice && entryPrice > 0 ? entryPrice : null
+  }, [orderType, price, currentPrice, markPrice, accountSummary?.rest_mark_price])
+
+  const tpSlBaseQty = useMemo(() => {
+    const qtyNum = parseFloat(qty)
+    if (!qtyNum || qtyNum <= 0 || !tpSlEntryPrice) return null
+    return sizeUnit === 'QUOTE' ? qtyNum / tpSlEntryPrice : qtyNum
+  }, [qty, sizeUnit, tpSlEntryPrice])
+
+  const getTpSlEstimate = useMemo(() => {
+    return (targetPriceText: string) => {
+      const targetPrice = parseFloat(targetPriceText)
+      if (!tpSlEntryPrice || !tpSlBaseQty || !targetPrice || targetPrice <= 0) return null
+
+      const buyPnl = tpSlBaseQty * (targetPrice - tpSlEntryPrice)
+      const sellPnl = tpSlBaseQty * (tpSlEntryPrice - targetPrice)
+      const roiBase = estimatedCost && estimatedCost > 0 ? estimatedCost : null
+
+      return {
+        buyPnl,
+        sellPnl,
+        buyPct: roiBase ? (buyPnl / roiBase) * 100 : null,
+        sellPct: roiBase ? (sellPnl / roiBase) * 100 : null,
+      }
+    }
+  }, [estimatedCost, tpSlBaseQty, tpSlEntryPrice])
+
+  const tpEstimate = useMemo(() => getTpSlEstimate(tp), [getTpSlEstimate, tp])
+  const slEstimate = useMemo(() => getTpSlEstimate(sl), [getTpSlEstimate, sl])
 
   const fillPct = (pct: number) => {
     if (posDir === 'CLOSE') {
@@ -836,6 +876,24 @@ export function OrderFormWidget({
                   className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#0ECB81] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable pr-10" />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#0ECB81]">TP</span>
               </div>
+              {tpEstimate && (
+                <div className="mt-1 rounded border border-[#2B2F36] bg-[#161A1E] px-2 py-1.5 text-[10px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#848E9C]">{t('order.buyPnl')}</span>
+                    <span className={`font-mono tabular-nums ${tpEstimate.buyPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                      {fmtSigned(tpEstimate.buyPnl, 2)} {quoteAsset}
+                      {tpEstimate.buyPct != null ? ` (${fmtSigned(tpEstimate.buyPct, 2)}%)` : ''}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center justify-between gap-2">
+                    <span className="text-[#848E9C]">{t('order.sellPnl')}</span>
+                    <span className={`font-mono tabular-nums ${tpEstimate.sellPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                      {fmtSigned(tpEstimate.sellPnl, 2)} {quoteAsset}
+                      {tpEstimate.sellPct != null ? ` (${fmtSigned(tpEstimate.sellPct, 2)}%)` : ''}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.stopLoss')}</label>
@@ -845,6 +903,24 @@ export function OrderFormWidget({
                   className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F6465D] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable pr-10" />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#F6465D]">SL</span>
               </div>
+              {slEstimate && (
+                <div className="mt-1 rounded border border-[#2B2F36] bg-[#161A1E] px-2 py-1.5 text-[10px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#848E9C]">{t('order.buyPnl')}</span>
+                    <span className={`font-mono tabular-nums ${slEstimate.buyPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                      {fmtSigned(slEstimate.buyPnl, 2)} {quoteAsset}
+                      {slEstimate.buyPct != null ? ` (${fmtSigned(slEstimate.buyPct, 2)}%)` : ''}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center justify-between gap-2">
+                    <span className="text-[#848E9C]">{t('order.sellPnl')}</span>
+                    <span className={`font-mono tabular-nums ${slEstimate.sellPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                      {fmtSigned(slEstimate.sellPnl, 2)} {quoteAsset}
+                      {slEstimate.sellPct != null ? ` (${fmtSigned(slEstimate.sellPct, 2)}%)` : ''}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
