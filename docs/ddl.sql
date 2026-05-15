@@ -21,6 +21,8 @@ CREATE TABLE orders (
     quantity          DECIMAL(20,8)   NOT NULL COMMENT '委托数量',
     price             DECIMAL(20,8)   DEFAULT NULL COMMENT '限价单委托价',
     stop_price        DECIMAL(20,8)   DEFAULT NULL COMMENT '止损触发价',
+    tp_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止盈价',
+    sl_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止损价',
     status            VARCHAR(32)     NOT NULL DEFAULT 'NEW',
     exchange_order_id VARCHAR(64)     DEFAULT NULL COMMENT '交易所订单ID',
     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
@@ -160,7 +162,9 @@ ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only,
-    ADD COLUMN IF NOT EXISTS order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id;
+    ADD COLUMN IF NOT EXISTS order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id,
+    ADD COLUMN IF NOT EXISTS tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price,
+    ADD COLUMN IF NOT EXISTS sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price;
 
 ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';

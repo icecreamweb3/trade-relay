@@ -337,6 +337,8 @@ def init_db() -> None:
                     quantity          DECIMAL(20,8)   NOT NULL,
                     price             DECIMAL(20,8)   DEFAULT NULL COMMENT '限价单委托价',
                     stop_price        DECIMAL(20,8)   DEFAULT NULL COMMENT '止损触发价',
+                    tp_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止盈价',
+                    sl_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止损价',
                     status            VARCHAR(32)     NOT NULL DEFAULT 'NEW',
                     exchange_order_id VARCHAR(64)     DEFAULT NULL COMMENT '交易所订单ID',
                     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
@@ -368,6 +370,8 @@ def init_db() -> None:
                 ("reduce_only",     "ALTER TABLE orders ADD COLUMN reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction"),
                 ("post_only",       "ALTER TABLE orders ADD COLUMN post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only"),
                 ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
+                ("tp_price",        "ALTER TABLE orders ADD COLUMN tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price"),
+                ("sl_price",        "ALTER TABLE orders ADD COLUMN sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -813,6 +817,8 @@ def create_order(
     error_message: Optional[str] = None,
     exchange: str = "binance",
     stop_price: Optional[float] = None,
+    tp_price: Optional[float] = None,
+    sl_price: Optional[float] = None,
     client_order_id: Optional[str] = None,
     trade_direction: Optional[str] = None,     # OPEN | CLOSE
     position_id: Optional[int] = None,         # 关联持仓ID
@@ -837,6 +843,8 @@ def create_order(
                     "quantity": quantity,
                     "price": price,
                     "stop_price": stop_price,
+                    "tp_price": tp_price,
+                    "sl_price": sl_price,
                     "status": status,
                     "exchange_order_id": binance_order_id,
                     "client_order_id": client_order_id,
@@ -851,13 +859,13 @@ def create_order(
             cur.execute(
                 """INSERT INTO orders
                    (user_id, username, exchange, symbol, side, order_type,
-                    quantity, price, stop_price, status,
+                    quantity, price, stop_price, tp_price, sl_price, status,
                     exchange_order_id, client_order_id,
                     trade_direction, reduce_only, post_only, position_id, order_category, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
-                    quantity, price, stop_price, status,
+                    quantity, price, stop_price, tp_price, sl_price, status,
                     binance_order_id, client_order_id,
                     trade_direction, int(reduce_only), int(post_only), position_id, normalized_order_category, error_message,
                 ),

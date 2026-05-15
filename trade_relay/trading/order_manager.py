@@ -27,6 +27,8 @@ async def submit_order(
     quantity: float,
     price: Optional[float] = None,
     stop_price: Optional[float] = None,
+    tp_price: Optional[float] = None,
+    sl_price: Optional[float] = None,
     leverage: int = 10,
     position_direction: str = 'OPEN',
 ) -> OrderResult:
@@ -113,6 +115,8 @@ async def submit_order(
         quantity=quantity,
         price=price,
         stop_price=stop_price,
+        tp_price=tp_price,
+        sl_price=sl_price,
         status=result.status if result.success else "FAILED",
         binance_order_id=result.order_id,
         client_order_id=result.client_order_id,

@@ -1,9 +1,14 @@
 import { useEffect } from 'react'
 import { useToastStore } from '../store/toastStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 export function GlobalToast() {
   const toast = useToastStore((state) => state.toast)
   const dismissToast = useToastStore((state) => state.dismissToast)
+  const { t } = useTranslation(locale)
 
   useEffect(() => {
     if (!toast) return
@@ -38,7 +43,7 @@ export function GlobalToast() {
         type="button"
         onClick={dismissToast}
         className="absolute right-3 top-1/2 -translate-y-1/2 text-[24px] leading-none text-[#A9B1BA] transition-colors hover:text-white"
-        aria-label="Close notification"
+        aria-label={t('common.closeNotification')}
       >
         ×
       </button>

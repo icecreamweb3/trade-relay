@@ -118,6 +118,8 @@ def test_submit_order_persists_stop_price_and_client_order_id(monkeypatch):
             0.002,
             None,
             80683.7,
+            None,
+            None,
             20,
             "OPEN",
         )
@@ -127,6 +129,96 @@ def test_submit_order_persists_stop_price_and_client_order_id(monkeypatch):
     assert captured["stop_price"] == 80683.7
     assert captured["client_order_id"] == "client-algo-123"
     assert captured["binance_order_id"] == "987654321"
+
+
+def test_submit_order_persists_requested_tp_sl_prices(monkeypatch):
+    from trade_relay.auth.manager import Session
+    from trade_relay.trading import order_manager
+
+    captured: dict = {}
+
+    async def fake_place_order(**kwargs):
+        return trading_binance_client.BinanceOrderResult(
+            success=True,
+            order_id="12345",
+            client_order_id="client-12345",
+            status="NEW",
+        )
+
+    def fake_create_order(**kwargs):
+        captured.update(kwargs)
+        return 43
+
+    monkeypatch.setattr(order_manager.cfg, "is_mock_mode", lambda username: False)
+    monkeypatch.setattr(order_manager.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(order_manager.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(order_manager.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(order_manager, "place_order", fake_place_order)
+    monkeypatch.setattr(order_manager.db, "create_order", fake_create_order)
+    monkeypatch.setattr(order_manager.db, "log_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager.db, "get_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "ensure_user_order_status_stream", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "sync_order_status_once", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        order_manager.submit_order(
+            Session(1, "Will", "user"),
+            "BTCUSDC",
+            "BUY",
+            "LIMIT",
+            0.002,
+            80000.0,
+            None,
+            81000.0,
+            79000.0,
+            20,
+            "OPEN",
+        )
+    )
+
+    assert result.success is True
+    assert captured["tp_price"] == 81000.0
+    assert captured["sl_price"] == 79000.0
+
+
+def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    placed: list[dict] = []
+
+    monkeypatch.setattr(order_status_stream.db, "get_position", lambda *args, **kwargs: {"id": 99})
+    monkeypatch.setattr(
+        order_status_stream,
+        "place_tp_sl_orders",
+        lambda **kwargs: placed.append(kwargs) or [],
+    )
+
+    db_order = {
+        "exchange_order_id": "12345",
+        "user_id": 1,
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "trade_direction": "OPEN",
+        "tp_price": 81000.0,
+        "sl_price": 79000.0,
+        "filled_qty": 0.002,
+        "avg_price": 80000.0,
+    }
+
+    stream._place_open_fill_tpsl(db_order, executed_qty=0.002, avg_price=80000.0)
+
+    assert placed == [{
+        "username": "Will",
+        "user_id": 1,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "quantity": 0.002,
+        "entry_price": 80000.0,
+        "tp_price": 81000.0,
+        "sl_price": 79000.0,
+        "position_id": 99,
+    }]
 
 
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):

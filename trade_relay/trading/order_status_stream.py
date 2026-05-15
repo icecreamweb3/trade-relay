@@ -15,6 +15,7 @@ import websocket
 from trade_relay import config as cfg
 from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
+from trade_relay.trading.tpsl_service import place_tp_sl_orders
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ class UserOrderStatusStream:
         # entry_price even after _sync_position_from_rest has zeroed/deleted the DB row.
         self._entry_price_cache: dict[tuple[str, str], tuple[Optional[int], float]] = {}
         self._entry_price_cache_lock = threading.Lock()
+        self._handled_open_tpsl: set[str] = set()
+        self._handled_open_tpsl_lock = threading.Lock()
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -374,6 +377,8 @@ class UserOrderStatusStream:
                     fill_qty=executed_qty,
                     fill_price=avg_price,
                 )
+            elif trade_direction == "OPEN" and new_status == "FILLED":
+                self._place_open_fill_tpsl(db_row, executed_qty, avg_price)
 
             symbols_to_sync.add(symbol)
 
@@ -521,6 +526,7 @@ class UserOrderStatusStream:
         if event_type == "ORDER_TRADE_UPDATE":
             order = data.get("o") or {}
             self._persist_status(order)
+            self._handle_open_fill_tpsl(order)
             # Generate position_history entry when a CLOSE order fills
             self._handle_close_fill(order)
             order_status = str(order.get("X") or order.get("status") or "").upper()
@@ -669,6 +675,97 @@ class UserOrderStatusStream:
                 args=(symbol,),
                 daemon=True,
             ).start()
+
+    def _handle_open_fill_tpsl(self, order: dict) -> None:
+        execution_type = str(order.get("x") or "").upper()
+        if execution_type != "TRADE":
+            return
+        order_status = str(order.get("X") or "").upper()
+        if order_status != "FILLED":
+            return
+
+        exchange_order_id = str(order.get("i") or "")
+        if not exchange_order_id:
+            return
+
+        db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
+        if not db_order:
+            return
+
+        executed_qty = _safe_float(order.get("z") or order.get("executedQty") or db_order.get("filled_qty") or 0)
+        avg_price = _safe_float(order.get("ap") or order.get("avgPrice") or db_order.get("avg_price") or 0)
+        self._place_open_fill_tpsl(db_order, executed_qty, avg_price)
+
+    def _place_open_fill_tpsl(self, db_order: dict, executed_qty: Optional[float], avg_price: Optional[float]) -> None:
+        exchange_order_id = str(db_order.get("exchange_order_id") or "")
+        if not exchange_order_id:
+            return
+        with self._handled_open_tpsl_lock:
+            if exchange_order_id in self._handled_open_tpsl:
+                return
+
+        trade_direction = str(db_order.get("trade_direction") or "").upper()
+        if trade_direction != "OPEN":
+            return
+
+        tp_price = _safe_float(db_order.get("tp_price") or 0)
+        sl_price = _safe_float(db_order.get("sl_price") or 0)
+        if not tp_price and not sl_price:
+            return
+
+        user_id_raw = db_order.get("user_id")
+        if user_id_raw is None:
+            user = db.get_user_by_username(self.username)
+            if not user:
+                return
+            user_id = int(user["id"])
+        else:
+            user_id = int(user_id_raw)
+
+        symbol = str(db_order.get("symbol") or "")
+        order_side = str(db_order.get("side") or "").upper()
+        position_side = "LONG" if order_side == "BUY" else "SHORT"
+        quantity = executed_qty if executed_qty and executed_qty > 0 else _safe_float(db_order.get("filled_qty") or db_order.get("quantity") or 0)
+        entry_price = avg_price if avg_price and avg_price > 0 else _safe_float(db_order.get("avg_price") or db_order.get("price") or 0)
+        if not quantity or quantity <= 0:
+            return
+
+        position = db.get_position(user_id, symbol, position_side)
+        position_id = int(position["id"]) if position and position.get("id") else None
+
+        errors = place_tp_sl_orders(
+            username=self.username,
+            user_id=user_id,
+            symbol=symbol,
+            position_side=position_side,
+            quantity=quantity,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            position_id=position_id,
+        )
+        if errors:
+            logger.warning(
+                "Open fill TP/SL placement failed: user=%s order=%s symbol=%s errors=%s",
+                self.username,
+                exchange_order_id,
+                symbol,
+                "; ".join(errors),
+            )
+            return
+
+        with self._handled_open_tpsl_lock:
+            self._handled_open_tpsl.add(exchange_order_id)
+        logger.info(
+            "Open fill TP/SL placed: user=%s order=%s symbol=%s tp=%s sl=%s qty=%s position_side=%s",
+            self.username,
+            exchange_order_id,
+            symbol,
+            tp_price,
+            sl_price,
+            quantity,
+            position_side,
+        )
 
     def _sync_positions(self, positions_payload: list[dict]) -> None:
         user = db.get_user_by_username(self.username)

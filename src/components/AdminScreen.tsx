@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
+import { Locale, useTranslation } from '../i18n/translations'
+
+const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
+const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface User {
   id: number
@@ -17,6 +21,7 @@ interface User {
 type FormMode = 'create' | 'edit'
 
 export function AdminScreen() {
+  const { t } = useTranslation(locale)
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null)
@@ -40,13 +45,15 @@ export function AdminScreen() {
         return nextUsers[0]?.id ?? null
       })
     } catch (err: unknown) {
-      showToast('error', getApiError(err, '加载用户失败'))
+      showToast('error', getApiError(err, t('admin.error.loadUsers')))
     } finally {
       setLoading(false)
     }
-  }, [showToast])
+  }, [showToast, t])
 
-  useEffect(() => { loadUsers() }, [loadUsers])
+  useEffect(() => {
+    void loadUsers()
+  }, [loadUsers])
 
   const openCreate = () => {
     setFormMode('create')
@@ -61,13 +68,13 @@ export function AdminScreen() {
 
   const handleDelete = async () => {
     if (!selectedUser || selectedUser.id === me?.id) return
-    if (!confirm(`确认删除用户 ${selectedUser.username}？`)) return
+    if (!confirm(t('admin.confirmDelete', { username: selectedUser.username }))) return
     try {
       await api.deleteUser(selectedUser.id)
       await loadUsers()
-      showToast('success', '已删除')
+      showToast('success', t('admin.success.deleted'))
     } catch (err: unknown) {
-      showToast('error', getApiError(err, '删除用户失败'))
+      showToast('error', getApiError(err, t('admin.error.deleteUser')))
     }
   }
 
@@ -77,9 +84,9 @@ export function AdminScreen() {
     try {
       await api.updateUser(selectedUser.id, { is_active: isActive })
       await loadUsers()
-      showToast('success', isActive ? '已启用' : '已停用')
+      showToast('success', isActive ? t('admin.success.activated') : t('admin.success.deactivated'))
     } catch (err: unknown) {
-      showToast('error', getApiError(err, isActive ? '启用用户失败' : '停用用户失败'))
+      showToast('error', getApiError(err, isActive ? t('admin.error.activateUser') : t('admin.error.deactivateUser')))
     }
   }
 
@@ -91,34 +98,34 @@ export function AdminScreen() {
   return (
     <div className="h-full min-h-0 flex flex-col bg-[#0d1219] text-[#dde4ef]">
       <div className="flex items-center gap-2 border-b border-[#2a303c] px-4 py-3 shrink-0">
-        <div className="text-sm font-semibold tracking-[0.16em] uppercase text-[#8b94a5]">User Management</div>
+        <div className="text-sm font-semibold tracking-[0.16em] uppercase text-[#8b94a5]">{t('admin.title')}</div>
         <div className="ml-auto flex items-center gap-2">
-          <ToolbarButton onClick={openCreate} tone="primary">Add User</ToolbarButton>
-          <ToolbarButton onClick={openEdit} disabled={!canEdit} tone="primary">Edit User</ToolbarButton>
-          <ToolbarButton onClick={handleDelete} disabled={!canDelete} tone="danger">Delete User</ToolbarButton>
-          <ToolbarButton onClick={() => handleSetActive(true)} disabled={!canActivate} tone="primary">Activate</ToolbarButton>
-          <ToolbarButton onClick={() => handleSetActive(false)} disabled={!canDeactivate} tone="danger">Deactivate</ToolbarButton>
+          <ToolbarButton onClick={openCreate} tone="primary">{t('admin.add')}</ToolbarButton>
+          <ToolbarButton onClick={openEdit} disabled={!canEdit} tone="primary">{t('admin.editUser')}</ToolbarButton>
+          <ToolbarButton onClick={handleDelete} disabled={!canDelete} tone="danger">{t('admin.deleteUser')}</ToolbarButton>
+          <ToolbarButton onClick={() => void handleSetActive(true)} disabled={!canActivate} tone="primary">{t('admin.activate')}</ToolbarButton>
+          <ToolbarButton onClick={() => void handleSetActive(false)} disabled={!canDeactivate} tone="danger">{t('admin.deactivate')}</ToolbarButton>
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
         <table className="w-full border-collapse text-[12px]">
           <thead>
             <tr className="bg-[#171c24] text-[#8b94a5]">
-              <TableHeader className="w-[70px] text-right">ID</TableHeader>
-              <TableHeader className="w-[110px]">Username</TableHeader>
-              <TableHeader className="w-[90px]">Role</TableHeader>
-              <TableHeader className="w-[70px]">Active</TableHeader>
-              <TableHeader>API Key</TableHeader>
-              <TableHeader>API Secret</TableHeader>
-              <TableHeader className="w-[130px] text-right">Created</TableHeader>
-              <TableHeader className="w-[130px] text-right">Updated</TableHeader>
+              <TableHeader className="w-[70px] text-right">{t('log.id')}</TableHeader>
+              <TableHeader className="w-[110px]">{t('admin.col.username')}</TableHeader>
+              <TableHeader className="w-[90px]">{t('admin.col.role')}</TableHeader>
+              <TableHeader className="w-[70px]">{t('admin.col.active')}</TableHeader>
+              <TableHeader>{t('admin.col.apiKey')}</TableHeader>
+              <TableHeader>{t('admin.col.apiSecret')}</TableHeader>
+              <TableHeader className="w-[130px] text-right">{t('admin.col.created')}</TableHeader>
+              <TableHeader className="w-[130px] text-right">{t('admin.col.updated')}</TableHeader>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 ? (
               <tr>
                 <td colSpan={8} className="border border-[#2a303c] px-4 py-8 text-center text-[#7d8696]">
-                  {loading ? 'Loading users...' : 'No users'}
+                  {loading ? t('admin.loadingUsers') : t('admin.empty')}
                 </td>
               </tr>
             ) : users.map((user) => {
@@ -137,10 +144,10 @@ export function AdminScreen() {
                   <TableCell className="text-right text-[#c5ccd8]">{user.id}</TableCell>
                   <TableCell className="font-medium text-[#edf2fb]">
                     {user.username}
-                    {user.id === me?.id && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#3a84f7]">Self</span>}
+                    {user.id === me?.id && <span className="ml-2 text-[10px] uppercase tracking-wide text-[#3a84f7]">{t('admin.self')}</span>}
                   </TableCell>
-                  <TableCell>{formatRole(user.role)}</TableCell>
-                  <TableCell>{user.is_active ? 'Yes' : 'No'}</TableCell>
+                  <TableCell>{formatRole(user.role, t)}</TableCell>
+                  <TableCell>{user.is_active ? t('common.yes') : t('common.no')}</TableCell>
                   <TableCell className="font-mono text-[#d5dce8]">{user.binance_api_key || ''}</TableCell>
                   <TableCell className="font-mono text-[#d5dce8]">{user.binance_api_secret || ''}</TableCell>
                   <TableCell className="text-right text-[#c5ccd8]">{formatDateTime(user.created_at)}</TableCell>
@@ -161,6 +168,7 @@ export function AdminScreen() {
             setShowForm(false)
             await loadUsers()
           }}
+          t={t}
         />
       )}
     </div>
@@ -172,11 +180,13 @@ function UserFormModal({
   user,
   onCancel,
   onSaved,
+  t,
 }: {
   mode: FormMode
   user: User | null
   onCancel: () => void
   onSaved: () => Promise<void>
+  t: (key: string, vars?: Record<string, string | number>) => string
 }) {
   const isEdit = mode === 'edit'
   const [username, setUsername] = useState(user?.username ?? '')
@@ -195,18 +205,18 @@ function UserFormModal({
     const trimmedPassword = password.trim()
 
     if (!trimmedUsername) {
-      showToast('error', '用户名必填')
+      showToast('error', t('admin.error.usernameRequired'))
       return
     }
 
     if (!isEdit && !trimmedPassword) {
-      showToast('error', '用户名和密码必填')
+      showToast('error', t('admin.error.usernamePasswordRequired'))
       return
     }
 
     if (trimmedPassword || confirmPassword.trim()) {
       if (trimmedPassword !== confirmPassword.trim()) {
-        showToast('error', '两次输入的密码不一致')
+        showToast('error', t('admin.error.passwordMismatch'))
         return
       }
     }
@@ -232,9 +242,9 @@ function UserFormModal({
         })
       }
       await onSaved()
-      showToast('success', isEdit ? '已更新' : '已创建')
+      showToast('success', isEdit ? t('admin.success.updated') : t('admin.success.created'))
     } catch (err: unknown) {
-      showToast('error', getApiError(err, '保存用户失败'))
+      showToast('error', getApiError(err, t('admin.error.saveUser')))
     } finally {
       setSubmitting(false)
     }
@@ -249,73 +259,73 @@ function UserFormModal({
       >
         <div className="flex items-start justify-between border-b border-[#2b3240] px-5 py-4">
           <div>
-            <div className="text-base font-semibold text-white">{isEdit ? 'Edit User' : 'Add User'}</div>
-            <div className="mt-1 text-xs text-[#8b94a5]">Manage account role and Binance credentials.</div>
+            <div className="text-base font-semibold text-white">{isEdit ? t('admin.editUser') : t('admin.add')}</div>
+            <div className="mt-1 text-xs text-[#8b94a5]">{t('admin.formSubtitle')}</div>
           </div>
           <button type="button" onClick={onCancel} className="text-[#8b94a5] hover:text-white text-xl leading-none">×</button>
         </div>
 
         <div className="grid grid-cols-2 gap-4 px-5 py-5">
           <div className="col-span-2">
-            <Field label="Username">
-              <Input value={username} onChange={setUsername} placeholder="username" />
+            <Field label={t('admin.col.username')}>
+              <Input value={username} onChange={setUsername} placeholder={t('admin.placeholder.username')} />
             </Field>
           </div>
 
           <div className={isEdit ? 'col-span-2' : ''}>
-            <Field label={isEdit ? 'New Password' : 'Password'}>
+            <Field label={isEdit ? t('admin.newPassword') : t('login.password')}>
               <Input
                 type="password"
                 value={password}
                 onChange={setPassword}
-                placeholder={isEdit ? '留空表示不修改' : 'password'}
+                placeholder={isEdit ? t('admin.placeholder.keepEmptyPassword') : t('admin.placeholder.password')}
               />
             </Field>
           </div>
 
           <div className="col-span-2">
-            <Field label={isEdit ? 'Confirm New Password' : 'Confirm Password'}>
+            <Field label={isEdit ? t('admin.confirmNewPassword') : t('config.confirmPassword')}>
               <Input
                 type="password"
                 value={confirmPassword}
                 onChange={setConfirmPassword}
-                placeholder={isEdit ? '再次输入新密码' : 'confirm password'}
+                placeholder={isEdit ? t('admin.placeholder.confirmNewPassword') : t('admin.placeholder.confirmPassword')}
               />
             </Field>
           </div>
 
           <div className="col-span-2">
-            <Field label="Role">
+            <Field label={t('admin.col.role')}>
               <select
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
                 className="w-full rounded-md border border-[#2d3542] bg-[#0d131a] px-3 py-2 text-sm text-[#e6ebf2] outline-none focus:border-[#3182f6]"
               >
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
+                <option value="user">{t('admin.role.user')}</option>
+                <option value="admin">{t('admin.role.admin')}</option>
               </select>
             </Field>
           </div>
 
           <div className="col-span-2">
-            <Field label="API Key">
-              <Input value={apiKey} onChange={setApiKey} placeholder="Binance API key" />
+            <Field label={t('admin.col.apiKey')}>
+              <Input value={apiKey} onChange={setApiKey} placeholder={t('admin.placeholder.apiKey')} />
             </Field>
           </div>
 
           <div className="col-span-2">
-            <Field label="API Secret">
-              <Input type="password" value={apiSecret} onChange={setApiSecret} placeholder="Binance API secret" />
+            <Field label={t('admin.col.apiSecret')}>
+              <Input type="password" value={apiSecret} onChange={setApiSecret} placeholder={t('admin.placeholder.apiSecret')} />
             </Field>
           </div>
         </div>
 
         <div className="flex items-center justify-end gap-3 border-t border-[#2b3240] px-5 py-4">
           <button type="button" onClick={onCancel} className="rounded-md border border-[#394152] px-4 py-2 text-sm text-[#d7dde7] hover:bg-[#18202b]">
-            Cancel
+            {t('common.cancel')}
           </button>
           <button type="submit" disabled={submitting} className="rounded-md bg-[#2f7cf6] px-4 py-2 text-sm font-medium text-white hover:bg-[#4b90fb] disabled:opacity-60">
-            {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Create User'}
+            {submitting ? t('admin.saving') : isEdit ? t('admin.saveChanges') : t('admin.createUser')}
           </button>
         </div>
       </form>
@@ -396,8 +406,8 @@ function Input({
   )
 }
 
-function formatRole(role: string) {
-  return role.toLowerCase() === 'admin' ? 'Admin' : 'User'
+function formatRole(role: string, t: (key: string) => string) {
+  return role.toLowerCase() === 'admin' ? t('admin.role.admin') : t('admin.role.user')
 }
 
 function formatDateTime(value?: string) {

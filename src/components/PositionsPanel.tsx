@@ -68,6 +68,8 @@ export function PositionsPanel({
   const [cancellingId, setCancellingId] = useState<number | null>(null)
   const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
   const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
+  const [bulkCancelling, setBulkCancelling] = useState<'basic' | 'conditional' | null>(null)
+  const [bulkCancelConfirm, setBulkCancelConfirm] = useState<'basic' | 'conditional' | null>(null)
   const [openOrdersSubTab, setOpenOrdersSubTab] = useState<'basic' | 'conditional'>('basic')
   const [tpslPosition, setTpslPosition] = useState<Position | null>(null)
   const [marketCloseConfirm, setMarketCloseConfirm] = useState<MarketCloseConfirm | null>(null)
@@ -232,10 +234,12 @@ export function PositionsPanel({
     setCancellingId(o.id)
     try {
       await api.cancelOrder(o.id, o.symbol, o.exchange_order_id)
-      showToast('success', 'Order cancelled')
+      showToast('success', t('pos.cancelSingleSuccess'))
       setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
     } catch (err: unknown) {
-      showToast('error', `Cancel failed: ${getRequestErrorMessage(err, 'Cancel failed')}`)
+      showToast('error', t('pos.cancelSingleFailed', {
+        reason: getRequestErrorMessage(err, t('pos.cancelFailed')),
+      }))
     } finally {
       setCancellingId(null)
     }
@@ -245,14 +249,84 @@ export function PositionsPanel({
     setCancellingAlgoId(o.algo_id)
     try {
       await api.cancelConditionalOrder(o.algo_id)
-      showToast('success', 'Conditional order cancelled')
+      showToast('success', t('pos.cancelConditionalSuccess'))
       setConditionalOrders(prev => prev.filter(x => x.algo_id !== o.algo_id))
     } catch (err: unknown) {
-      showToast('error', `Cancel failed: ${getRequestErrorMessage(err, 'Cancel failed')}`)
+      showToast('error', t('pos.cancelSingleFailed', {
+        reason: getRequestErrorMessage(err, t('pos.cancelFailed')),
+      }))
     } finally {
       setCancellingAlgoId(null)
     }
   }
+
+  const handleCancelAllOpenOrders = useCallback(async () => {
+    if (tab !== 'openOrders') return
+
+    if (openOrdersSubTab === 'basic') {
+      const cancellableOrders = openOrders.filter((order) =>
+        (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') && order.exchange_order_id,
+      )
+      if (cancellableOrders.length === 0) return
+
+      setBulkCancelling('basic')
+      const cancelledIds = new Set<number>()
+      let failedCount = 0
+      try {
+        for (const order of cancellableOrders) {
+          try {
+            await api.cancelOrder(order.id, order.symbol, String(order.exchange_order_id))
+            cancelledIds.add(order.id)
+          } catch {
+            failedCount += 1
+          }
+        }
+        if (cancelledIds.size > 0) {
+          setOpenOrders((prev) => prev.filter((order) => !cancelledIds.has(order.id)))
+        }
+        if (failedCount === 0) {
+          showToast('success', t('pos.cancelAllSuccess', { count: cancelledIds.size }))
+        } else {
+          showToast('error', t('pos.cancelAllPartial', { count: cancelledIds.size, failed: failedCount }))
+        }
+      } finally {
+        setBulkCancelling(null)
+      }
+      return
+    }
+
+    const cancellableConditionalOrders = conditionalOrders.filter((order) => order.status === 'NEW')
+    if (cancellableConditionalOrders.length === 0) return
+
+    setBulkCancelling('conditional')
+    const cancelledAlgoIds = new Set<number>()
+    let failedCount = 0
+    try {
+      for (const order of cancellableConditionalOrders) {
+        try {
+          await api.cancelConditionalOrder(order.algo_id)
+          cancelledAlgoIds.add(order.algo_id)
+        } catch {
+          failedCount += 1
+        }
+      }
+      if (cancelledAlgoIds.size > 0) {
+        setConditionalOrders((prev) => prev.filter((order) => !cancelledAlgoIds.has(order.algo_id)))
+      }
+      if (failedCount === 0) {
+        showToast('success', t('pos.cancelAllSuccess', { count: cancelledAlgoIds.size }))
+      } else {
+        showToast('error', t('pos.cancelAllPartial', { count: cancelledAlgoIds.size, failed: failedCount }))
+      }
+    } finally {
+      setBulkCancelling(null)
+    }
+  }, [conditionalOrders, openOrders, openOrdersSubTab, showToast, t, tab])
+
+  const basicCancellableCount = openOrders.filter((order) =>
+    (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') && order.exchange_order_id,
+  ).length
+  const conditionalCancellableCount = conditionalOrders.filter((order) => order.status === 'NEW').length
 
   const handleMarketClose = useCallback((position: Position) => {
     if (!currentUser?.username || closingPositionId !== null) return
@@ -337,7 +411,7 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th>
-              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>TP/SL</th><th></th>
+              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
@@ -364,7 +438,7 @@ export function PositionsPanel({
                         <button
                           onClick={() => setTpslPosition(p)}
                           className="shrink-0 w-[18px] h-[18px] flex items-center justify-center rounded border border-[#3C4149] text-[#848E9C] hover:border-[#F0B90B] hover:text-[#F0B90B] transition-colors"
-                          title="Set TP/SL"
+                          title={t('pos.setTpSl')}
                         >
                           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
                             <circle cx="5" cy="5" r="3.5"/>
@@ -405,10 +479,20 @@ export function PositionsPanel({
                   }`}
                 >
                   {sub === 'basic'
-                    ? `Basic(${openOrders.length})`
-                    : `Conditional(${conditionalOrders.length})`}
+                    ? `${t('pos.basicOrders')}(${openOrders.length})`
+                    : `${t('pos.conditionalOrders')}(${conditionalOrders.length})`}
                 </button>
               ))}
+              <button
+                onClick={() => setBulkCancelConfirm(openOrdersSubTab)}
+                disabled={
+                  bulkCancelling !== null ||
+                  (openOrdersSubTab === 'basic' ? basicCancellableCount === 0 : conditionalCancellableCount === 0)
+                }
+                className="ml-auto mb-1 px-2.5 py-1 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {bulkCancelling === openOrdersSubTab ? t('pos.cancelAllLoading') : t('pos.cancelAll')}
+              </button>
             </div>
           )}
           {(tab === 'history' || openOrdersSubTab === 'basic') && (
@@ -416,10 +500,10 @@ export function PositionsPanel({
               <thead><tr>
                 <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
                 <th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th>
-                {tab === 'openOrders' && <th>Reduce Only</th>}
-                {tab === 'openOrders' && <th>Post Only</th>}
-                {tab === 'openOrders' && <th>Trigger Conditions</th>}
-                {tab === 'openOrders' && <th>Order Id</th>}
+                {tab === 'openOrders' && <th>{t('pos.reduceOnly')}</th>}
+                {tab === 'openOrders' && <th>{t('pos.postOnly')}</th>}
+                {tab === 'openOrders' && <th>{t('pos.triggerConditions')}</th>}
+                {tab === 'openOrders' && <th>{t('log.id')}</th>}
                 {tab === 'openOrders' && <th></th>}
               </tr></thead>
               <tbody>
@@ -434,11 +518,16 @@ export function PositionsPanel({
                       <td className="font-mono">{o.quantity}</td>
                       <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                       <td><StatusBadge status={o.status} t={t} /></td>
-                      {tab === 'openOrders' && <td className="text-center">{o.reduce_only ? 'Yes' : 'No'}</td>}
-                      {tab === 'openOrders' && <td className="text-center">{o.post_only ? 'Yes' : 'No'}</td>}
+                      {tab === 'openOrders' && <td className="text-center">{o.reduce_only ? t('common.yes') : t('common.no')}</td>}
+                      {tab === 'openOrders' && <td className="text-center">{o.post_only ? t('common.yes') : t('common.no')}</td>}
                       {tab === 'openOrders' && (
                         <td className="font-mono text-[11px]">
-                          {o.stop_price ? `Last Price <= ${o.stop_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}` : '—'}
+                          {o.stop_price
+                            ? t('pos.triggerConditionWithPrice', {
+                                operator: '<=',
+                                price: o.stop_price.toLocaleString('en-US', { minimumFractionDigits: 1 }),
+                              })
+                            : '—'}
                         </td>
                       )}
                       {tab === 'openOrders' && <td className="font-mono text-[10px] text-[#858585]">{o.exchange_order_id ?? '—'}</td>}
@@ -450,7 +539,7 @@ export function PositionsPanel({
                               onClick={() => void handleCancelOrder(o)}
                               className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              {cancellingId === o.id ? '…' : 'Cancel'}
+                              {cancellingId === o.id ? '…' : t('common.cancel')}
                             </button>
                           ) : null}
                         </td>
@@ -466,11 +555,11 @@ export function PositionsPanel({
               <thead><tr>
                 <th>{t('log.time')}</th>
                 <th>{t('log.symbol')}</th>
-                <th>Type</th>
+                <th>{t('log.type')}</th>
                 <th>{t('log.side')}</th>
-                <th>Amount</th>
+                <th>{t('pos.amount')}</th>
                 <th>{t('log.price')}</th>
-                <th>Trigger Conditions</th>
+                <th>{t('pos.triggerConditions')}</th>
                 <th></th>
               </tr></thead>
               <tbody>
@@ -484,19 +573,22 @@ export function PositionsPanel({
                     return (
                       <tr key={o.algo_id}>
                         <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
-                        <td className="font-semibold">{o.symbol}<br/><span className="text-[10px] text-[#858585]">Perp</span></td>
-                        <td>{isTp ? 'Take Profit Market' : 'Stop Market'}</td>
+                        <td className="font-semibold">{o.symbol}<br/><span className="text-[10px] text-[#858585]">{t('order.perpetual')}</span></td>
+                        <td>{isTp ? t('type.takeProfitMarket') : t('type.stopMarket')}</td>
                         <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>
                           {actionLabel}
                         </td>
                         <td className="font-mono">
                           {isCloseOrder
-                            ? 'Close Position'
+                            ? t('pos.closePosition')
                             : o.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
                         </td>
-                        <td className="font-mono">Market</td>
+                        <td className="font-mono">{t('log.market')}</td>
                         <td className="font-mono text-[11px]">
-                          Last Price {triggerOperator} {o.trigger_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}
+                          {t('pos.triggerConditionWithPrice', {
+                            operator: triggerOperator,
+                            price: o.trigger_price.toLocaleString('en-US', { minimumFractionDigits: 1 }),
+                          })}
                         </td>
                         <td>
                           <button
@@ -504,7 +596,7 @@ export function PositionsPanel({
                             onClick={() => void handleCancelConditional(o)}
                             className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           >
-                            {cancellingAlgoId === o.algo_id ? '…' : 'Cancel'}
+                            {cancellingAlgoId === o.algo_id ? '…' : t('common.cancel')}
                           </button>
                         </td>
                       </tr>
@@ -566,6 +658,19 @@ export function PositionsPanel({
         submitting={closingPositionId === marketCloseConfirm.position.id}
         onCancel={() => setMarketCloseConfirm(null)}
         onConfirm={() => void confirmMarketClose()}
+        t={t}
+      />
+    )}
+
+    {bulkCancelConfirm && (
+      <BulkCancelConfirmModal
+        count={bulkCancelConfirm === 'basic' ? basicCancellableCount : conditionalCancellableCount}
+        submitting={bulkCancelling === bulkCancelConfirm}
+        onCancel={() => setBulkCancelConfirm(null)}
+        onConfirm={() => {
+          setBulkCancelConfirm(null)
+          void handleCancelAllOpenOrders()
+        }}
         t={t}
       />
     )}
@@ -695,6 +800,52 @@ function MarketCloseConfirmModal({
   )
 }
 
+function BulkCancelConfirmModal({
+  count,
+  submitting,
+  onCancel,
+  onConfirm,
+  t,
+}: {
+  count: number
+  submitting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+  t: (key: string, vars?: Record<string, string | number>) => string
+}) {
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: { setBinanceViewVisible?: (v: boolean) => void } }).electronAPI
+    api?.setBinanceViewVisible?.(false)
+    return () => { api?.setBinanceViewVisible?.(true) }
+  }, [])
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#1E2026] border border-[#474D57] rounded-lg shadow-xl w-80 p-5 space-y-4">
+        <div className="text-[13px] font-bold text-[#EAECEF]">{t('pos.cancelAllConfirmTitle')}</div>
+        <p className="text-[11px] leading-relaxed text-[#B7BDC6]">{t('pos.cancelAllConfirmMessage', { count })}</p>
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="py-2 text-[12px] font-medium rounded border border-[#474D57] text-[#848E9C] hover:text-[#EAECEF] hover:border-[#848E9C] transition-colors disabled:opacity-40"
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting}
+            className="py-2 text-[12px] font-medium rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40"
+          >
+            {submitting ? t('pos.cancelAllLoading') : t('pos.cancelAllConfirmAction')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function TpSlModal({
   position,
   username,
@@ -708,6 +859,7 @@ function TpSlModal({
   onSaved: (posId: number, tp: number | null, sl: number | null) => void
   showToast: (type: string, msg: string) => void
 }) {
+  const { t } = useTranslation(locale)
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const leverage = readStoredLeverage(username, position.symbol) ?? position.leverage
   const [tpInput, setTpInput] = useState(position.tp_price ? String(position.tp_price) : '')
@@ -758,7 +910,7 @@ function TpSlModal({
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#2B2F36]">
-          <span className="text-[13px] font-semibold text-[#EAECEF]">TP/SL for entire position</span>
+          <span className="text-[13px] font-semibold text-[#EAECEF]">{t('pos.tpSlEntirePosition')}</span>
           <button onClick={onClose} className="text-[#848E9C] hover:text-[#EAECEF] text-lg leading-none">×</button>
         </div>
 
@@ -766,20 +918,20 @@ function TpSlModal({
         <div className="mx-4 mt-3 px-3 py-2 rounded border border-[#2B2F36] bg-[#2B2F36]/50 flex items-start gap-2">
           <span className="text-[#848E9C] text-[11px] mt-0.5 shrink-0">ⓘ</span>
           <span className="text-[10px] text-[#848E9C] leading-relaxed">
-            In a rapidly changing market, setting a stop-loss trigger price close to the liquidation price may result in the order failing to execute.
+            {t('pos.tpSlWarning')}
           </span>
         </div>
 
         {/* Info row */}
         <div className="px-4 pt-3 pb-2 space-y-1.5">
           <div className="flex justify-between text-[11px]">
-            <span className="text-[#848E9C]">Symbol</span>
+            <span className="text-[#848E9C]">{t('pos.symbol')}</span>
             <span className={`font-semibold ${position.side === 'LONG' ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
-              {position.symbol} Perpetual / {position.side === 'LONG' ? 'Long' : 'Short'} {leverage}×
+              {position.symbol} {t('order.perpetual')} / {position.side === 'LONG' ? t('pos.long') : t('pos.short')} {leverage}×
             </span>
           </div>
           <div className="flex justify-between text-[11px]">
-            <span className="text-[#848E9C]">Entry Price</span>
+            <span className="text-[#848E9C]">{t('pos.entry')}</span>
             <span className="text-[#EAECEF] font-mono">{entryPrice != null ? entryPrice.toFixed(1) : '—'} {quoteAsset}</span>
           </div>
         </div>
@@ -788,16 +940,16 @@ function TpSlModal({
 
         {/* Column labels */}
         <div className="grid grid-cols-2 gap-2 px-4 pt-2 pb-1">
-          <span className="text-[10px] text-[#848E9C]">Trigger Price ({quoteAsset})</span>
-          <span className="text-[10px] text-[#848E9C]">Est. PnL ({quoteAsset})</span>
+          <span className="text-[10px] text-[#848E9C]">{t('order.triggerPrice')} ({quoteAsset})</span>
+          <span className="text-[10px] text-[#848E9C]">{t('pos.estimatedPnl')} ({quoteAsset})</span>
         </div>
 
         {/* Take Profit */}
         <div className="px-4 pb-1">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[12px] font-semibold text-[#EAECEF]">Take Profit</span>
+            <span className="text-[12px] font-semibold text-[#EAECEF]">{t('order.takeProfit')}</span>
             {tpInput && (
-              <button onClick={() => setTpInput('')} className="text-[10px] text-[#F0B90B] hover:underline">Cancel</button>
+              <button onClick={() => setTpInput('')} className="text-[10px] text-[#F0B90B] hover:underline">{t('common.cancel')}</button>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -818,13 +970,12 @@ function TpSlModal({
           </div>
           <div className="mt-1.5 text-[10px] text-[#848E9C] leading-relaxed min-h-[30px]">
             {tpPnl != null
-              ? <>When <span className="text-[#F0B90B] font-medium">Last Price</span> reaches{' '}
-                  <span className="text-[#EAECEF]">{tpVal.toFixed(2)}</span>, it will trigger{' '}
-                  Take Profit Market order to close this position. Estimated PNL will be{' '}
+              ? <>{t('pos.when')} <span className="text-[#F0B90B] font-medium">{t('order.triggerPriceType.last')}</span> {t('pos.reaches')}{' '}
+                  <span className="text-[#EAECEF]">{tpVal.toFixed(2)}</span>, {t('pos.tpTriggerHint')}{' '}
                   <span className={tpPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
                     {tpPnl >= 0 ? '+' : ''}{tpPnl.toFixed(2)} {quoteAsset}
                   </span>.</>
-              : <span className="text-[#555]">Enter a trigger price to calculate estimated PnL.</span>
+              : <span className="text-[#555]">{t('pos.enterTriggerPriceHint')}</span>
             }
           </div>
         </div>
@@ -832,9 +983,9 @@ function TpSlModal({
         {/* Stop Loss */}
         <div className="px-4 pt-2 pb-3">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[12px] font-semibold text-[#EAECEF]">Stop Loss</span>
+            <span className="text-[12px] font-semibold text-[#EAECEF]">{t('order.stopLoss')}</span>
             {slInput && (
-              <button onClick={() => setSlInput('')} className="text-[10px] text-[#F0B90B] hover:underline">Cancel</button>
+              <button onClick={() => setSlInput('')} className="text-[10px] text-[#F0B90B] hover:underline">{t('common.cancel')}</button>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -855,13 +1006,12 @@ function TpSlModal({
           </div>
           <div className="mt-1.5 text-[10px] text-[#848E9C] leading-relaxed min-h-[30px]">
             {slPnl != null
-              ? <>When <span className="text-[#F0B90B] font-medium">Last Price</span> reaches{' '}
-                  <span className="text-[#EAECEF]">{slVal.toFixed(2)}</span>, it will trigger{' '}
-                  Stop Market order to close this position. Estimated PNL will be{' '}
+              ? <>{t('pos.when')} <span className="text-[#F0B90B] font-medium">{t('order.triggerPriceType.last')}</span> {t('pos.reaches')}{' '}
+                  <span className="text-[#EAECEF]">{slVal.toFixed(2)}</span>, {t('pos.slTriggerHint')}{' '}
                   <span className={slPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
                     {slPnl >= 0 ? '+' : ''}{slPnl.toFixed(2)} {quoteAsset}
                   </span>.</>
-              : <span className="text-[#555]">Enter a trigger price to calculate estimated PnL.</span>
+              : <span className="text-[#555]">{t('pos.enterTriggerPriceHint')}</span>
             }
           </div>
         </div>
@@ -873,7 +1023,7 @@ function TpSlModal({
             disabled={submitting || (!tpInput && !slInput)}
             className="w-full py-3 rounded text-[13px] font-bold bg-[#F0B90B] text-black hover:bg-[#d4a30a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {submitting ? '...' : 'Confirm'}
+            {submitting ? '...' : t('common.confirm')}
           </button>
         </div>
       </div>

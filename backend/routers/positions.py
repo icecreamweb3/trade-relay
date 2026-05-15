@@ -14,6 +14,7 @@ from typing import Optional
 from trade_relay import database as db_module
 from trade_relay import config as cfg_module
 from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, notify_user_stream_event, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
+from trade_relay.trading.tpsl_service import place_tp_sl_orders, validate_tpsl_prices
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
 
@@ -180,161 +181,31 @@ def set_position_tpsl(
     quantity = float(position_row.get("quantity") or 0)
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
 
-    # Validate TP/SL direction against position side using entry price as reference
-    if entry_price is not None:
-        if position_side == "LONG":
-            if body.tp_price is not None and body.tp_price > 0 and body.tp_price <= entry_price:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"LONG 仓位的止盈价 ({body.tp_price}) 必须高于入场价 ({entry_price})",
-                )
-            if body.sl_price is not None and body.sl_price > 0 and body.sl_price >= entry_price:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"LONG 仓位的止损价 ({body.sl_price}) 必须低于入场价 ({entry_price})",
-                )
-        elif position_side == "SHORT":
-            if body.tp_price is not None and body.tp_price > 0 and body.tp_price >= entry_price:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"SHORT 仓位的止盈价 ({body.tp_price}) 必须低于入场价 ({entry_price})",
-                )
-            if body.sl_price is not None and body.sl_price > 0 and body.sl_price <= entry_price:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"SHORT 仓位的止损价 ({body.sl_price}) 必须高于入场价 ({entry_price})",
-                )
+    validation_errors = validate_tpsl_prices(
+        position_side=position_side,
+        entry_price=entry_price,
+        tp_price=body.tp_price,
+        sl_price=body.sl_price,
+    )
+    if validation_errors:
+        raise HTTPException(status_code=400, detail="; ".join(validation_errors))
     _log.info(
         "TP/SL validated: user=%s pos=%d symbol=%s side=%s entry_price=%s tp=%s sl=%s",
         username, position_id, symbol, position_side, entry_price, body.tp_price, body.sl_price,
     )
 
-    # Determine order side to close the position
-    close_side = "SELL" if position_side == "LONG" else "BUY"
-
-    from trade_relay.exchange.binance_client import BinanceClient
-    client = BinanceClient(
-        api_key=api_key,
-        secret_key=api_secret,
-        testnet=cfg_module.is_testnet(username),
-    )
-
-    errors = []
-
     db_user_id = int(user["sub"])
-
-    if body.tp_price is not None and body.tp_price > 0:
-        _log.info(
-            "TP order request: user=%s pos=%d symbol=%s side=%s positionSide=%s price=%s qty=%s",
-            username, position_id, symbol, close_side, position_side, body.tp_price, quantity,
-        )
-        try:
-            tp_resp = client.place_take_profit_order(
-                symbol=symbol,
-                side=close_side,
-                price=body.tp_price,
-                quantity=quantity,
-                position_side=position_side,
-            )
-            _log.info(
-                "TP order response: user=%s pos=%d symbol=%s result=%s",
-                username, position_id, symbol, tp_resp,
-            )
-            tp_exchange_id = str(tp_resp.get("algoId", "") or tp_resp.get("orderId", "")) if isinstance(tp_resp, dict) else None
-            tp_client_id = str(tp_resp.get("clientAlgoId", "") or tp_resp.get("clientOrderId", "")) if isinstance(tp_resp, dict) else None
-            tp_status = tp_resp.get("status", "NEW") if isinstance(tp_resp, dict) else "NEW"
-            db_module.create_order(
-                user_id=db_user_id,
-                username=username,
-                symbol=symbol,
-                side=close_side,
-                order_type="TAKE_PROFIT_MARKET",
-                quantity=quantity,
-                price=body.tp_price,
-                status=tp_status,
-                binance_order_id=tp_exchange_id or None,
-                client_order_id=tp_client_id or None,
-                trade_direction="CLOSE",
-                position_id=position_id,
-                reduce_only=True,
-                order_category="Conditional",
-            )
-        except Exception as exc:
-            errors.append(f"TP: {exc}")
-            _log.warning("TP order failed for %s pos=%d: %s", username, position_id, exc)
-            db_module.create_order(
-                user_id=db_user_id,
-                username=username,
-                symbol=symbol,
-                side=close_side,
-                order_type="TAKE_PROFIT_MARKET",
-                quantity=quantity,
-                price=body.tp_price,
-                status="FAILED",
-                error_message=str(exc),
-                trade_direction="CLOSE",
-                position_id=position_id,
-                reduce_only=True,
-                order_category="Conditional",
-            )
-
-    if body.sl_price is not None and body.sl_price > 0:
-        _log.info(
-            "SL order request: user=%s pos=%d symbol=%s side=%s positionSide=%s stop_price=%s qty=%s",
-            username, position_id, symbol, close_side, position_side, body.sl_price, quantity,
-        )
-        try:
-            sl_resp = client.place_stop_loss_order(
-                symbol=symbol,
-                side=close_side,
-                stop_price=body.sl_price,
-                quantity=quantity,
-                position_side=position_side,
-            )
-            _log.info(
-                "SL order response: user=%s pos=%d symbol=%s result=%s",
-                username, position_id, symbol, sl_resp,
-            )
-            sl_exchange_id = str(sl_resp.get("algoId", "") or sl_resp.get("orderId", "")) if isinstance(sl_resp, dict) else None
-            sl_client_id = str(sl_resp.get("clientAlgoId", "") or sl_resp.get("clientOrderId", "")) if isinstance(sl_resp, dict) else None
-            sl_status = sl_resp.get("status", "NEW") if isinstance(sl_resp, dict) else "NEW"
-            db_module.create_order(
-                user_id=db_user_id,
-                username=username,
-                symbol=symbol,
-                side=close_side,
-                order_type="STOP_MARKET",
-                quantity=quantity,
-                price=None,
-                stop_price=body.sl_price,
-                status=sl_status,
-                binance_order_id=sl_exchange_id or None,
-                client_order_id=sl_client_id or None,
-                trade_direction="CLOSE",
-                position_id=position_id,
-                reduce_only=True,
-                order_category="Conditional",
-            )
-        except Exception as exc:
-            errors.append(f"SL: {exc}")
-            _log.warning("SL order failed for %s pos=%d: %s", username, position_id, exc)
-            db_module.create_order(
-                user_id=db_user_id,
-                username=username,
-                symbol=symbol,
-                side=close_side,
-                order_type="STOP_MARKET",
-                quantity=quantity,
-                price=None,
-                stop_price=body.sl_price,
-                status="FAILED",
-                error_message=str(exc),
-                trade_direction="CLOSE",
-                position_id=position_id,
-                reduce_only=True,
-                order_category="Conditional",
-            )
-
+    errors = place_tp_sl_orders(
+        username=username,
+        user_id=db_user_id,
+        symbol=symbol,
+        position_side=position_side,
+        quantity=quantity,
+        entry_price=entry_price,
+        tp_price=body.tp_price,
+        sl_price=body.sl_price,
+        position_id=position_id,
+    )
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
