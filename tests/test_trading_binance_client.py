@@ -1,0 +1,234 @@
+import asyncio
+
+from trade_relay.trading import binance_client as trading_binance_client
+
+
+def test_place_order_surfaces_stop_market_error(monkeypatch):
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {
+                "error": True,
+                "error_message": "APIError(code=-2021): Order would immediately trigger.",
+            }
+
+    monkeypatch.setattr(trading_binance_client, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key="key",
+            api_secret="secret",
+            symbol="BTCUSDC",
+            side="BUY",
+            order_type="STOP_MARKET",
+            quantity=0.002,
+            stop_price=80709.8,
+            leverage=20,
+            testnet=False,
+            position_direction="OPEN",
+        )
+    )
+
+    assert result.success is False
+    assert result.error == "APIError(code=-2021): Order would immediately trigger."
+
+
+def test_place_order_accepts_algo_id_for_stop_market(monkeypatch):
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {
+                "algoId": 987654321,
+                "clientAlgoId": "client-algo-123",
+                "algoStatus": "NEW",
+            }
+
+    monkeypatch.setattr(trading_binance_client, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key="key",
+            api_secret="secret",
+            symbol="BTCUSDC",
+            side="BUY",
+            order_type="STOP_MARKET",
+            quantity=0.002,
+            stop_price=80709.8,
+            leverage=20,
+            testnet=False,
+            position_direction="OPEN",
+        )
+    )
+
+    assert result.success is True
+    assert result.order_id == "987654321"
+    assert result.client_order_id == "client-algo-123"
+    assert result.status == "NEW"
+
+
+def test_submit_order_persists_stop_price_and_client_order_id(monkeypatch):
+    from trade_relay.auth.manager import Session
+    from trade_relay.trading import order_manager
+
+    captured: dict = {}
+
+    async def fake_place_order(**kwargs):
+        return trading_binance_client.BinanceOrderResult(
+            success=True,
+            order_id="987654321",
+            client_order_id="client-algo-123",
+            status="NEW",
+        )
+
+    def fake_create_order(**kwargs):
+        captured.update(kwargs)
+        return 42
+
+    monkeypatch.setattr(order_manager.cfg, "is_mock_mode", lambda username: False)
+    monkeypatch.setattr(order_manager.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(order_manager.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(order_manager.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(order_manager, "place_order", fake_place_order)
+    monkeypatch.setattr(order_manager.db, "create_order", fake_create_order)
+    monkeypatch.setattr(order_manager.db, "log_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager.db, "get_position", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "ensure_user_order_status_stream", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "sync_order_status_once", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        order_manager.submit_order(
+            Session(1, "Will", "user"),
+            "BTCUSDC",
+            "SELL",
+            "STOP_MARKET",
+            0.002,
+            None,
+            80683.7,
+            20,
+            "OPEN",
+        )
+    )
+
+    assert result.success is True
+    assert captured["stop_price"] == 80683.7
+    assert captured["client_order_id"] == "client-algo-123"
+    assert captured["binance_order_id"] == "987654321"
+
+
+def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    db_row = {
+        "id": 42,
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "order_type": "STOP_MARKET",
+        "quantity": 0.002,
+        "price": None,
+        "stop_price": None,
+        "status": "NEW",
+        "exchange_order_id": "987654321",
+        "client_order_id": None,
+        "trade_direction": "OPEN",
+        "created_at": "2026-05-15 16:14:59",
+    }
+    backfill_calls = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_open_algo_orders(self):
+            return [{
+                "algoId": 987654321,
+                "clientAlgoId": "client-algo-123",
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "type": "STOP_MARKET",
+                "quantity": "0.002",
+                "triggerPrice": "80683.7",
+                "algoStatus": "NEW",
+            }]
+
+    monkeypatch.setattr(orders_router.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row])
+    monkeypatch.setattr(orders_router.db_module, "update_order_metadata", lambda order_id, **kwargs: backfill_calls.append((order_id, kwargs)) or True)
+    monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
+
+    assert len(result) == 1
+    assert result[0].trade_direction == "OPEN"
+    assert result[0].client_order_id == "client-algo-123"
+    assert result[0].trigger_price == 80683.7
+    assert backfill_calls == [(42, {"client_order_id": "client-algo-123", "stop_price": 80683.7})]
+
+
+def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    db_row = {
+        "id": 77,
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "order_type": "STOP_MARKET",
+        "quantity": 0.002,
+        "price": None,
+        "stop_price": 80683.7,
+        "status": "NEW",
+        "exchange_order_id": "987654321",
+        "client_order_id": "client-algo-123",
+        "trade_direction": "OPEN",
+        "created_at": "2026-05-15 16:14:59",
+    }
+    status_updates = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_open_algo_orders(self):
+            return []
+
+        def get_algo_order(self, algo_id=None, client_algo_id=None):
+            return {
+                "algoId": 987654321,
+                "clientAlgoId": "client-algo-123",
+                "orderType": "STOP_MARKET",
+                "algoStatus": "FINISHED",
+                "actualPrice": "80650.5",
+                "quantity": "0.002",
+                "triggerPrice": "80683.7",
+            }
+
+    monkeypatch.setattr(orders_router.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row])
+    monkeypatch.setattr(orders_router.db_module, "update_order_status", lambda order_id, status, **kwargs: status_updates.append((order_id, status, kwargs)) or True)
+    monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
+
+    assert result == []
+    assert status_updates == [(77, "FILLED", {"filled_qty": 0.002, "avg_price": 80650.5})]

@@ -235,6 +235,32 @@ class ConditionalOrderOut(BaseModel):
     trigger_price: float
     status: str
     created_at: str
+    trade_direction: Optional[str] = None
+    exchange_order_id: Optional[str] = None
+    client_order_id: Optional[str] = None
+
+
+def _derive_conditional_position_side(side: str, trade_direction: Optional[str]) -> str:
+    side_upper = str(side or "").upper()
+    direction_upper = str(trade_direction or "").upper()
+    if direction_upper == "OPEN":
+        return "LONG" if side_upper == "BUY" else "SHORT"
+    if direction_upper == "CLOSE":
+        return "SHORT" if side_upper == "BUY" else "LONG"
+    return "SHORT" if side_upper == "BUY" else "LONG"
+
+
+def _map_algo_status_to_db_status(algo_status: Optional[str]) -> Optional[str]:
+    normalized = str(algo_status or "").upper()
+    if not normalized:
+        return None
+    if normalized in {"NEW", "WORKING", "TRIGGERING", "TRIGGERED", "PARTIALLY_FILLED"}:
+        return "NEW"
+    if normalized in {"FINISHED", "FILLED"}:
+        return "FILLED"
+    if normalized in {"CANCELED", "EXPIRED", "REJECTED"}:
+        return normalized
+    return normalized
 
 
 @router.get("/conditional", response_model=list[ConditionalOrderOut])
@@ -246,6 +272,19 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     result: list[ConditionalOrderOut] = []
     seen_algo_ids: set[int] = set()
     client: FuturesBinanceClient | None = None
+    _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
+    db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+    conditional_rows = [row for row in db_rows if str(row.get("order_type") or "") in _TPSL_TYPES]
+    rows_by_exchange_id = {
+        str(row.get("exchange_order_id")): row
+        for row in conditional_rows
+        if row.get("exchange_order_id")
+    }
+    rows_by_client_id = {
+        str(row.get("client_order_id")): row
+        for row in conditional_rows
+        if row.get("client_order_id")
+    }
 
     # 1. Try Binance Algo Order API (may not be available for all accounts)
     api_key = cfg.get_api_key(username)
@@ -257,27 +296,46 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
         for o in binance_orders:
             try:
                 algo_id = int(o.get("algoId") or 0)
+                client_algo_id = str(o.get("clientAlgoId") or o.get("clientOrderId") or "") or None
+                local_row = rows_by_exchange_id.get(str(algo_id)) if algo_id else None
+                if local_row is None and client_algo_id:
+                    local_row = rows_by_client_id.get(client_algo_id)
+                trade_direction = str(local_row.get("trade_direction") or "").upper() if local_row else None
+                order_type = str(o.get("orderType") or o.get("type") or "")
+                trigger_price = float(o.get("triggerPrice") or (local_row.get("stop_price") if local_row and str(local_row.get("order_type") or "") == "STOP_MARKET" else local_row.get("price") if local_row else 0) or 0)
+                if local_row:
+                    backfill_fields = {}
+                    if algo_id and not local_row.get("exchange_order_id"):
+                        backfill_fields["exchange_order_id"] = str(algo_id)
+                    if client_algo_id and not local_row.get("client_order_id"):
+                        backfill_fields["client_order_id"] = client_algo_id
+                    if trigger_price > 0:
+                        if order_type == "STOP_MARKET" and local_row.get("stop_price") is None:
+                            backfill_fields["stop_price"] = trigger_price
+                        if order_type == "TAKE_PROFIT_MARKET" and local_row.get("price") is None:
+                            backfill_fields["price"] = trigger_price
+                    if backfill_fields:
+                        db_module.update_order_metadata(int(local_row["id"]), **backfill_fields)
                 seen_algo_ids.add(algo_id)
                 result.append(ConditionalOrderOut(
                     algo_id=algo_id,
                     symbol=str(o.get("symbol") or ""),
                     side=str(o.get("side") or ""),
-                    position_side=str(o.get("positionSide") or "BOTH"),
-                    order_type=str(o.get("orderType") or o.get("type") or ""),
-                    quantity=float(o.get("quantity") or o.get("qty") or o.get("executedQty") or 0),
-                    trigger_price=float(o.get("triggerPrice") or 0),
+                    position_side=str(o.get("positionSide") or _derive_conditional_position_side(o.get("side") or "", trade_direction)),
+                    order_type=order_type,
+                    quantity=float(o.get("quantity") or o.get("qty") or o.get("executedQty") or (local_row.get("quantity") if local_row else 0) or 0),
+                    trigger_price=trigger_price,
                     status=str(o.get("algoStatus") or o.get("status") or ""),
-                    created_at=str(o.get("createTime") or o.get("bookTime") or o.get("time") or ""),
+                    created_at=str(o.get("createTime") or o.get("bookTime") or o.get("time") or (local_row.get("created_at") if local_row else "") or ""),
+                    trade_direction=trade_direction,
+                    exchange_order_id=str(local_row.get("exchange_order_id") or algo_id or "") if local_row or algo_id else None,
+                    client_order_id=str(local_row.get("client_order_id") or client_algo_id or "") if local_row or client_algo_id else None,
                 ))
             except Exception:
                 continue
 
     # 2. Merge DB-stored conditional orders when Algo Order openOrders API is unavailable.
-    _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
-    db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
-    for row in db_rows:
-        if str(row.get("order_type") or "") not in _TPSL_TYPES:
-            continue
+    for row in conditional_rows:
         exchange_id = row.get("exchange_order_id")
         try:
             algo_id = int(exchange_id) if exchange_id else 0
@@ -303,13 +361,39 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
                 order_type = str(algo_detail.get("orderType") or order_type or "")
 
+        algo_detail = None
+        if client and (algo_id or row.get("client_order_id")):
+            try:
+                algo_detail = await asyncio.to_thread(
+                    client.get_algo_order,
+                    algo_id=algo_id or None,
+                    client_algo_id=None if algo_id else str(row.get("client_order_id") or "") or None,
+                )
+            except Exception:
+                algo_detail = None
+
+        if isinstance(algo_detail, dict):
+            algo_status = str(algo_detail.get("algoStatus") or algo_detail.get("status") or "")
+            db_status = _map_algo_status_to_db_status(algo_status)
+            if db_status and db_status != "NEW":
+                db_module.update_order_status(
+                    int(row["id"]),
+                    db_status,
+                    filled_qty=float(algo_detail.get("quantity") or row.get("quantity") or 0) if db_status == "FILLED" else None,
+                    avg_price=float(algo_detail.get("actualPrice") or 0) if db_status == "FILLED" and float(algo_detail.get("actualPrice") or 0) > 0 else None,
+                )
+                continue
+            if trigger <= 0:
+                trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
+            if order_type == str(row.get("order_type") or ""):
+                order_type = str(algo_detail.get("orderType") or order_type or "")
+
+        if isinstance(algo_detail, dict) and algo_detail.get("_order_not_found"):
+            db_module.update_order_status(int(row["id"]), "EXPIRED")
+            continue
+
         trade_direction = str(row.get("trade_direction") or "").upper()
-        if trade_direction == "OPEN":
-            position_side = "LONG" if side == "BUY" else "SHORT"
-        elif trade_direction == "CLOSE":
-            position_side = "SHORT" if side == "BUY" else "LONG"
-        else:
-            position_side = "SHORT" if side == "BUY" else "LONG"
+        position_side = _derive_conditional_position_side(side, trade_direction)
         result.append(ConditionalOrderOut(
             algo_id=algo_id,
             symbol=str(row.get("symbol") or ""),
@@ -320,6 +404,9 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             trigger_price=trigger,
             status=str(row.get("status") or "NEW"),
             created_at=str(row.get("created_at") or ""),
+            trade_direction=trade_direction or None,
+            exchange_order_id=str(row.get("exchange_order_id") or "") or None,
+            client_order_id=str(row.get("client_order_id") or "") or None,
         ))
 
     return result

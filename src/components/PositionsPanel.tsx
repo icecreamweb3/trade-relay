@@ -39,6 +39,12 @@ interface PositionHistory {
   realized_pnl: number; commission: number; created_at: string
 }
 
+interface MarketCloseConfirm {
+  position: Position
+  quantity: number
+  side: 'BUY' | 'SELL'
+}
+
 export function PositionsPanel({
   refreshTrigger,
   isActive = true,
@@ -59,11 +65,13 @@ export function PositionsPanel({
   const [trades, setTrades] = useState<Trade[]>([])
   const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([])
   const [loading, setLoading] = useState(false)
+  const [closingPositionId, setClosingPositionId] = useState<number | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
   const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
   const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
   const [openOrdersSubTab, setOpenOrdersSubTab] = useState<'basic' | 'conditional'>('basic')
   const [tpslPosition, setTpslPosition] = useState<Position | null>(null)
+  const [marketCloseConfirm, setMarketCloseConfirm] = useState<MarketCloseConfirm | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
   const _positionsFirstLoadDone = useRef(false)
 
@@ -223,11 +231,10 @@ export function PositionsPanel({
     setCancellingId(o.id)
     try {
       await api.cancelOrder(o.id, o.symbol, o.exchange_order_id)
-      showToast('Order cancelled', 'success')
+      showToast('success', 'Order cancelled')
       setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showToast(`Cancel failed: ${msg}`, 'error')
+      showToast('error', `Cancel failed: ${getRequestErrorMessage(err, 'Cancel failed')}`)
     } finally {
       setCancellingId(null)
     }
@@ -237,16 +244,54 @@ export function PositionsPanel({
     setCancellingAlgoId(o.algo_id)
     try {
       await api.cancelConditionalOrder(o.algo_id)
-      showToast('Conditional order cancelled', 'success')
+      showToast('success', 'Conditional order cancelled')
       setConditionalOrders(prev => prev.filter(x => x.algo_id !== o.algo_id))
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || (err as { message?: string })?.message || 'Cancel failed'
-      showToast(`Cancel failed: ${msg}`, 'error')
+      showToast('error', `Cancel failed: ${getRequestErrorMessage(err, 'Cancel failed')}`)
     } finally {
       setCancellingAlgoId(null)
     }
   }
+
+  const handleMarketClose = useCallback((position: Position) => {
+    if (!currentUser?.username || closingPositionId !== null) return
+    const quantity = Math.abs(position.quantity)
+    if (!quantity || quantity <= 0) {
+      showToast('error', t('order.error.invalidQuantity'))
+      return
+    }
+
+    setMarketCloseConfirm({
+      position,
+      quantity,
+      side: position.side === 'LONG' ? 'SELL' : 'BUY',
+    })
+  }, [closingPositionId, currentUser?.username, showToast, t])
+
+  const confirmMarketClose = useCallback(async () => {
+    if (!marketCloseConfirm || !currentUser?.username) return
+
+    const { position, quantity, side } = marketCloseConfirm
+    setMarketCloseConfirm(null)
+    setClosingPositionId(position.id)
+    try {
+      await api.submitOrder({
+        symbol: position.symbol,
+        side,
+        order_type: 'MARKET',
+        quantity,
+        leverage: readStoredLeverage(currentUser.username, position.symbol) ?? position.leverage ?? 10,
+        margin_type: position.margin_type,
+        position_direction: 'CLOSE',
+      })
+      showToast('success', t('pos.marketClose.success'))
+      setPositions(prev => prev.filter((item) => item.id !== position.id))
+    } catch (error: unknown) {
+      showToast('error', getRequestErrorMessage(error, t('order.error.failed')))
+    } finally {
+      setClosingPositionId(null)
+    }
+  }, [currentUser?.username, marketCloseConfirm, showToast, t])
 
   const handleRefresh = useCallback(async () => {
     if (!isActive || !isAuthenticated || loading) return
@@ -291,11 +336,11 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th>
-              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>TP/SL</th>
+              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>TP/SL</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
@@ -329,6 +374,16 @@ export function PositionsPanel({
                           </svg>
                         </button>
                       </div>
+                    </td>
+                    <td className="text-right">
+                      <button
+                        disabled={closingPositionId === p.id}
+                        onClick={() => void handleMarketClose(p)}
+                        className="px-2.5 py-1 text-[11px] rounded border border-[#f6465d] text-[#f6465d] hover:bg-[#f6465d] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={t('pos.marketClose')}
+                      >
+                        {closingPositionId === p.id ? '…' : t('pos.marketClose')}
+                      </button>
                     </td>
                   </tr>
                 ))
@@ -422,19 +477,25 @@ export function PositionsPanel({
                   ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                   : conditionalOrders.map(o => {
                     const isTp = o.order_type === 'TAKE_PROFIT_MARKET'
-                    const isShortClose = o.side === 'BUY'
+                    const actionLabel = formatConditionalAction(o, t)
+                    const triggerOperator = getConditionalTriggerOperator(o)
+                    const isCloseOrder = (o.trade_direction ?? '').toUpperCase() === 'CLOSE'
                     return (
                       <tr key={o.algo_id}>
                         <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
                         <td className="font-semibold">{o.symbol}<br/><span className="text-[10px] text-[#858585]">Perp</span></td>
                         <td>{isTp ? 'Take Profit Market' : 'Stop Market'}</td>
-                        <td className={isShortClose ? 'text-buy' : 'text-sell'}>
-                          {isShortClose ? 'Close Short' : 'Close Long'}
+                        <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>
+                          {actionLabel}
                         </td>
-                        <td className="font-mono">Close Position</td>
+                        <td className="font-mono">
+                          {isCloseOrder
+                            ? 'Close Position'
+                            : o.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                        </td>
                         <td className="font-mono">Market</td>
                         <td className="font-mono text-[11px]">
-                          Last Price {isTp ? (isShortClose ? '>=' : '<=') : (isShortClose ? '<=' : '>=')} {o.trigger_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}
+                          Last Price {triggerOperator} {o.trigger_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}
                         </td>
                         <td>
                           <button
@@ -497,8 +558,52 @@ export function PositionsPanel({
         showToast={showToast}
       />
     )}
+
+    {marketCloseConfirm && (
+      <MarketCloseConfirmModal
+        confirm={marketCloseConfirm}
+        submitting={closingPositionId === marketCloseConfirm.position.id}
+        onCancel={() => setMarketCloseConfirm(null)}
+        onConfirm={() => void confirmMarketClose()}
+        t={t}
+      />
+    )}
     </>
   )
+}
+
+function getRequestErrorMessage(error: unknown, fallback: string): string {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail)) {
+    const message = detail.map((item) => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') {
+        const obj = item as { msg?: unknown; message?: unknown }
+        if (typeof obj.msg === 'string') return obj.msg
+        if (typeof obj.message === 'string') return obj.message
+        try {
+          return JSON.stringify(item)
+        } catch {
+          return ''
+        }
+      }
+      return String(item ?? '')
+    }).filter(Boolean).join('; ')
+    if (message) return message
+  }
+  if (detail && typeof detail === 'object') {
+    const obj = detail as { msg?: unknown; message?: unknown }
+    if (typeof obj.msg === 'string') return obj.msg
+    if (typeof obj.message === 'string') return obj.message
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      return fallback
+    }
+  }
+  const message = (error as { message?: unknown })?.message
+  return typeof message === 'string' && message ? message : fallback
 }
 
 function formatTpSl(tp?: number | null, sl?: number | null): string {
@@ -516,6 +621,77 @@ function readStoredLeverage(username: string, symbol: string): number | null {
   } catch {
     return null
   }
+}
+
+function MarketCloseConfirmModal({
+  confirm,
+  submitting,
+  onCancel,
+  onConfirm,
+  t,
+}: {
+  confirm: MarketCloseConfirm
+  submitting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+  t: (key: string) => string
+}) {
+  const { position, quantity, side } = confirm
+
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: { setBinanceViewVisible?: (v: boolean) => void } }).electronAPI
+    api?.setBinanceViewVisible?.(false)
+    return () => { api?.setBinanceViewVisible?.(true) }
+  }, [])
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#1E2026] border border-[#474D57] rounded-lg shadow-xl w-80 p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-bold text-[#EAECEF]">{t('order.market.confirm.title')}</span>
+          <span className={`ml-auto text-[11px] font-bold px-2 py-0.5 rounded ${
+            side === 'BUY' ? 'bg-[#0ecb81]/20 text-[#0ecb81]' : 'bg-[#f6465d]/20 text-[#f6465d]'
+          }`}>
+            {side === 'BUY' ? t('side.buy') : t('side.sell')}
+          </span>
+        </div>
+        <div className="space-y-2 text-[11px] text-[#B7BDC6]">
+          <div className="flex justify-between">
+            <span>{t('pos.symbol')}</span>
+            <span className="font-semibold text-[#EAECEF]">{position.symbol}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>{t('pos.side')}</span>
+            <span className={position.side === 'LONG' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>
+              {position.side === 'LONG' ? t('pos.long') : t('pos.short')}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>{t('pos.size')}</span>
+            <span className="font-mono text-[#EAECEF]">{quantity}</span>
+          </div>
+        </div>
+        <p className="text-[11px] leading-relaxed text-[#848E9C]">{t('order.market.confirm.warning')}</p>
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="py-2 text-[12px] font-medium rounded border border-[#474D57] text-[#848E9C] hover:text-[#EAECEF] hover:border-[#848E9C] transition-colors disabled:opacity-40"
+          >
+            {t('order.market.confirm.cancel')}
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting}
+            className="py-2 text-[12px] font-bold rounded bg-[#F0B90B] hover:bg-[#d4a30a] text-black transition-colors disabled:opacity-40"
+          >
+            {submitting ? t('order.submitting') : t('order.market.confirm.submit')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 function TpSlModal({
@@ -728,6 +904,35 @@ function formatOrderType(orderType: string, t: (key: string) => string) {
     case 'TAKE_PROFIT_MARKET': return t('type.takeProfitMarket')
     default: return orderType
   }
+}
+
+function formatConditionalAction(order: ApiConditionalOrder, t: (key: string) => string) {
+  const side = order.side.toUpperCase()
+  const tradeDirection = (order.trade_direction ?? '').toUpperCase()
+
+  if (tradeDirection === 'OPEN') {
+    return side === 'BUY' ? t('order.openLong') : t('order.openShort')
+  }
+  if (tradeDirection === 'CLOSE') {
+    return side === 'BUY' ? t('order.closeShort') : t('order.closeLong')
+  }
+
+  if (side === 'BUY' && order.position_side === 'LONG') return t('order.openLong')
+  if (side === 'SELL' && order.position_side === 'SHORT') return t('order.openShort')
+  if (side === 'BUY' && order.position_side === 'SHORT') return t('order.closeShort')
+  if (side === 'SELL' && order.position_side === 'LONG') return t('order.closeLong')
+  return side
+}
+
+function getConditionalTriggerOperator(order: ApiConditionalOrder) {
+  const side = order.side.toUpperCase()
+  if (order.order_type === 'TAKE_PROFIT_MARKET') {
+    return side === 'BUY' ? '<=' : '>='
+  }
+  if (order.order_type === 'STOP_MARKET') {
+    return side === 'BUY' ? '>=' : '<='
+  }
+  return '—'
 }
 
 function formatStatus(status: string, t: (key: string) => string) {

@@ -27,7 +27,7 @@ class _OrderWorker(QThread):
     finished = pyqtSignal(bool, str)
 
     def __init__(self, session: Session, symbol: str, side: str,
-                 order_type: str, quantity: float, price) -> None:
+                 order_type: str, quantity: float, price, stop_price=None) -> None:
         super().__init__()
         self._session    = session
         self._symbol     = symbol
@@ -35,19 +35,32 @@ class _OrderWorker(QThread):
         self._order_type = order_type
         self._quantity   = quantity
         self._price      = price
+        self._stop_price = stop_price
 
     def run(self) -> None:
         loop = asyncio.new_event_loop()
         try:
             r = loop.run_until_complete(
                 submit_order(self._session, self._symbol, self._side,
-                             self._order_type, self._quantity, self._price)
+                             self._order_type, self._quantity, self._price,
+                             self._stop_price)
             )
             self.finished.emit(r.success, r.message)
         except Exception as exc:
             self.finished.emit(False, str(exc))
         finally:
             loop.close()
+
+
+class _ClickableLabel(QLabel):
+    clicked = pyqtSignal(str)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            text = self.text().replace(",", "").strip()
+            if text and text != "--":
+                self.clicked.emit(text)
+        super().mousePressEvent(event)
 
 
 class _BookWsWorker(QThread):
@@ -434,10 +447,13 @@ class _AccountPanel(QWidget):
 # ─────────────────────────── Order Book panel ────────────────────────────────
 
 class _OrderBookPanel(QWidget):
+    price_clicked = pyqtSignal(str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumWidth(240)
         self._setup_ui()
+        self._connect_price_clicks()
 
     def _setup_ui(self) -> None:
         lo = QVBoxLayout(self)
@@ -482,11 +498,12 @@ class _OrderBookPanel(QWidget):
 
         # ── mid price display ──
         mid = QHBoxLayout()
-        self._price_lbl = QLabel("--")
+        self._price_lbl = _ClickableLabel("--")
         self._price_lbl.setStyleSheet(
             "font-size: 18px; font-weight: bold;"
             " color: #3fb950; padding: 4px 2px;"
         )
+        self._price_lbl.clicked.connect(self.price_clicked)
         self._price_ref = QLabel("--")
         self._price_ref.setStyleSheet("font-size: 12px; color: #8b949e;")
         self._price_ref.setAlignment(
@@ -520,7 +537,7 @@ class _OrderBookPanel(QWidget):
         h.setContentsMargins(2, 0, 2, 0)
         h.setSpacing(0)
 
-        p = QLabel("--")
+        p = _ClickableLabel("--")
         p.setStyleSheet(f"color: {price_color}; font-size: 12px;")
         p.setFixedWidth(84)
 
@@ -537,6 +554,10 @@ class _OrderBookPanel(QWidget):
         h.addSpacing(4)
         h.addWidget(s, 1)
         return w, (p, q, s)
+
+    def _connect_price_clicks(self) -> None:
+        for p, _, _ in self._ask_rows + self._bid_rows:
+            p.clicked.connect(self.price_clicked)
 
     def update_book(self, asks: list, bids: list, last: str) -> None:
         # Binance returns asks lowest-first; display highest-first
@@ -662,6 +683,31 @@ class _OrderFormPanel(QWidget):
         price_row.addWidget(price_container, 1)
         price_row.addWidget(bbo_btn)
         lo.addLayout(price_row)
+
+        self._trigger_wrap = QWidget()
+        trigger_lo = QVBoxLayout(self._trigger_wrap)
+        trigger_lo.setContentsMargins(0, 0, 0, 0)
+        trigger_lo.setSpacing(4)
+        trigger_lo.addWidget(_small_label(t("trigger_price_label")))
+
+        trigger_row = QHBoxLayout()
+        trigger_row.setSpacing(4)
+        self._trigger_edit = QLineEdit()
+        self._trigger_edit.setPlaceholderText("--")
+        self._trigger_edit.setObjectName("trade_input")
+        self._trigger_edit.setMinimumHeight(34)
+        self._trigger_quote_lbl = QLabel("USDT")
+        self._trigger_quote_lbl.setStyleSheet(
+            "color:#8b949e; font-size:12px; min-width:48px;"
+        )
+        self._trigger_quote_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        trigger_row.addWidget(self._trigger_edit, 1)
+        trigger_row.addWidget(self._trigger_quote_lbl)
+        trigger_lo.addLayout(trigger_row)
+        self._trigger_wrap.setVisible(False)
+        lo.addWidget(self._trigger_wrap)
 
         # ── Quantity (数量) ──
         lo.addWidget(_small_label(t("order_qty_label")))
@@ -815,39 +861,52 @@ class _OrderFormPanel(QWidget):
 
     def _on_type_changed(self, idx: int) -> None:
         is_limit = (idx == 0)
+        is_conditional = (idx == 2)
         self._price_edit.setEnabled(is_limit)
         self._price_edit.setPlaceholderText(
-            "--" if is_limit else (t("market_placeholder") if idx == 1 else "--")
+            "--" if is_limit else t("market_placeholder")
         )
+        self._trigger_wrap.setVisible(is_conditional)
+        if not is_conditional:
+            self._trigger_edit.clear()
 
     def get_values(self) -> tuple:
-        """Returns (order_type: str, qty: float, price: float | None)."""
+        """Returns (order_type, qty, price, stop_price)."""
         idx = self._type_bar.current_index()
-        order_type = "LIMIT" if idx == 0 else "MARKET"
+        order_type = "LIMIT" if idx == 0 else ("MARKET" if idx == 1 else "STOP_MARKET")
         price = None
         if order_type == "LIMIT":
             try:
                 price = float(self._price_edit.text().strip())
             except ValueError:
                 price = None
+        stop_price = None
+        if order_type == "STOP_MARKET":
+            try:
+                stop_price = float(self._trigger_edit.text().strip())
+            except ValueError:
+                stop_price = None
         try:
             qty = float(self._qty_edit.text().strip())
         except ValueError:
             qty = 0.0
-        return order_type, qty, price
+        return order_type, qty, price, stop_price
 
     def set_buttons_enabled(self, enabled: bool) -> None:
         self._long_btn.setEnabled(enabled)
         self._short_btn.setEnabled(enabled)
 
     def set_price(self, price: str) -> None:
-        """Pre-fill price from order book click (limit mode only)."""
-        if self._type_bar.current_index() == 0:
+        """Pre-fill order price or trigger price from order book click."""
+        if self._type_bar.current_index() == 2:
+            self._trigger_edit.setText(price)
+        elif self._type_bar.current_index() == 0:
             self._price_edit.setText(price)
 
     def set_quote(self, quote: str) -> None:
         """Update all quote labels/selectors when the symbol quote changes."""
         self._quote_lbl.setText(quote)
+        self._trigger_quote_lbl.setText(quote)
         idx = self._tp_quote_combo.findText(quote)
         if idx >= 0:
             self._tp_quote_combo.setCurrentIndex(idx)
@@ -897,6 +956,7 @@ class OrderFormWidget(QWidget):
         right_lo.setSpacing(0)
 
         self._form = _OrderFormPanel(self._session)
+        self._book.price_clicked.connect(self._form.set_price)
         self._form.long_clicked.connect(lambda: self._submit("BUY"))
         self._form.short_clicked.connect(lambda: self._submit("SELL"))
         right_lo.addWidget(self._form, 0)
@@ -991,7 +1051,10 @@ class OrderFormWidget(QWidget):
             self._set_notice(t("field_required", t("symbol")), "error")
             return
 
-        order_type, qty, price = self._form.get_values()
+        order_type, qty, price, stop_price = self._form.get_values()
+        if order_type == "STOP_MARKET" and (stop_price is None or stop_price <= 0):
+            self._set_notice(t("field_required", t("stop_price")), "error")
+            return
 
         if qty <= 0:
             self._set_notice(t("field_required", t("quantity")), "error")
@@ -1004,7 +1067,7 @@ class OrderFormWidget(QWidget):
         self._set_notice("...", "muted")
 
         self._worker = _OrderWorker(
-            self._session, sym, side, order_type, qty, price
+            self._session, sym, side, order_type, qty, price, stop_price
         )
         self._worker.finished.connect(self._on_done)
         self._worker.start()

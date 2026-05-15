@@ -393,8 +393,13 @@ export function OrderFormWidget({
 
   useEffect(() => {
     if (selectedOrderBookPrice?.value == null) return
-    setPrice(String(selectedOrderBookPrice.value))
-  }, [selectedOrderBookPrice])
+    const nextValue = String(selectedOrderBookPrice.value)
+    if (orderType === 'CONDITIONAL') {
+      setStopPrice(nextValue)
+      return
+    }
+    setPrice(nextValue)
+  }, [orderType, selectedOrderBookPrice])
 
   const estimatedCost = useMemo(() => {
     const qtyNum = parseFloat(qty)

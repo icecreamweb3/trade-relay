@@ -15,12 +15,14 @@ class BinanceOrderResult:
         self,
         success: bool,
         order_id: Optional[str] = None,
+        client_order_id: Optional[str] = None,
         status: str = "FAILED",
         error: Optional[str] = None,
         mock: bool = False,
     ):
         self.success = success
         self.order_id = order_id
+        self.client_order_id = client_order_id
         self.status = status  # 'FILLED', 'NEW', 'FAILED', 'MOCK'
         self.error = error
         self.mock = mock
@@ -125,9 +127,17 @@ async def place_order(
 
         logger.info('binance response | raw=%s', response)
 
-        if not response:
+        if response is None:
             logger.warning('binance response | empty response for symbol=%s side=%s', symbol, side)
             return BinanceOrderResult(success=False, error="Empty response from Binance Futures")
+
+        if not isinstance(response, dict):
+            logger.warning('binance response | unexpected type=%s symbol=%s side=%s raw=%s', type(response).__name__, symbol, side, response)
+            return BinanceOrderResult(success=False, error=f"Unexpected response type from Binance Futures: {type(response).__name__}")
+
+        if not response:
+            logger.warning('binance response | empty json object for symbol=%s side=%s', symbol, side)
+            return BinanceOrderResult(success=False, error="Empty JSON response from Binance Futures")
 
         if response.get("error"):
             error_msg = response.get("error_message") or str(response)
@@ -137,8 +147,9 @@ async def place_order(
                 error=error_msg,
             )
 
-        order_id = str(response.get("orderId") or response.get("algoId") or "")
-        status = response.get("status", "NEW")
+        order_id = str(response.get("orderId") or response.get("algoId") or response.get("clientAlgoId") or "")
+        client_order_id = str(response.get("clientOrderId") or response.get("clientAlgoId") or "") or None
+        status = response.get("status") or response.get("algoStatus") or "NEW"
         logger.info(
             'binance response | success | orderId=%s status=%s symbol=%s side=%s positionSide=%s',
             order_id, status, symbol, side, position_side,
@@ -147,6 +158,7 @@ async def place_order(
         return BinanceOrderResult(
             success=True,
             order_id=order_id,
+            client_order_id=client_order_id,
             status=status,
         )
 

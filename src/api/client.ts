@@ -66,6 +66,9 @@ export interface ApiConditionalOrder {
   trigger_price: number
   status: string
   created_at: string
+  trade_direction?: string | null
+  exchange_order_id?: string | null
+  client_order_id?: string | null
 }
 
 interface ApiTrade {

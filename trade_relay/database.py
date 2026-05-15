@@ -930,6 +930,40 @@ def update_order_status(
         conn.close()
 
 
+def update_order_metadata(order_id: int, **fields_to_update) -> bool:
+    """Update selected order fields by primary key."""
+    allowed_fields = {
+        "price",
+        "stop_price",
+        "exchange_order_id",
+        "client_order_id",
+        "trade_direction",
+        "error_message",
+    }
+    fields = {key: value for key, value in fields_to_update.items() if key in allowed_fields and value is not None}
+    if not fields:
+        return False
+
+    assignments = [f"{key} = %s" for key in fields]
+    params = list(fields.values()) + [order_id]
+
+    _log_db_write("update", "orders", {"order_id": order_id, **fields})
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE orders SET {', '.join(assignments)} WHERE id = %s",
+                params,
+            )
+            conn.commit()
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "orders", order_id=order_id, affected_rows=cur.rowcount, success=success)
+            return success
+    finally:
+        conn.close()
+
+
 def update_order_status_by_exchange_id(
     username: str,
     exchange_order_id: str,

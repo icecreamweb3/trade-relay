@@ -1826,6 +1826,14 @@ class BinanceClient:
                         result = response.json()
                         if attempt > 0:
                             logger.info(f"✅ 下止损单成功 (重试 {attempt} 次后): {symbol}")
+                        if result is None:
+                            return {
+                                'error': True,
+                                'error_type': 'NoneResult',
+                                'error_message': 'STOP_MARKET algo order returned no JSON body',
+                                'symbol': symbol,
+                                'side': side,
+                            }
                         return result
                     elif response.status_code in [500, 502, 503, 504]:
                         # ✅ 服务器错误，可以重试
@@ -1884,7 +1892,9 @@ class BinanceClient:
             if last_exception:
                 raise last_exception
         except Exception as e:
-            logger.debug(f"Failed to place stop loss order for {symbol}: {e}")
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.debug(f"Failed to place stop loss order for {symbol}: [{error_type}] {error_msg}")
             if 'stop_price_str' in locals():
                 logger.debug(f"  stopPrice={stop_price}, formatted_string='{stop_price_str}' (length={len(stop_price_str) if stop_price_str else 0})")
             else:
@@ -1892,7 +1902,13 @@ class BinanceClient:
             if 'params' in locals():
                 logger.debug(f"  请求参数: {params}")
             logger.exception(f"下止损单异常详情")
-            return None
+            return {
+                'error': True,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'symbol': symbol,
+                'side': side,
+            }
     
     def place_take_profit_order(self, symbol: str, side: str, price: float, quantity: float, position_side: str = None) -> Optional[dict]:
         """Place a take-profit order
@@ -1995,6 +2011,14 @@ class BinanceClient:
                         result = response.json()
                         if attempt > 0:
                             logger.info(f"✅ 下止盈单成功 (重试 {attempt} 次后): {symbol}")
+                        if result is None:
+                            return {
+                                'error': True,
+                                'error_type': 'NoneResult',
+                                'error_message': 'TAKE_PROFIT_MARKET algo order returned no JSON body',
+                                'symbol': symbol,
+                                'side': side,
+                            }
                         return result
                     elif response.status_code in [500, 502, 503, 504]:
                         # ✅ 服务器错误，可以重试
@@ -2053,12 +2077,20 @@ class BinanceClient:
             if last_exception:
                 raise last_exception
         except Exception as e:
-            logger.debug(f"Failed to place take profit order for {symbol}: {e}")
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.debug(f"Failed to place take profit order for {symbol}: [{error_type}] {error_msg}")
             logger.debug(f"  stopPrice={price}, formatted_string={price_str if 'price_str' in locals() else 'N/A'}")
             if 'params' in locals():
                 logger.debug(f"  请求参数: {params}")
             logger.exception(f"下止盈单异常详情")
-            return None
+            return {
+                'error': True,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'symbol': symbol,
+                'side': side,
+            }
     
     def place_take_profit_limit_order(self, symbol: str, side: str, stop_price: float, price: float, 
                                       quantity: float, position_side: str = None) -> Optional[dict]:
