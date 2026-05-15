@@ -68,8 +68,10 @@ interface ApiOrder {
   symbol: string
   side: string
   order_type: string
+  trade_direction?: string | null
   quantity: number
   price: number
+  avg_price?: number | null
   stop_price?: number | null
   reduce_only?: boolean
   post_only?: boolean

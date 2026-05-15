@@ -123,6 +123,7 @@ def list_orders(
     username: Optional[str] = None,
     order_id: Optional[str] = None,
     start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     status: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):

@@ -9,7 +9,9 @@ const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
+  trade_direction?: string | null
   quantity: number; price: number; status: string; username?: string
+  avg_price?: number | null
   exchange_order_id?: string; created_at?: string; error_message?: string
 }
 
@@ -89,14 +91,17 @@ export function OrderLogScreen() {
     load(INITIAL_FILTERS)
   }
 
+  const formatNotional = (order: Order) => {
+    const refPrice = order.avg_price ?? (order.price && order.price > 0 ? order.price : null)
+    if (refPrice == null) return '—'
+    return (order.quantity * refPrice).toFixed(2)
+  }
+
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e]">
       <div className="px-4 py-2 border-b border-[#3e3e42] flex items-center gap-3 shrink-0">
         <span className="text-sm font-semibold text-[#cccccc]">{t('log.title')}</span>
         <span className="text-xs text-[#858585]">{t('log.allUsers')}</span>
-        <button onClick={() => load()} className="ml-auto text-xs text-[#858585] hover:text-[#cccccc]">
-          {loading ? t('log.loading') : `↻ ${t('log.refresh')}`}
-        </button>
       </div>
       <form onSubmit={handleSearch} className="flex flex-wrap items-end gap-3 border-b border-[#3e3e42] px-4 py-3 shrink-0">
         <FilterField label={t('log.filter.user')} className="w-[220px]">
@@ -157,25 +162,30 @@ export function OrderLogScreen() {
       <div className="flex-1 overflow-auto">
         <table className="trade-table w-full">
           <thead><tr>
-            <th>{t('log.index')}</th><th>{t('log.time')}</th><th>{t('log.user')}</th><th>{t('log.symbol')}</th>
-            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th><th>{t('log.id')}</th>
+            <th>{t('log.index')}</th><th>{t('log.time')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
+            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.status')}</th><th className="min-w-[260px]">{t('log.id')}</th>
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
-              <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
+              <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="text-[#858585]">{o.created_at ? new Date(o.created_at).toLocaleString() : '-'}</td>
-                <td className="text-[#cccccc]">{o.username ?? '—'}</td>
+                <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">{o.symbol}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>
                 <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                 <td className="font-mono">{o.quantity}</td>
+                <td className={`font-medium ${o.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : o.trade_direction === 'OPEN' ? 'text-[#0ecb81]' : 'text-[#858585]'}`}>
+                  {o.trade_direction === 'CLOSE' ? t('order.close') : o.trade_direction === 'OPEN' ? t('order.open') : '—'}
+                </td>
                 <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
+                <td className="font-mono">{o.avg_price != null ? o.avg_price.toFixed(2) : '—'}</td>
+                <td className="font-mono">{formatNotional(o)}</td>
                 <td><StatusBadge status={o.status} t={t} /></td>
-                <td className="text-[#858585] font-mono truncate max-w-32" title={o.exchange_order_id}>
-                  {o.exchange_order_id ? o.exchange_order_id.slice(0, 16) + '...' : o.error_message || '-'}
+                <td className="min-w-[260px] text-[#858585] font-mono whitespace-nowrap" title={o.exchange_order_id}>
+                  {o.exchange_order_id ?? o.error_message ?? '-'}
                 </td>
               </tr>
             ))}
