@@ -1,5 +1,6 @@
 // Trade Relay API client — all calls go to FastAPI backend on port 8000
 import axios from 'axios'
+import { perf } from '../utils/perf'
 
 const BASE_URL = 'http://127.0.0.1:8000'
 
@@ -149,24 +150,39 @@ async function request<T>(
   path: string,
   options: { body?: unknown; params?: Record<string, QueryValue> } = {},
 ): Promise<T> {
-  if (window.electronAPI?.backendRequest) {
-    const res = await window.electronAPI.backendRequest(method, path, {
-      body: options.body,
-      query: options.params,
-    })
-    if (res.status >= 200 && res.status < 300) return res.body as T
-    throw makeBackendError(res.status, res.body)
-  }
+  const perfLabel = `${method} ${path}`
+  const perfActive = perf.isActive()
+  if (perfActive) perf.mark(`api → ${perfLabel}`)
 
-  const token = await getToken()
-  const res = await axios.request<T>({
-    method,
-    url: `${BASE_URL}${path}`,
-    data: options.body,
-    params: options.params,
-    headers: getHeaders(token),
-  })
-  return res.data
+  try {
+    let result: T
+    if (window.electronAPI?.backendRequest) {
+      const res = await window.electronAPI.backendRequest(method, path, {
+        body: options.body,
+        query: options.params,
+      })
+      if (res.status >= 200 && res.status < 300) {
+        result = res.body as T
+      } else {
+        throw makeBackendError(res.status, res.body)
+      }
+    } else {
+      const token = await getToken()
+      const res = await axios.request<T>({
+        method,
+        url: `${BASE_URL}${path}`,
+        data: options.body,
+        params: options.params,
+        headers: getHeaders(token),
+      })
+      result = res.data
+    }
+    if (perfActive) perf.mark(`api ✓ ${perfLabel}`)
+    return result
+  } catch (err) {
+    if (perfActive) perf.mark(`api ✗ ${perfLabel} (error)`)
+    throw err
+  }
 }
 
 function getHeaders(token?: string | null) {

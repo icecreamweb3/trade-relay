@@ -34,6 +34,7 @@ async def place_order(
     order_type: str,
     quantity: float,
     price: Optional[float] = None,
+    stop_price: Optional[float] = None,
     leverage: int = 10,
     testnet: bool = False,
     position_direction: str = 'OPEN',
@@ -93,6 +94,32 @@ async def place_order(
                 quantity,
                 position_side,
             )
+        elif order_type == "STOP":
+            # Trigger-limit conditional order: needs both stop_price (trigger) and price (limit)
+            if stop_price is None or stop_price <= 0:
+                return BinanceOrderResult(success=False, error="stop_price required for STOP (trigger-limit) order")
+            if price is None or price <= 0:
+                return BinanceOrderResult(success=False, error="price required for STOP (trigger-limit) order")
+            logger.info(
+                'binance request | STOP(trigger-limit) | symbol=%s side=%s positionSide=%s qty=%s stopPrice=%s price=%s testnet=%s',
+                symbol, side, position_side, quantity, stop_price, price, testnet,
+            )
+            response = await asyncio.to_thread(
+                client.place_conditional_order,
+                symbol, side, quantity, stop_price, price, position_side,
+            )
+        elif order_type == "STOP_MARKET":
+            # Trigger-market conditional order: only stop_price (trigger), no limit price
+            if stop_price is None or stop_price <= 0:
+                return BinanceOrderResult(success=False, error="stop_price required for STOP_MARKET (trigger-market) order")
+            logger.info(
+                'binance request | STOP_MARKET(trigger-market) | symbol=%s side=%s positionSide=%s qty=%s stopPrice=%s testnet=%s',
+                symbol, side, position_side, quantity, stop_price, testnet,
+            )
+            response = await asyncio.to_thread(
+                client.place_stop_loss_order,
+                symbol, side, stop_price, quantity, position_side,
+            )
         else:
             return BinanceOrderResult(success=False, error=f"Unsupported order type: {order_type}")
 
@@ -110,7 +137,7 @@ async def place_order(
                 error=error_msg,
             )
 
-        order_id = str(response.get("orderId", ""))
+        order_id = str(response.get("orderId") or response.get("algoId") or "")
         status = response.get("status", "NEW")
         logger.info(
             'binance response | success | orderId=%s status=%s symbol=%s side=%s positionSide=%s',

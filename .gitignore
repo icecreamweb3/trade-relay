@@ -22,6 +22,7 @@ configs/users/*.yaml
 # PyInstaller 产物
 build/
 dist/
+dist-electron/
 *.spec.bak
 
 # Python 缓存

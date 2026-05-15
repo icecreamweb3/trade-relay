@@ -1,7 +1,7 @@
 /**
  * RecentTrades — shows recent platform fills (all users, from backend API)
  */
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -42,16 +42,26 @@ function fmtNum(n: number | null, dp = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 }
 
-export function RecentTrades({ isActive = true, refreshTrigger, onFillsLoaded }: { isActive?: boolean; refreshTrigger?: number; onFillsLoaded?: () => void }) {
+export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: boolean; refreshTrigger?: number }) {
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const [fills, setFills] = useState<Fill[]>([])
   const [userFilter, setUserFilter] = useState('')
+  const [isWindowVisible, setIsWindowVisible] = useState(() => {
+    if (typeof document === 'undefined') return true
+    const visible = document.visibilityState === 'visible'
+    const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
+    return visible && focused
+  })
+  const inFlightRef = useRef(false)
 
   // Derive unique user list from loaded fills
   const userOptions = Array.from(new Set(fills.map(f => f.username).filter(Boolean) as string[])).sort()
 
   const load = useCallback(async () => {
+    if (inFlightRef.current) {
+      return
+    }
     if (!isActive) {
       return
     }
@@ -59,19 +69,46 @@ export function RecentTrades({ isActive = true, refreshTrigger, onFillsLoaded }:
       setFills([])
       return
     }
+    inFlightRef.current = true
     try {
       const data = await api.getRecentFills()
       setFills(data.slice(0, 30))
-      onFillsLoaded?.()
     } catch {}
+    finally {
+      inFlightRef.current = false
+    }
   }, [isActive, isAuthenticated])
 
   useEffect(() => {
+    const updateVisibility = () => {
+      const visible = document.visibilityState === 'visible'
+      const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true
+      setIsWindowVisible(visible && focused)
+    }
+
+    updateVisibility()
+    document.addEventListener('visibilitychange', updateVisibility)
+    window.addEventListener('focus', updateVisibility)
+    window.addEventListener('blur', updateVisibility)
+
+    return () => {
+      document.removeEventListener('visibilitychange', updateVisibility)
+      window.removeEventListener('focus', updateVisibility)
+      window.removeEventListener('blur', updateVisibility)
+    }
+  }, [])
+
+  useEffect(() => {
     load()
-    if (!isActive || !isAuthenticated) return
+    if (!isActive || !isAuthenticated || !isWindowVisible) return
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
-  }, [isActive, isAuthenticated, load])
+  }, [isActive, isAuthenticated, isWindowVisible, load])
+
+  useEffect(() => {
+    if (!isActive || !isAuthenticated || !isWindowVisible) return
+    void load()
+  }, [isActive, isAuthenticated, isWindowVisible, load])
 
   // Reload immediately when a new order is placed
   useEffect(() => {

@@ -3,6 +3,7 @@ Positions router: current positions, open orders, order history, trade history.
 """
 import asyncio
 import sys, os
+import threading
 import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -12,7 +13,7 @@ from typing import Optional
 
 from trade_relay import database as db_module
 from trade_relay import config as cfg_module
-from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
+from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, notify_user_stream_event, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
 
@@ -39,6 +40,39 @@ class PositionHistoryOut(BaseModel):
 # Per-user TTL cache: user_id (None = admin) → (timestamp, result)
 _positions_cache: dict[int | None, tuple[float, list]] = {}
 _POSITIONS_CACHE_TTL = 0.5  # seconds — short enough that an account_update fetch always sees fresh DB data
+_startup_position_sync_inflight: set[str] = set()
+_startup_position_sync_lock = threading.Lock()
+_STARTUP_POSITION_SYNC_DELAY_SECONDS = 3.0
+
+
+def _schedule_initial_position_sync(username: str, user_id: int | None, api_key: str, api_secret: str, testnet: bool) -> None:
+    with _startup_position_sync_lock:
+        if username in _startup_position_sync_inflight:
+            return
+        _startup_position_sync_inflight.add(username)
+
+    def _worker() -> None:
+        try:
+            time.sleep(_STARTUP_POSITION_SYNC_DELAY_SECONDS)
+            sync_initial_positions_for_user(username, api_key, api_secret, testnet)
+            if user_id is not None:
+                _positions_cache.pop(user_id, None)
+            notify_user_stream_event(
+                username,
+                {"type": "order_update", "event": "REST_SYNC"},
+                force=True,
+            )
+        except Exception:
+            _log.exception("Deferred initial position sync failed for user=%s", username)
+        finally:
+            with _startup_position_sync_lock:
+                _startup_position_sync_inflight.discard(username)
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name=f"positions-startup-sync-{username}",
+    ).start()
 
 
 class PositionOut(BaseModel):
@@ -223,7 +257,7 @@ def set_position_tpsl(
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Condition",
+                order_category="Conditional",
             )
         except Exception as exc:
             errors.append(f"TP: {exc}")
@@ -241,7 +275,7 @@ def set_position_tpsl(
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Condition",
+                order_category="Conditional",
             )
 
     if body.sl_price is not None and body.sl_price > 0:
@@ -279,7 +313,7 @@ def set_position_tpsl(
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Condition",
+                order_category="Conditional",
             )
         except Exception as exc:
             errors.append(f"SL: {exc}")
@@ -298,7 +332,7 @@ def set_position_tpsl(
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Condition",
+                order_category="Conditional",
             )
 
     if errors:
@@ -329,6 +363,7 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
         return
 
     username = str(user.get("username") or "")
+    user_id = int(user["sub"]) if user.get("role") != "admin" else None
     if not username:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token payload")
         return
@@ -338,9 +373,10 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)
     if api_key and api_secret:
-        ensure_user_order_status_stream(username, api_key, api_secret, cfg_module.is_testnet(username))
-        # Sync current positions from Binance once on first WS connect (user is now authenticated)
-        sync_initial_positions_for_user(username, api_key, api_secret, cfg_module.is_testnet(username))
+        testnet = cfg_module.is_testnet(username)
+        ensure_user_order_status_stream(username, api_key, api_secret, testnet)
+        # Defer the initial Binance REST sync so first-screen DB reads can return immediately.
+        _schedule_initial_position_sync(username, user_id, api_key, api_secret, testnet)
 
     queue: asyncio.Queue[dict] = asyncio.Queue()
     loop = asyncio.get_running_loop()

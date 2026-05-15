@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { perf } from '../utils/perf'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
@@ -24,6 +25,7 @@ export function LoginScreen() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim() || !password.trim()) return
+    perf.start('login-submit')
     await login(username.trim(), password)
   }
 

@@ -26,9 +26,10 @@ _log = get_logger(__name__)
 class OrderRequest(BaseModel):
     symbol: str
     side: str          # BUY | SELL
-    order_type: str    # LIMIT | MARKET
+    order_type: str    # LIMIT | MARKET | STOP | STOP_MARKET
     quantity: float
     price: Optional[float] = None
+    stop_price: Optional[float] = None   # trigger price for conditional orders
     leverage: int = 10
     position_direction: str = 'OPEN'  # OPEN | CLOSE
 
@@ -62,6 +63,9 @@ class OrderUserOption(BaseModel):
 
 def _row_to_out(r: dict) -> OrderOut:
     trade_dir = str(r["trade_direction"]).upper() if r.get("trade_direction") else None
+    order_category = str(r.get("order_category") or "Basic")
+    if order_category == "Condition":
+        order_category = "Conditional"
     return OrderOut(
         id=r["id"],
         username=r["username"],
@@ -74,7 +78,7 @@ def _row_to_out(r: dict) -> OrderOut:
         stop_price=float(r["stop_price"]) if r.get("stop_price") is not None else None,
         reduce_only=bool(r.get("reduce_only") or False),
         post_only=bool(r.get("post_only") or False),
-        order_category=str(r.get("order_category") or "Basic"),
+        order_category=order_category,
         status=r["status"],
         filled_qty=float(r.get("filled_qty") or 0),
         avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
@@ -98,6 +102,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.order_type,
         body.quantity,
         body.price,
+        body.stop_price,
         body.leverage,
         body.position_direction,
     )

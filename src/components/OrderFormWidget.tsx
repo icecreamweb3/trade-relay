@@ -4,12 +4,14 @@ import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { perfSignalDone } from '../utils/perf'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 type Side = 'BUY' | 'SELL'
-type OrderType = 'LIMIT' | 'MARKET' | 'STOP'
+type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL'
+type CondSubType = 'LIMIT' | 'MARKET'
 type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
 
@@ -175,6 +177,7 @@ export function OrderFormWidget({
   const [marginType, setMarginType] = useState<MarginType>('CROSS')
   const [posDir, setPosDir] = useState<PositionDir>('OPEN')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
+  const [condSubType, setCondSubType] = useState<CondSubType>('MARKET')
   const [qty, setQty] = useState('')
   const [price, setPrice] = useState('')
   const [stopPrice, setStopPrice] = useState('')
@@ -193,6 +196,7 @@ export function OrderFormWidget({
   const lastAccountErrorRef = useRef<string | null>(null)
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
+  const _accountFirstLoadDone = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -256,10 +260,17 @@ export function OrderFormWidget({
           })
         }
       } finally {
-        if (alive) setAccountLoading(false)
+        if (alive) {
+          setAccountLoading(false)
+          if (!_accountFirstLoadDone.current) {
+            _accountFirstLoadDone.current = true
+            perfSignalDone('account-summary: first load done')
+          }
+        }
       }
     }
 
+    _accountFirstLoadDone.current = false
     loadAccountSummary()
     loadAccountSummaryRef.current = loadAccountSummary
     forceLoadAccountSummaryRef.current = () => loadAccountSummary(true)
@@ -428,7 +439,6 @@ export function OrderFormWidget({
     const typedPrice = parseFloat(price)
     return Number.isFinite(typedPrice) && typedPrice > 0 ? typedPrice : (markPrice ?? currentPrice ?? null)
   }, [orderType, currentPrice, markPrice, price])
-
   const openAvailableDisplay = useMemo(() => {
     const availableBalance = accountSummary?.available_balance ?? null
     if (availableBalance == null) return '—'
@@ -520,16 +530,23 @@ export function OrderFormWidget({
     }
     if (baseQty <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
 
+    // Map frontend order type to backend order_type
+    let backendOrderType: string = orderType
+    if (orderType === 'CONDITIONAL') {
+      backendOrderType = condSubType === 'LIMIT' ? 'STOP' : 'STOP_MARKET'
+    }
+
     const body: Parameters<typeof api.submitOrder>[0] = {
       symbol, side: submitSide,
-      order_type: orderType === 'STOP' ? 'STOP_MARKET' : orderType,
+      order_type: backendOrderType,
       quantity: baseQty,
       leverage,
       margin_type: marginType,
       position_direction: posDir,
     }
-    if ((orderType === 'LIMIT' || orderType === 'STOP') && price) body.price = parseFloat(price)
-    if (orderType === 'STOP' && stopPrice) body.stop_price = parseFloat(stopPrice)
+    if ((orderType === 'LIMIT' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
+      body.price = parseFloat(price)
+    if (orderType === 'CONDITIONAL' && stopPrice) body.stop_price = parseFloat(stopPrice)
     if (showTpSl && tp) body.tp_price = parseFloat(tp)
     if (showTpSl && sl) body.sl_price = parseFloat(sl)
 
@@ -678,38 +695,58 @@ export function OrderFormWidget({
       </div>
 
       {/* ── Order type tabs ── */}
-      <div className="flex gap-0 px-3 pt-2 shrink-0">
-        {(['LIMIT', 'MARKET', 'STOP'] as OrderType[]).map(t => (
-          <button key={t} onClick={() => setOrderType(t)}
+      <div className="flex gap-0 px-3 pt-2 shrink-0 items-center">
+        {(['LIMIT', 'MARKET', 'CONDITIONAL'] as OrderType[]).map(tp => (
+          <button key={tp} onClick={() => {
+            setOrderType(tp)
+            if (tp === 'CONDITIONAL') setCondSubType('MARKET')
+          }}
             className={`py-1 px-2.5 text-[11px] rounded transition-colors mr-1 ${
-              orderType === t
+              orderType === tp
                 ? 'text-[#EAECEF] border-b border-[#F0B90B]'
                 : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
             }`}>
-            {t === 'LIMIT' ? useTranslation(locale).t('order.limit') : t === 'MARKET' ? useTranslation(locale).t('order.market') : useTranslation(locale).t('type.stop')}
+            {tp === 'LIMIT'
+              ? useTranslation(locale).t('order.limit')
+              : tp === 'MARKET'
+                ? useTranslation(locale).t('order.market')
+                : useTranslation(locale).t('type.conditional')}
           </button>
         ))}
+        {/* Sub-type dropdown: only shown for Conditional */}
+        {orderType === 'CONDITIONAL' && (
+          <select
+            value={condSubType}
+            onChange={e => setCondSubType(e.target.value as CondSubType)}
+            className="ml-1 bg-[#1E2026] border border-[#2B2F36] text-[#EAECEF] text-[10px] rounded px-1.5 py-0.5 outline-none cursor-pointer">
+            <option value="LIMIT">{useTranslation(locale).t('order.limit')}</option>
+            <option value="MARKET">{useTranslation(locale).t('order.market')}</option>
+          </select>
+        )}
       </div>
 
       {/* ── Form ── */}
       <form onSubmit={e => e.preventDefault()} className="flex-1 overflow-y-auto px-3 pt-3 space-y-2.5 min-h-0">
 
         {/* Stop trigger price */}
-        {orderType === 'STOP' && (
+        {orderType === 'CONDITIONAL' && (
           <div>
             <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.triggerPrice')}</label>
-            <input type="number" value={stopPrice} onChange={e => setStopPrice(e.target.value)}
-              placeholder="0.00" min="0" step="any"
-              className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable" />
+            <div className="relative">
+              <input type="number" value={stopPrice} onChange={e => setStopPrice(e.target.value)}
+                placeholder="0.00" min="0" step="any"
+                className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable pr-14" />
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#848E9C]">{t('order.triggerPriceType.last')}</span>
+            </div>
           </div>
         )}
 
-        {/* Limit / stop limit price */}
-        {(orderType === 'LIMIT' || orderType === 'STOP') && (
+        {/* Limit / conditional-limit price */}
+        {(orderType === 'LIMIT' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && (
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">
-                {orderType === 'STOP' ? t('order.limitPrice') : t('order.price')}
+                {orderType === 'CONDITIONAL' ? t('order.limitPrice') : t('order.price')}
               </label>
               <button type="button" onClick={fillMarkPrice}
                 className="text-[9px] text-[#F0B90B] hover:text-[#D9A429] transition-colors">

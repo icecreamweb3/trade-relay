@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { perf, perfExpectDone } from '../utils/perf'
 
 export interface UserInfo {
   id: number
@@ -29,16 +30,23 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
   login: async (username, password) => {
     set({ isLoading: true, error: null })
+    perf.mark('authStore.login — start')
     try {
+      perf.mark('ipc auth-login — sent')
       const result = await window.electronAPI?.login(username, password)
+      perf.mark('ipc auth-login — response received')
       if (result?.ok) {
+        perfExpectDone(2)  // waiting for: account-summary + positions
         set({ isAuthenticated: true, user: result.user, isLoading: false })
+        perf.mark('isAuthenticated — set true (render starting)')
         return true
       } else {
+        perf.reset()
         set({ isLoading: false, error: result?.error || 'Login failed' })
         return false
       }
     } catch (e: unknown) {
+      perf.reset()
       set({ isLoading: false, error: String(e) })
       return false
     }

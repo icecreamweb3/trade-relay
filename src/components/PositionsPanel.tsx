@@ -4,6 +4,7 @@ import { api, ApiConditionalOrder } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { perfSignalDone } from '../utils/perf'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
@@ -64,6 +65,7 @@ export function PositionsPanel({
   const [openOrdersSubTab, setOpenOrdersSubTab] = useState<'basic' | 'conditional'>('basic')
   const [tpslPosition, setTpslPosition] = useState<Position | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
+  const _positionsFirstLoadDone = useRef(false)
 
   const loadPositions = useCallback(async () => {
     if (!isActive || !isAuthenticated) return
@@ -109,6 +111,10 @@ export function PositionsPanel({
       showToast('error', msg)
     }
     setLoading(false)
+    if (!_positionsFirstLoadDone.current) {
+      _positionsFirstLoadDone.current = true
+      perfSignalDone('positions panel: first load done')
+    }
   }, [isActive, isAuthenticated, showToast, t, tab])
 
   useEffect(() => {

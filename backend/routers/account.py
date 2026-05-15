@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from backend.logger import get_logger
 from backend.routers.auth import get_current_user
 from trade_relay import config as cfg_module
+from trade_relay import database as db_module
 from trade_relay.exchange.binance_client import BinanceClient
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -133,19 +134,37 @@ def get_account_summary(
     user: dict = Depends(get_current_user),
 ):
     username = user["username"]
+    user_id = int(user["sub"])
     normalized_symbol = symbol.upper() if symbol else None
     base_asset, quote_asset = split_trading_symbol(normalized_symbol)
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)
-    testnet = cfg_module.is_testnet(username)
 
     if force:
         _invalidate_account_summary_cache(username, normalized_symbol)
+    else:
+        # 1. 先查内存缓存（最快）
+        cached = _get_cached_account_summary(username, normalized_symbol)
+        if cached is not None:
+            return cached
 
-    cached_summary = _get_cached_account_summary(username, normalized_symbol)
-    if cached_summary is not None:
-        return cached_summary
+        # 2. 再查 DB 快照（毫秒级，后台同步服务负责刷新）
+        db_row = db_module.get_account_summary_from_db(user_id, normalized_symbol)
+        if db_row is not None:
+            # 回填内存缓存，ttl 设为 SYNC_INTERVAL_SECONDS 对齐同步周期
+            summary = AccountSummaryOut(**{
+                k: db_row[k]
+                for k in AccountSummaryOut.model_fields
+                if k in db_row
+            })
+            with _account_summary_cache_lock:
+                from trade_relay.exchange.account_sync import SYNC_INTERVAL_SECONDS
+                _account_summary_cache[
+                    _account_summary_cache_key(username, normalized_symbol)
+                ] = (time.monotonic() + SYNC_INTERVAL_SECONDS, _model_to_dict(summary))
+            return summary
 
+    # 3. DB 无数据（首次）或 force=True：同步调用 Binance，并写入 DB + 缓存
     if not api_key or not api_secret:
         summary = AccountSummaryOut(
             symbol=normalized_symbol,
@@ -157,6 +176,7 @@ def get_account_summary(
         _set_cached_account_summary(username, normalized_symbol, summary)
         return summary
 
+    testnet = cfg_module.is_testnet(username)
     try:
         client = BinanceClient(
             api_key=api_key,
@@ -257,13 +277,12 @@ def get_account_summary(
             has_api_credentials=True,
         )
         _set_cached_account_summary(username, normalized_symbol, summary)
+        db_module.upsert_account_summary(user_id, normalized_symbol, _model_to_dict(summary))
         return summary
     except Exception as exc:
         _log.exception(
             "Account summary failed for user=%s symbol=%s testnet=%s",
-            username,
-            normalized_symbol,
-            testnet,
+            username, normalized_symbol, testnet,
         )
         summary = AccountSummaryOut(
             symbol=normalized_symbol,

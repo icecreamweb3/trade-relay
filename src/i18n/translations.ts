@@ -158,8 +158,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     'type.market': '市价',
     'type.stop': '止损',
     'type.stopMarket': '止损市价',
+    'type.conditional': '条件',
     'type.takeProfit': '止盈',
     'type.takeProfitMarket': '止盈市价',
+    'order.triggerPriceType.last': '最新',
 
     // Admin
     'admin.title': '用户管理',
@@ -367,8 +369,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     'type.market': 'Market',
     'type.stop': 'Stop',
     'type.stopMarket': 'Stop Market',
+    'type.conditional': 'Conditional',
     'type.takeProfit': 'Take Profit',
     'type.takeProfitMarket': 'Take Profit Market',
+    'order.triggerPriceType.last': 'Last',
 
     'admin.title': 'User Management',
     'admin.add': 'Add User',

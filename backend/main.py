@@ -26,13 +26,16 @@ async def lifespan(app: FastAPI):
         stop_all_order_status_streams,
         sync_active_orders_on_startup,
     )
+    from trade_relay.exchange.account_sync import start_account_sync, stop_account_sync
     db_module.init_db()
     ensure_admin_exists()
     restore_active_order_status_streams()
     sync_active_orders_on_startup()
+    start_account_sync()
     _log.info("Database initialised")
     yield
     stop_all_order_status_streams()
+    stop_account_sync()
     _log.info("Trade Relay backend shutting down")
 
 

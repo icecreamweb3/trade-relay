@@ -830,6 +830,13 @@ def ensure_user_order_status_stream(username: str, api_key: str, api_secret: str
     stream.start()
 
 
+def notify_user_stream_event(username: str, event: dict, force: bool = False) -> None:
+    with _streams_lock:
+        stream = _streams.get(username)
+    if stream:
+        stream._notify_listeners(event, force=force)
+
+
 def sync_order_status_once(username: str, api_key: str, api_secret: str, testnet: bool, symbol: str, exchange_order_id: str) -> None:
     ensure_user_order_status_stream(username, api_key, api_secret, testnet)
     with _streams_lock:

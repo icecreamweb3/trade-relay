@@ -15,7 +15,10 @@ Tables:
   operation_logs  – 操作日志
 """
 import base64
+import logging
 import os
+from datetime import datetime
+from functools import lru_cache
 from typing import Optional
 
 import pymysql
@@ -24,6 +27,45 @@ import pymysql.err
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+
+logger = logging.getLogger(__name__)
+
+_DB_LOG_REDACT_KEYS = frozenset({
+    "password_hash",
+    "binance_api_key",
+    "binance_api_secret",
+    "enc_key",
+    "enc_secret",
+})
+
+
+def _sanitize_db_log_value(key: str, value):
+    if key in _DB_LOG_REDACT_KEYS:
+        return "<redacted>" if value else None
+    return value
+
+
+def _sanitize_db_log_fields(fields: dict) -> dict:
+    return {key: _sanitize_db_log_value(key, value) for key, value in fields.items()}
+
+
+def _log_db_write(db_action: str, table: str, fields: dict) -> None:
+    logger.info(
+        "DB write | action=%s table=%s fields=%s",
+        db_action,
+        table,
+        _sanitize_db_log_fields(fields),
+    )
+
+
+def _log_db_write_result(db_action: str, table: str, **result) -> None:
+    logger.info(
+        "DB write result | action=%s table=%s result=%s",
+        db_action,
+        table,
+        _sanitize_db_log_fields(result),
+    )
 
 
 # ──────────────────────────────────────────────
@@ -92,6 +134,162 @@ def get_connection() -> pymysql.connections.Connection:
     return pymysql.connect(**_mysql_cfg())
 
 
+def _normalize_order_category(order_type: Optional[str], order_category: Optional[str]) -> str:
+    """Normalize persisted order_category values and derive conditional orders automatically."""
+    normalized = (order_category or "").strip()
+    if normalized:
+        lowered = normalized.lower()
+        if lowered == "condition":
+            return "Conditional"
+        if lowered == "conditional":
+            return "Conditional"
+        if lowered == "basic":
+            return "Basic"
+
+    order_type_upper = (order_type or "").strip().upper()
+    if order_type_upper in {"STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
+        return "Conditional"
+    return "Basic"
+
+
+def _table_exists(cur: pymysql.cursors.Cursor, table_name: str) -> bool:
+    cur.execute("SHOW TABLES LIKE %s", (table_name,))
+    return cur.fetchone() is not None
+
+
+def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS positions (
+            id              BIGINT          NOT NULL AUTO_INCREMENT,
+            user_id         BIGINT          NOT NULL,
+            username        VARCHAR(64)     NOT NULL,
+            exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
+            symbol          VARCHAR(32)     NOT NULL,
+            position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
+            quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
+            avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
+            unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
+            realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
+            leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
+            margin_type     ENUM('ISOLATED','CROSS') NOT NULL DEFAULT 'CROSS',
+            updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uk_position (user_id, exchange, symbol, position_side),
+            CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+
+def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
+    if not _table_exists(cur, "positions"):
+        _create_positions_table(cur)
+        return
+
+    cur.execute("SHOW COLUMNS FROM positions")
+    existing_columns = {row["Field"] for row in cur.fetchall()}
+    required_columns = {
+        "id", "user_id", "username", "exchange", "symbol", "position_side",
+        "quantity", "avg_entry_price", "unrealized_pnl", "realized_pnl",
+        "leverage", "margin_type", "updated_at",
+    }
+    if required_columns.issubset(existing_columns):
+        return
+
+    logger.info("Migrating positions table to current schema | existing_columns=%s", sorted(existing_columns))
+
+    backup_table = "positions_legacy_backup"
+    if not _table_exists(cur, backup_table):
+        cur.execute(f"CREATE TABLE {backup_table} AS SELECT * FROM positions")
+        logger.warning("Backed up legacy positions table to %s before migration", backup_table)
+
+    cur.execute("SELECT * FROM positions ORDER BY id")
+    legacy_rows = cur.fetchall()
+    cur.execute("SELECT id, username FROM users WHERE is_active = 1 ORDER BY id")
+    active_users = cur.fetchall()
+    fallback_user = None
+    if len(active_users) == 1:
+        fallback_user = {
+            "user_id": int(active_users[0]["id"]),
+            "username": str(active_users[0]["username"]),
+        }
+
+    cur.execute("DROP TABLE positions")
+    _create_positions_table(cur)
+
+    migrated = 0
+    skipped = 0
+    for row in legacy_rows:
+        legacy_position_id = int(row["id"])
+
+        cur.execute(
+            "SELECT user_id, username FROM orders WHERE position_id = %s AND user_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (legacy_position_id,),
+        )
+        owner = cur.fetchone()
+        if owner:
+            owner_info = {"user_id": int(owner["user_id"]), "username": str(owner["username"])}
+        else:
+            cur.execute(
+                "SELECT user_id, username FROM position_history WHERE position_id = %s AND user_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (legacy_position_id,),
+            )
+            owner = cur.fetchone()
+            owner_info = {"user_id": int(owner["user_id"]), "username": str(owner["username"])} if owner else fallback_user
+
+        if not owner_info:
+            skipped += 1
+            logger.warning(
+                "Skipped legacy positions row during migration; owner unresolved | backup_table=%s id=%s symbol=%s side=%s",
+                backup_table,
+                legacy_position_id,
+                row.get("symbol"),
+                row.get("side"),
+            )
+            continue
+
+        position_side = str(row.get("position_side") or row.get("side") or "BOTH").upper()
+        if position_side not in {"LONG", "SHORT", "BOTH"}:
+            position_side = "BOTH"
+
+        margin_type = str(row.get("margin_type") or "CROSS").upper()
+        if margin_type not in {"CROSS", "ISOLATED"}:
+            margin_type = "CROSS"
+
+        updated_at = row.get("updated_at") or row.get("created_at") or row.get("opened_at") or datetime.now()
+
+        cur.execute(
+            """INSERT INTO positions
+               (id, user_id, username, exchange, symbol, position_side,
+                quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                leverage, margin_type, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                legacy_position_id,
+                owner_info["user_id"],
+                owner_info["username"],
+                "binance",
+                row.get("symbol"),
+                position_side,
+                row.get("quantity") or 0,
+                row.get("avg_entry_price") if "avg_entry_price" in row else row.get("entry_price"),
+                row.get("unrealized_pnl"),
+                row.get("realized_pnl") or 0,
+                row.get("leverage") or 1,
+                margin_type,
+                updated_at,
+            ),
+        )
+        migrated += 1
+
+    logger.info(
+        "Positions schema migration finished | migrated=%s skipped=%s backup_table=%s",
+        migrated,
+        skipped,
+        backup_table,
+    )
+
+
 def init_db() -> None:
     """Initialize database schema – idempotent, safe to call on every startup."""
     conn = get_connection()
@@ -150,13 +348,14 @@ def init_db() -> None:
                     reduce_only       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只减仓',
                     post_only         TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只做Maker',
                     position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
-                    order_category    ENUM('Basic','Condition') NOT NULL DEFAULT 'Basic' COMMENT '订单分类',
+                    order_category    ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类',
                     error_message     TEXT            COMMENT '错误信息',
                     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                       ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (id),
                     KEY idx_user_status (user_id, status),
+                    KEY idx_status_created (status, created_at),
                     KEY idx_created_at (created_at DESC),
                     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -168,35 +367,32 @@ def init_db() -> None:
                 ("position_id",     "ALTER TABLE orders ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction"),
                 ("reduce_only",     "ALTER TABLE orders ADD COLUMN reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction"),
                 ("post_only",       "ALTER TABLE orders ADD COLUMN post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only"),
-                ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Condition') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
+                ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
             ]:
                 try:
                     cur.execute(_ddl)
                 except Exception:
                     pass  # column already exists
+            try:
+                cur.execute("ALTER TABLE orders ADD INDEX idx_status_created (status, created_at)")
+            except Exception:
+                pass  # index already exists
+            try:
+                cur.execute("ALTER TABLE orders MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类'")
+            except Exception:
+                pass
+            try:
+                cur.execute("UPDATE orders SET order_category = 'Conditional' WHERE order_category = 'Condition'")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE orders MODIFY COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类'")
+            except Exception:
+                pass
 
             # ── positions（头寸信息）──────────────────────────────────────
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS positions (
-                    id              BIGINT          NOT NULL AUTO_INCREMENT,
-                    user_id         BIGINT          NOT NULL,
-                    username        VARCHAR(64)     NOT NULL,
-                    exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
-                    symbol          VARCHAR(32)     NOT NULL,
-                    position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
-                    quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
-                    avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
-                    unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
-                    realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
-                    leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
-                    margin_type     ENUM('ISOLATED','CROSS') NOT NULL DEFAULT 'CROSS',
-                    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                    ON UPDATE CURRENT_TIMESTAMP,
-                    PRIMARY KEY (id),
-                    UNIQUE KEY uk_position (user_id, exchange, symbol, position_side),
-                    CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
+            _migrate_positions_table(cur)
+            _get_table_columns.cache_clear()
 
             # ── operation_logs（操作日志）─────────────────────────────────
             cur.execute("""
@@ -288,7 +484,124 @@ def init_db() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='交易对表'
             """)
 
+            # ── account_summary（账户快照缓存）──────────────────────────
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS account_summary (
+                    id                   BIGINT        NOT NULL AUTO_INCREMENT,
+                    user_id              BIGINT        NOT NULL COMMENT '用户ID（关联 users.id）',
+                    symbol               VARCHAR(32)   DEFAULT NULL COMMENT '交易对（NULL 表示全局）',
+                    base_asset           VARCHAR(16)   DEFAULT NULL,
+                    quote_asset          VARCHAR(16)   DEFAULT NULL,
+                    configured_leverage  INT           DEFAULT NULL,
+                    long_position_qty    DECIMAL(30,10) DEFAULT NULL,
+                    short_position_qty   DECIMAL(30,10) DEFAULT NULL,
+                    long_position_value  DECIMAL(30,10) DEFAULT NULL,
+                    short_position_value DECIMAL(30,10) DEFAULT NULL,
+                    rest_mark_price      DECIMAL(30,10) DEFAULT NULL,
+                    available_balance    DECIMAL(30,10) DEFAULT NULL,
+                    margin_ratio         DECIMAL(20,10) DEFAULT NULL,
+                    risk_rate            DECIMAL(20,10) DEFAULT NULL,
+                    maint_margin         DECIMAL(30,10) DEFAULT NULL,
+                    total_equity         DECIMAL(30,10) DEFAULT NULL,
+                    position_value       DECIMAL(30,10) DEFAULT NULL,
+                    actual_leverage      DECIMAL(20,10) DEFAULT NULL,
+                    unrealized_pnl       DECIMAL(30,10) DEFAULT NULL,
+                    wallet_balance       DECIMAL(30,10) DEFAULT NULL,
+                    has_api_credentials  TINYINT(1)    NOT NULL DEFAULT 0,
+                    message              TEXT          DEFAULT NULL,
+                    synced_at            DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                                         ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '最后同步时间',
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_user_symbol (user_id, symbol)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账户快照缓存（后台定时同步）'
+            """)
+            # ── 迁移：若旧表仍使用 username 列，自动切换为 user_id ──────────
+            cur.execute("SHOW COLUMNS FROM account_summary LIKE 'username'")
+            if cur.fetchone():
+                cur.execute("ALTER TABLE account_summary DROP KEY uk_user_symbol")
+                cur.execute(
+                    "ALTER TABLE account_summary "
+                    "ADD COLUMN `user_id` BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"
+                )
+                cur.execute("ALTER TABLE account_summary DROP COLUMN `username`")
+                cur.execute(
+                    "ALTER TABLE account_summary "
+                    "ADD UNIQUE KEY uk_user_symbol (user_id, symbol)"
+                )
+
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────
+# account_summary CRUD
+# ──────────────────────────────────────────────
+
+_ACCOUNT_SUMMARY_COLUMNS = (
+    "user_id", "symbol", "base_asset", "quote_asset",
+    "configured_leverage", "long_position_qty", "short_position_qty",
+    "long_position_value", "short_position_value", "rest_mark_price",
+    "available_balance", "margin_ratio", "risk_rate", "maint_margin",
+    "total_equity", "position_value", "actual_leverage", "unrealized_pnl",
+    "wallet_balance", "has_api_credentials", "message",
+)
+
+
+def upsert_account_summary(user_id: int, symbol: Optional[str], data: dict) -> None:
+    """Insert or update account_summary row for the given user_id+symbol."""
+    row = {col: data.get(col) for col in _ACCOUNT_SUMMARY_COLUMNS}
+    row["user_id"] = user_id
+    row["symbol"] = symbol.upper() if symbol else None
+
+    cols = list(row.keys())
+    placeholders = ", ".join(["%s"] * len(cols))
+    updates = ", ".join(
+        f"{c} = VALUES({c})"
+        for c in cols
+        if c not in ("user_id", "symbol")
+    )
+    sql = (
+        f"INSERT INTO account_summary ({', '.join(cols)}) VALUES ({placeholders})"
+        f" ON DUPLICATE KEY UPDATE {updates}, synced_at = CURRENT_TIMESTAMP(3)"
+    )
+    _log_db_write("upsert", "account_summary", row)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [row[c] for c in cols])
+        conn.commit()
+        _log_db_write_result("upsert", "account_summary", user_id=user_id, symbol=row["symbol"], affected_rows=1)
+    finally:
+        conn.close()
+
+
+def get_account_summary_from_db(user_id: int, symbol: Optional[str]) -> Optional[dict]:
+    """Read the latest account_summary snapshot from DB. Returns None if not found."""
+    normalized = symbol.upper() if symbol else None
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM account_summary WHERE user_id = %s AND symbol <=> %s",
+                (user_id, normalized),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_all_active_users_with_api_keys() -> list[dict]:
+    """Return list of {id, username} for all active users who have API credentials."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, username FROM users"
+                " WHERE is_active = 1"
+                "   AND binance_api_key IS NOT NULL AND binance_api_key != ''"
+            )
+            return cur.fetchall()
     finally:
         conn.close()
 
@@ -306,6 +619,17 @@ def create_user(
 ) -> Optional[int]:
     enc_key = encrypt_api_credential(binance_api_key) if binance_api_key else None
     enc_secret = encrypt_api_credential(binance_api_secret) if binance_api_secret else None
+    _log_db_write(
+        "insert",
+        "users",
+        {
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "binance_api_key": enc_key,
+            "binance_api_secret": enc_secret,
+        },
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -315,8 +639,10 @@ def create_user(
                 (username, password_hash, role, enc_key, enc_secret),
             )
             conn.commit()
+            _log_db_write_result("insert", "users", username=username, user_id=cur.lastrowid)
             return cur.lastrowid
     except pymysql.err.IntegrityError:
+        _log_db_write_result("insert", "users", username=username, success=False, error="integrity_error")
         return None
     finally:
         conn.close()
@@ -330,6 +656,11 @@ def update_user_api_credentials(
     """Encrypt and persist Binance API credentials for a user."""
     enc_key = encrypt_api_credential(binance_api_key) if binance_api_key else None
     enc_secret = encrypt_api_credential(binance_api_secret) if binance_api_secret else None
+    _log_db_write(
+        "update",
+        "users",
+        {"user_id": user_id, "binance_api_key": enc_key, "binance_api_secret": enc_secret},
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -338,7 +669,9 @@ def update_user_api_credentials(
                 (enc_key, enc_secret, user_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -381,6 +714,7 @@ def get_all_users() -> list:
 
 
 def update_user_password(user_id: int, password_hash: str) -> bool:
+    _log_db_write("update", "users", {"user_id": user_id, "password_hash": password_hash})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -389,12 +723,15 @@ def update_user_password(user_id: int, password_hash: str) -> bool:
                 (password_hash, user_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
 
 def update_username(user_id: int, username: str) -> bool:
+    _log_db_write("update", "users", {"user_id": user_id, "username": username})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -403,12 +740,15 @@ def update_username(user_id: int, username: str) -> bool:
                 (username, user_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, username=username, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
 
 def update_user_role(user_id: int, role: str) -> bool:
+    _log_db_write("update", "users", {"user_id": user_id, "role": role})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -417,12 +757,15 @@ def update_user_role(user_id: int, role: str) -> bool:
                 (role, user_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, role=role, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
 
 def deactivate_user(user_id: int) -> bool:
+    _log_db_write("update", "users", {"user_id": user_id, "is_active": 0})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -430,12 +773,15 @@ def deactivate_user(user_id: int) -> bool:
                 "UPDATE users SET is_active = 0 WHERE id = %s", (user_id,)
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
 
 def activate_user(user_id: int) -> bool:
+    _log_db_write("update", "users", {"user_id": user_id, "is_active": 1})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -443,7 +789,9 @@ def activate_user(user_id: int) -> bool:
                 "UPDATE users SET is_active = 1 WHERE id = %s", (user_id,)
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -470,11 +818,36 @@ def create_order(
     position_id: Optional[int] = None,         # 关联持仓ID
     reduce_only: bool = False,
     post_only: bool = False,
-    order_category: str = 'Basic',             # Basic | Condition
+    order_category: str = 'Basic',             # Basic | Conditional
 ) -> int:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            normalized_order_category = _normalize_order_category(order_type, order_category)
+            _log_db_write(
+                "insert",
+                "orders",
+                {
+                    "user_id": user_id,
+                    "username": username,
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "side": side,
+                    "order_type": order_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "stop_price": stop_price,
+                    "status": status,
+                    "exchange_order_id": binance_order_id,
+                    "client_order_id": client_order_id,
+                    "trade_direction": trade_direction,
+                    "reduce_only": int(reduce_only),
+                    "post_only": int(post_only),
+                    "position_id": position_id,
+                    "order_category": normalized_order_category,
+                    "error_message": error_message,
+                },
+            )
             cur.execute(
                 """INSERT INTO orders
                    (user_id, username, exchange, symbol, side, order_type,
@@ -486,10 +859,20 @@ def create_order(
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, status,
                     binance_order_id, client_order_id,
-                    trade_direction, int(reduce_only), int(post_only), position_id, order_category, error_message,
+                    trade_direction, int(reduce_only), int(post_only), position_id, normalized_order_category, error_message,
                 ),
             )
             conn.commit()
+            _log_db_write_result(
+                "insert",
+                "orders",
+                db_id=cur.lastrowid,
+                user_id=user_id,
+                exchange_order_id=binance_order_id,
+                order_type=order_type,
+                status=status,
+                order_category=normalized_order_category,
+            )
             return cur.lastrowid
     finally:
         conn.close()
@@ -519,6 +902,20 @@ def update_order_status(
         fields.append("error_message = %s"); params.append(error_message)
     params.append(order_id)
 
+    _log_db_write(
+        "update",
+        "orders",
+        {
+            "order_id": order_id,
+            "status": status,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "commission": commission,
+            "commission_asset": commission_asset,
+            "error_message": error_message,
+        },
+    )
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -526,7 +923,9 @@ def update_order_status(
                 f"UPDATE orders SET {', '.join(fields)} WHERE id = %s", params
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "orders", order_id=order_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -556,6 +955,21 @@ def update_order_status_by_exchange_id(
         fields.append("error_message = %s"); params.append(error_message)
     params.extend([username, exchange_order_id])
 
+    _log_db_write(
+        "update",
+        "orders",
+        {
+            "username": username,
+            "exchange_order_id": exchange_order_id,
+            "status": status,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "commission": commission,
+            "commission_asset": commission_asset,
+            "error_message": error_message,
+        },
+    )
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -566,7 +980,9 @@ def update_order_status_by_exchange_id(
                 params,
             )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "orders", username=username, exchange_order_id=exchange_order_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -618,6 +1034,7 @@ def get_ticker_messages(limit: int = 10) -> list:
 
 def add_ticker_message(contents_zh: str, contents_en: str) -> int:
     """Insert a new ticker_messages row and return its id."""
+    _log_db_write("insert", "ticker_messages", {"contents_zh": contents_zh, "contents_en": contents_en})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -626,6 +1043,7 @@ def add_ticker_message(contents_zh: str, contents_en: str) -> int:
                 (contents_zh, contents_en),
             )
             conn.commit()
+            _log_db_write_result("insert", "ticker_messages", msg_id=cur.lastrowid)
             return cur.lastrowid
     finally:
         conn.close()
@@ -633,12 +1051,15 @@ def add_ticker_message(contents_zh: str, contents_en: str) -> int:
 
 def delete_ticker_message(msg_id: int) -> bool:
     """Delete a ticker_messages row by id. Returns True if a row was deleted."""
+    _log_db_write("delete", "ticker_messages", {"msg_id": msg_id})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM ticker_messages WHERE id = %s", (msg_id,))
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("delete", "ticker_messages", msg_id=msg_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -676,6 +1097,11 @@ def sync_tickers(rows: list[dict]) -> int:
     """
     if not rows:
         return 0
+    _log_db_write(
+        "upsert_many",
+        "tickers",
+        {"row_count": len(rows), "symbols_sample": [row.get("symbol") for row in rows[:10]]},
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -710,6 +1136,7 @@ def sync_tickers(rows: list[dict]) -> int:
             """
             cur.executemany(sql, rows)
             conn.commit()
+            _log_db_write_result("upsert_many", "tickers", row_count=len(rows), affected_rows=cur.rowcount)
             return cur.rowcount
     finally:
         conn.close()
@@ -951,65 +1378,54 @@ def upsert_position(
     position_side: str = "BOTH",
     exchange: str = "binance",
 ) -> None:
-    """插入或更新头寸记录，兼容新版（含 user_id）和旧版（side/entry_price）表结构。"""
-    columns = _get_table_columns("positions")
+    """插入或更新当前统一结构的持仓记录。"""
+    _log_db_write(
+        "upsert",
+        "positions",
+        {
+            "user_id": user_id,
+            "username": username,
+            "exchange": exchange,
+            "symbol": symbol,
+            "position_side": position_side,
+            "quantity": quantity,
+            "avg_entry_price": avg_entry_price,
+            "unrealized_pnl": unrealized_pnl,
+            "realized_pnl": realized_pnl,
+            "leverage": leverage,
+            "margin_type": margin_type,
+        },
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            if "user_id" in columns:
-                # New schema
-                cur.execute(
-                    """INSERT INTO positions
-                       (user_id, username, exchange, symbol, position_side,
-                        quantity, avg_entry_price, unrealized_pnl, realized_pnl,
-                        leverage, margin_type)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                       ON DUPLICATE KEY UPDATE
-                           quantity        = VALUES(quantity),
-                           avg_entry_price = VALUES(avg_entry_price),
-                           unrealized_pnl  = VALUES(unrealized_pnl),
-                           realized_pnl    = VALUES(realized_pnl),
-                           leverage        = VALUES(leverage),
-                           margin_type     = VALUES(margin_type),
-                           updated_at      = CURRENT_TIMESTAMP""",
-                    (
-                        user_id, username, exchange, symbol, position_side,
-                        quantity, avg_entry_price, unrealized_pnl, realized_pnl,
-                        leverage, margin_type,
-                    ),
-                )
-            else:
-                # Legacy schema: id, symbol, side, quantity, entry_price,
-                #                liquidation_price, unrealized_pnl, leverage, margin_type
-                side = position_side if position_side in ("LONG", "SHORT") else "LONG"
-                cur.execute(
-                    "SELECT id FROM positions WHERE symbol = %s AND side = %s",
-                    (symbol, side),
-                )
-                row = cur.fetchone()
-                if row:
-                    cur.execute(
-                        """UPDATE positions
-                           SET quantity = %s, entry_price = %s,
-                               unrealized_pnl = %s, leverage = %s, margin_type = %s
-                           WHERE id = %s""",
-                        (quantity, avg_entry_price, unrealized_pnl, leverage,
-                         margin_type.upper(), row["id"]),
-                    )
-                else:
-                    cur.execute(
-                        """INSERT INTO positions
-                           (symbol, side, quantity, entry_price,
-                            unrealized_pnl, leverage, margin_type, opened_at)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())""",
-                        (symbol, side, quantity, avg_entry_price,
-                         unrealized_pnl, leverage, margin_type.upper()),
-                    )
+            cur.execute(
+                """INSERT INTO positions
+                   (user_id, username, exchange, symbol, position_side,
+                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                    leverage, margin_type)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       quantity        = VALUES(quantity),
+                       avg_entry_price = VALUES(avg_entry_price),
+                       unrealized_pnl  = VALUES(unrealized_pnl),
+                       realized_pnl    = VALUES(realized_pnl),
+                       leverage        = VALUES(leverage),
+                       margin_type     = VALUES(margin_type),
+                       updated_at      = CURRENT_TIMESTAMP""",
+                (
+                    user_id, username, exchange, symbol, position_side,
+                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                    leverage, margin_type,
+                ),
+            )
             conn.commit()
+            _log_db_write_result("upsert", "positions", user_id=user_id, symbol=symbol, position_side=position_side, affected_rows=cur.rowcount)
     finally:
         conn.close()
 
 
+@lru_cache(maxsize=None)
 def _get_table_columns(table_name: str) -> set[str]:
     conn = get_connection()
     try:
@@ -1021,35 +1437,13 @@ def _get_table_columns(table_name: str) -> set[str]:
 
 
 def get_positions(user_id: Optional[int] = None, exchange: str = "binance") -> list:
-    """返回头寸列表，兼容旧版与新版 positions 表结构。"""
-    columns = _get_table_columns("positions")
-
-    if "exchange" in columns and "position_side" in columns:
-        sql = "SELECT * FROM positions WHERE exchange = %s"
-        params: list = [exchange]
-        if user_id is not None and "user_id" in columns:
-            sql += " AND user_id = %s"
-            params.append(user_id)
-        sql += " ORDER BY symbol, position_side"
-    else:
-        # Legacy schema from docs/ddl.sql
-        sql = """
-            SELECT
-                id,
-                '' AS username,
-                symbol,
-                side AS position_side,
-                quantity,
-                entry_price AS avg_entry_price,
-                unrealized_pnl,
-                0 AS realized_pnl,
-                leverage,
-                margin_type,
-                created_at AS updated_at
-            FROM positions
-            ORDER BY symbol, side
-        """
-        params = []
+    """返回当前统一结构的持仓列表。"""
+    sql = "SELECT * FROM positions WHERE exchange = %s"
+    params: list = [exchange]
+    if user_id is not None:
+        sql += " AND user_id = %s"
+        params.append(user_id)
+    sql += " ORDER BY symbol, position_side"
 
     conn = get_connection()
     try:
@@ -1066,26 +1460,30 @@ def delete_position(
     position_side: str = "BOTH",
     exchange: str = "binance",
 ) -> bool:
-    """删除（清除）指定头寸记录，兼容旧版与新版 positions 表结构。"""
-    columns = _get_table_columns("positions")
+    """删除（清除）指定持仓记录。"""
+    _log_db_write(
+        "delete",
+        "positions",
+        {
+            "user_id": user_id,
+            "exchange": exchange,
+            "symbol": symbol,
+            "position_side": position_side,
+        },
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            if "exchange" in columns and "position_side" in columns and "user_id" in columns:
-                cur.execute(
-                    """DELETE FROM positions
-                       WHERE user_id = %s AND exchange = %s
-                         AND symbol = %s AND position_side = %s""",
-                    (user_id, exchange, symbol, position_side),
-                )
-            else:
-                legacy_side = "SHORT" if position_side == "SHORT" else "LONG"
-                cur.execute(
-                    "DELETE FROM positions WHERE symbol = %s AND side = %s",
-                    (symbol, legacy_side),
-                )
+            cur.execute(
+                """DELETE FROM positions
+                   WHERE user_id = %s AND exchange = %s
+                     AND symbol = %s AND position_side = %s""",
+                (user_id, exchange, symbol, position_side),
+            )
             conn.commit()
-            return cur.rowcount > 0
+            success = cur.rowcount > 0
+            _log_db_write_result("delete", "positions", user_id=user_id, symbol=symbol, position_side=position_side, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 
@@ -1100,6 +1498,7 @@ def log_operation(
     action: str,
     details: str = "",
 ) -> None:
+    _log_db_write("insert", "operation_logs", {"user_id": user_id, "username": username, "action": action, "details": details})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1108,6 +1507,7 @@ def log_operation(
                 (user_id, username, action, details),
             )
             conn.commit()
+            _log_db_write_result("insert", "operation_logs", log_id=cur.lastrowid, user_id=user_id, action=action)
     finally:
         conn.close()
 
@@ -1129,6 +1529,22 @@ def add_position_history(
     position_id: Optional[int] = None,
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
+    _log_db_write(
+        "insert",
+        "position_history",
+        {
+            "user_id": user_id,
+            "username": username,
+            "symbol": symbol,
+            "side": side.upper(),
+            "entry_price": entry_price,
+            "close_price": close_price,
+            "quantity": quantity,
+            "realized_pnl": realized_pnl,
+            "commission": commission,
+            "position_id": position_id,
+        },
+    )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1139,6 +1555,7 @@ def add_position_history(
                 (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission, position_id),
             )
             conn.commit()
+            _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
             return cur.lastrowid
     finally:
         conn.close()
@@ -1159,25 +1576,16 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
 
 
 def get_position(user_id: int, symbol: str, position_side: str, exchange: str = "binance") -> Optional[dict]:
-    """按 user_id + symbol + position_side 查询单条持仓，失败返回 None。兼容旧版表结构。"""
-    columns = _get_table_columns("positions")
+    """按 user_id + symbol + position_side 查询单条持仓，失败返回 None。"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            if "user_id" in columns and "exchange" in columns and "position_side" in columns:
-                cur.execute(
-                    """SELECT * FROM positions
-                       WHERE user_id = %s AND exchange = %s AND symbol = %s AND position_side = %s
-                       LIMIT 1""",
-                    (user_id, exchange, symbol, position_side),
-                )
-            else:
-                # Legacy schema: no user_id/exchange, uses side instead of position_side
-                legacy_side = position_side  # LONG/SHORT maps directly to side in legacy
-                cur.execute(
-                    "SELECT * FROM positions WHERE symbol = %s AND side = %s LIMIT 1",
-                    (symbol, legacy_side),
-                )
+            cur.execute(
+                """SELECT * FROM positions
+                   WHERE user_id = %s AND exchange = %s AND symbol = %s AND position_side = %s
+                   LIMIT 1""",
+                (user_id, exchange, symbol, position_side),
+            )
             return cur.fetchone()
     finally:
         conn.close()

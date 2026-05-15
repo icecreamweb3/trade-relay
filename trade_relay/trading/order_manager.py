@@ -26,6 +26,7 @@ async def submit_order(
     order_type: str,
     quantity: float,
     price: Optional[float] = None,
+    stop_price: Optional[float] = None,
     leverage: int = 10,
     position_direction: str = 'OPEN',
 ) -> OrderResult:
@@ -40,7 +41,7 @@ async def submit_order(
         return OrderResult(False, t("field_required", t("symbol")))
     if side not in ("BUY", "SELL"):
         return OrderResult(False, t("field_required", t("side")))
-    if order_type not in ("MARKET", "LIMIT"):
+    if order_type not in ("MARKET", "LIMIT", "STOP", "STOP_MARKET"):
         return OrderResult(False, t("field_required", t("order_type")))
     # Truncate to step size 0.001 (BTC contract minimum)
     import math
@@ -49,6 +50,10 @@ async def submit_order(
         return OrderResult(False, t("field_required", t("quantity")))
     if order_type == "LIMIT" and (price is None or price <= 0):
         return OrderResult(False, t("field_required", t("price")))
+    if order_type == "STOP" and (price is None or price <= 0):
+        return OrderResult(False, t("field_required", t("price")))
+    if order_type in ("STOP", "STOP_MARKET") and (stop_price is None or stop_price <= 0):
+        return OrderResult(False, t("field_required", "stop_price"))
     if leverage <= 0:
         return OrderResult(False, "Invalid leverage")
 
@@ -78,6 +83,7 @@ async def submit_order(
             order_type=order_type,
             quantity=quantity,
             price=price,
+            stop_price=stop_price,
             leverage=leverage,
             testnet=testnet,
             position_direction=position_direction,
@@ -95,6 +101,8 @@ async def submit_order(
         except Exception:
             pass  # non-critical; proceed without position_id
 
+    order_category = "Conditional" if order_type in ("STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET") else "Basic"
+
     # Persist order record
     order_db_id = db.create_order(
         user_id=session.user_id,
@@ -111,6 +119,7 @@ async def submit_order(
         position_id=position_id,
         reduce_only=(position_direction or "").upper() == "CLOSE",
         post_only=False,
+        order_category=order_category,
     )
 
     if result.success and not mock and result.order_id and api_key and api_secret:

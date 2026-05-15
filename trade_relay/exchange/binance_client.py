@@ -1121,6 +1121,122 @@ class BinanceClient:
             'side': side
         }
     
+    def place_conditional_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        price: Optional[float] = None,
+        position_side: str = None,
+    ) -> Optional[dict]:
+        """Place a conditional order via the standard futures /fapi/v1/order endpoint.
+
+        Args:
+            symbol:        Trading pair symbol, e.g. "BTCUSDT"
+            side:          "BUY" or "SELL"
+            quantity:      Order quantity in base asset units
+            stop_price:    Trigger price (stopPrice)
+            price:         Limit price – when provided the order type is STOP (trigger-limit);
+                           when None / 0 the order type is STOP_MARKET (trigger-market).
+            position_side: "LONG" or "SHORT" for hedge-mode accounts; None for one-way mode.
+
+        Returns:
+            Binance order dict on success, None on failure.
+        """
+        order_type = "STOP" if (price is not None and price > 0) else "STOP_MARKET"
+
+        for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
+            try:
+                if attempt > 0:
+                    logger.warning("⏰ 时间戳错误重试 (attempt %d/%d)", attempt + 1, self.MAX_TIMESTAMP_RETRIES + 1)
+                    self.set_timestamp_offset(force=True)
+                    import time as _time; _time.sleep(0.1)
+                else:
+                    self.set_timestamp_offset()
+
+                stop_price_str = self.format_price_by_precision(stop_price, symbol)
+                if not stop_price_str:
+                    raise ValueError(f"Cannot format stop_price={stop_price} for {symbol}")
+
+                from decimal import Decimal, ROUND_HALF_UP
+                qty_str = f"{float(Decimal(str(quantity)).quantize(Decimal('0.001'), rounding=ROUND_HALF_UP)):.3f}"
+
+                position_mode = self.get_position_mode()
+
+                import requests
+
+                url = f"{self.base_url}/fapi/v1/order"
+
+                params: dict = {
+                    "symbol":    symbol,
+                    "side":      side.upper(),
+                    "type":      order_type,
+                    "quantity":  qty_str,
+                    "stopPrice": stop_price_str,
+                    "workingType": "CONTRACT_PRICE",
+                    "timeInForce": "GTC",
+                }
+
+                if order_type == "STOP":
+                    price_str = self.format_price_by_precision(price, symbol)
+                    params["price"] = price_str
+                    params["timeInForce"] = "GTC"
+
+                if position_mode is True:
+                    params["positionSide"] = position_side if position_side else (
+                        "LONG" if side.upper() == "BUY" else "SHORT"
+                    )
+                else:
+                    params["positionSide"] = "BOTH"
+                    params["reduceOnly"] = "false"
+
+                _sig, request_body = self._generate_signed_request_body(params, debug=False)
+
+                import time as _time
+                from requests.exceptions import Timeout, ConnectionError as ConnError, RequestException
+
+                max_retries = self.MAX_RETRIES
+                last_exc = None
+                for req_attempt in range(max_retries + 1):
+                    try:
+                        resp = requests.post(
+                            url,
+                            headers=self.default_headers,
+                            data=request_body,
+                            proxies=self.proxy_config,
+                            timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
+                        )
+                        if resp.status_code == 200:
+                            return resp.json()
+                        body = resp.json() if resp.content else {}
+                        code = body.get("code", resp.status_code)
+                        msg  = body.get("msg", resp.text)
+                        # Timestamp error → retry at outer loop
+                        if code in (-1021,):
+                            raise Exception(f"TIMESTAMP_ERROR: {msg}")
+                        if resp.status_code in (500, 502, 503, 504) and req_attempt < max_retries:
+                            _time.sleep(2 ** req_attempt); continue
+                        raise Exception(f"APIError(code={code}): {msg}")
+                    except (Timeout, ConnError, RequestException) as exc:
+                        last_exc = exc
+                        if req_attempt < max_retries:
+                            _time.sleep(2 ** req_attempt); continue
+                        raise
+                if last_exc:
+                    raise last_exc
+
+            except Exception as exc:
+                msg_str = str(exc)
+                if "TIMESTAMP_ERROR" in msg_str and attempt < self.MAX_TIMESTAMP_RETRIES:
+                    continue
+                logger.exception("place_conditional_order failed symbol=%s side=%s type=%s qty=%s stop=%s price=%s: %s",
+                                 symbol, side, order_type, quantity, stop_price, price, exc)
+                return None
+
+        logger.error("place_conditional_order: max timestamp retries exceeded symbol=%s", symbol)
+        return None
+
     def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, expire_seconds: int = None) -> Optional[dict]:
         """Place a limit order
         
