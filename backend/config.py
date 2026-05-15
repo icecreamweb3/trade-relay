@@ -1,19 +1,25 @@
 """
-Backend configuration — reads from .env file.
+Backend configuration — reads from .env.production first, then falls back to .env.
 """
 import os
-from dotenv import load_dotenv
-from pathlib import Path
+from trade_relay.env_loader import load_env
 
-# Load from project root .env
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_env(override=False)
+
+
+def _env(*names: str, default: str) -> str:
+	for name in names:
+		value = os.getenv(name)
+		if value not in (None, ""):
+			return value
+	return default
 
 # MySQL
-DB_HOST     = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT     = int(os.getenv("DB_PORT", "3306"))
-DB_USER     = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-DB_NAME     = os.getenv("DB_NAME", "trade_relay")
+DB_HOST     = _env("TRADE_RELAY_MYSQL_HOST", "DB_HOST", default="127.0.0.1")
+DB_PORT     = int(_env("TRADE_RELAY_MYSQL_PORT", "DB_PORT", default="3306"))
+DB_USER     = _env("TRADE_RELAY_MYSQL_USER", "DB_USER", default="root")
+DB_PASSWORD = _env("TRADE_RELAY_MYSQL_PASSWORD", "DB_PASSWORD", default="")
+DB_NAME     = _env("TRADE_RELAY_MYSQL_DATABASE", "DB_NAME", default="trade_relay")
 
 # JWT
 JWT_SECRET  = os.getenv("TRADE_RELAY_JWT_SECRET", "change-me-in-production-secret")

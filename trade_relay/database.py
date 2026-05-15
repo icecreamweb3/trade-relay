@@ -1,7 +1,7 @@
 """
 Database management - MySQL via PyMySQL.
 
-Connection parameters are read from environment variables (set in .env):
+Connection parameters are read from environment variables (prefer .env.production, fallback .env):
   TRADE_RELAY_MYSQL_HOST      default: 127.0.0.1
   TRADE_RELAY_MYSQL_PORT      default: 3306
   TRADE_RELAY_MYSQL_USER      default: trade_relay
@@ -17,9 +17,12 @@ Tables:
 import base64
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
+from threading import RLock
 from typing import Optional
+from urllib.parse import unquote, urlparse
 
 import pymysql
 import pymysql.cursors
@@ -30,6 +33,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
 logger = logging.getLogger(__name__)
+
+_PYMYSQL_SOCKET_PATCH_LOCK = RLock()
+_MYSQL_PROXY_SCHEME_NAMES = frozenset({"socks5", "socks5h", "socks4", "socks4a", "http", "https"})
 
 _DB_LOG_REDACT_KEYS = frozenset({
     "password_hash",
@@ -117,11 +123,11 @@ def decrypt_api_credential(token: str) -> str:
 def _mysql_cfg() -> dict:
     """Build PyMySQL connection kwargs from environment variables."""
     return {
-        "host":        os.environ.get("TRADE_RELAY_MYSQL_HOST", "127.0.0.1"),
-        "port":        int(os.environ.get("TRADE_RELAY_MYSQL_PORT", "3306")),
-        "user":        os.environ.get("TRADE_RELAY_MYSQL_USER", "trade_relay"),
-        "password":    os.environ.get("TRADE_RELAY_MYSQL_PASSWORD", ""),
-        "database":    os.environ.get("TRADE_RELAY_MYSQL_DATABASE", "trade_relay"),
+        "host":        os.environ.get("TRADE_RELAY_MYSQL_HOST") or os.environ.get("DB_HOST", "127.0.0.1"),
+        "port":        int(os.environ.get("TRADE_RELAY_MYSQL_PORT") or os.environ.get("DB_PORT", "3306")),
+        "user":        os.environ.get("TRADE_RELAY_MYSQL_USER") or os.environ.get("DB_USER", "trade_relay"),
+        "password":    os.environ.get("TRADE_RELAY_MYSQL_PASSWORD") or os.environ.get("DB_PASSWORD", ""),
+        "database":    os.environ.get("TRADE_RELAY_MYSQL_DATABASE") or os.environ.get("DB_NAME", "trade_relay"),
         "charset":     "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
         "autocommit":  False,
@@ -129,9 +135,102 @@ def _mysql_cfg() -> dict:
     }
 
 
+def _mysql_proxy_url() -> str:
+    return (
+        os.environ.get("TRADE_RELAY_MYSQL_PROXY_URL")
+        or os.environ.get("MYSQL_PROXY_URL")
+        or ""
+    ).strip()
+
+
+def _mysql_proxy_cfg() -> Optional[dict]:
+    proxy_url = _mysql_proxy_url()
+    if not proxy_url:
+        return None
+
+    parsed = urlparse(proxy_url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _MYSQL_PROXY_SCHEME_NAMES:
+        raise ValueError(
+            "Unsupported MySQL proxy scheme "
+            f"{scheme!r}. Use one of: {', '.join(sorted(_MYSQL_PROXY_SCHEME_NAMES))}."
+        )
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(
+            "TRADE_RELAY_MYSQL_PROXY_URL must include host and port, "
+            f"for example socks5://127.0.0.1:10808. Got: {proxy_url!r}"
+        )
+
+    return {
+        "scheme": scheme,
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "username": unquote(parsed.username) if parsed.username else None,
+        "password": unquote(parsed.password) if parsed.password else None,
+    }
+
+
+@contextmanager
+def _pymysql_proxy_socket_patch(proxy_cfg: Optional[dict]):
+    if not proxy_cfg:
+        yield
+        return
+
+    try:
+        import socks
+    except ImportError as exc:
+        raise RuntimeError(
+            "TRADE_RELAY_MYSQL_PROXY_URL is configured but PySocks is not installed. "
+            "Install PySocks first."
+        ) from exc
+
+    scheme_to_proxy_type = {
+        "socks5": socks.SOCKS5,
+        "socks5h": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "socks4a": socks.SOCKS4,
+        "http": socks.HTTP,
+        "https": socks.HTTP,
+    }
+    proxy_type = scheme_to_proxy_type[proxy_cfg["scheme"]]
+    original_create_connection = pymysql.connections.socket.create_connection
+
+    def create_connection(address, timeout=None, source_address=None, *, all_errors=False):
+        return socks.create_connection(
+            dest_pair=address,
+            timeout=timeout,
+            source_address=source_address,
+            proxy_type=proxy_type,
+            proxy_addr=proxy_cfg["host"],
+            proxy_port=proxy_cfg["port"],
+            proxy_username=proxy_cfg["username"],
+            proxy_password=proxy_cfg["password"],
+            proxy_rdns=proxy_cfg["scheme"] in {"socks5h", "socks4a"},
+        )
+
+    with _PYMYSQL_SOCKET_PATCH_LOCK:
+        pymysql.connections.socket.create_connection = create_connection
+        try:
+            yield
+        finally:
+            pymysql.connections.socket.create_connection = original_create_connection
+
+
 def get_connection() -> pymysql.connections.Connection:
     """Get a new MySQL connection."""
-    return pymysql.connect(**_mysql_cfg())
+    mysql_cfg = _mysql_cfg()
+    proxy_cfg = _mysql_proxy_cfg()
+    if proxy_cfg:
+        logger.info(
+            "MySQL connect via proxy | target=%s:%s proxy=%s://%s:%s",
+            mysql_cfg["host"],
+            mysql_cfg["port"],
+            proxy_cfg["scheme"],
+            proxy_cfg["host"],
+            proxy_cfg["port"],
+        )
+    with _pymysql_proxy_socket_patch(proxy_cfg):
+        return pymysql.connect(**mysql_cfg)
 
 
 def _normalize_order_category(order_type: Optional[str], order_category: Optional[str]) -> str:

@@ -10,26 +10,15 @@ from pathlib import Path
 
 import uvicorn
 
+from trade_relay.env_loader import load_env
+
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 
 def _load_env() -> None:
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv(dotenv_path=ROOT / ".env", override=False)
-    except ImportError:
-        env_path = ROOT / ".env"
-        if not env_path.exists():
-            return
-        with open(env_path, encoding="utf-8") as env_file:
-            for line in env_file:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    os.environ.setdefault(key.strip(), value.strip())
+    load_env(ROOT, override=False)
 
 
 def _build_parser() -> argparse.ArgumentParser:

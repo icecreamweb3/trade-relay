@@ -182,7 +182,7 @@ async function request<T>(
 ): Promise<T> {
   const perfLabel = `${method} ${path}`
   const perfActive = perf.isActive()
-  if (perfActive) perf.mark(`api → ${perfLabel}`)
+  const perfSpan = perfActive ? perf.spanStart(`api ${perfLabel}`) : null
 
   try {
     let result: T
@@ -207,10 +207,10 @@ async function request<T>(
       })
       result = res.data
     }
-    if (perfActive) perf.mark(`api ✓ ${perfLabel}`)
+    if (perfActive) perf.spanEnd(perfSpan, 'ok')
     return result
   } catch (err) {
-    if (perfActive) perf.mark(`api ✗ ${perfLabel} (error)`)
+    if (perfActive) perf.spanEnd(perfSpan, 'error')
     throw err
   }
 }

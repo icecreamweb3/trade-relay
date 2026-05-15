@@ -5,10 +5,15 @@
 
 let _start = 0
 let _prev = 0
+const _spans = new Map<string, { label: string; startedAt: number }>()
 
 function log(msg: string) {
   console.log(msg)
   try { window.electronAPI?.logToMain?.('info', msg) } catch { /* ignore */ }
+}
+
+function fmtElapsed(now: number) {
+  return `${Math.round(now - _start)}ms`
 }
 
 export const perf = {
@@ -24,7 +29,26 @@ export const perf = {
     const elapsed = Math.round(now - _start)
     const delta = Math.round(now - _prev)
     _prev = now
-    log(`[perf]   ${String(elapsed).padStart(6)}ms  (+${String(delta).padStart(5)}ms)  ${label}`)
+    log(`[perf] t=${elapsed}ms prev=+${delta}ms | ${label}`)
+  },
+
+  spanStart(label: string) {
+    if (_start === 0) return null
+    const token = `${label}#${performance.now()}#${Math.random().toString(36).slice(2, 8)}`
+    const now = performance.now()
+    _spans.set(token, { label, startedAt: now })
+    log(`[perf] t=${fmtElapsed(now)} | ${label} | start`)
+    return token
+  },
+
+  spanEnd(token: string | null, status: 'ok' | 'error' = 'ok') {
+    if (!token || _start === 0) return
+    const span = _spans.get(token)
+    if (!span) return
+    _spans.delete(token)
+    const now = performance.now()
+    const duration = Math.round(now - span.startedAt)
+    log(`[perf] t=${fmtElapsed(now)} | ${span.label} | ${status} | duration=${duration}ms`)
   },
 
   finish(label = 'all-data-loaded') {
@@ -33,6 +57,8 @@ export const perf = {
     const total = Math.round(performance.now() - _start)
     log(`[perf] ■ TOTAL: ${total}ms`)
     _start = 0
+    _prev = 0
+    _spans.clear()
   },
 
   isActive() { return _start !== 0 },

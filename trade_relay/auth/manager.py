@@ -197,7 +197,7 @@ def ensure_admin_exists() -> None:
     """Create the default admin account if no admin exists.
 
     Credentials are read from env vars TRADE_RELAY_ADMIN_USERNAME /
-    TRADE_RELAY_ADMIN_PASSWORD (set them in .env), falling back to
+    TRADE_RELAY_ADMIN_PASSWORD (set them in .env.production), falling back to
     the built-in defaults.
     """
     username = _os.environ.get("TRADE_RELAY_ADMIN_USERNAME", "").strip() or _DEFAULT_ADMIN_USERNAME

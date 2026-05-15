@@ -32,7 +32,8 @@ import os
 import sys
 import shutil
 import logging
-from dotenv import load_dotenv
+
+from trade_relay.env_loader import load_env
 
 try:
     import certifi as _certifi
@@ -99,11 +100,20 @@ class BinanceClient:
     ):
         # 加载 .env 文件中的环境变量
         # Use override=True to avoid stale shell env vars mixing old key with new secret.
-        load_dotenv(override=True)
+        load_env(override=True)
         
         # 从环境变量或参数中加载配置（参数优先级高于环境变量）
-        self.api_key = self._normalize_credential(api_key or os.getenv('BINANCE_API_KEY', ''))
-        self.secret_key = self._normalize_credential(secret_key or os.getenv('BINANCE_SECRET_KEY', ''))
+        self.api_key = self._normalize_credential(
+            api_key
+            or os.getenv('TRADE_RELAY_BINANCE_API_KEY', '')
+            or os.getenv('BINANCE_API_KEY', '')
+        )
+        self.secret_key = self._normalize_credential(
+            secret_key
+            or os.getenv('TRADE_RELAY_BINANCE_API_SECRET', '')
+            or os.getenv('BINANCE_SECRET_KEY', '')
+            or os.getenv('BINANCE_API_SECRET', '')
+        )
         self.base_url = base_url or os.getenv('BINANCE_BASE_URL', '').strip() or 'https://fapi.binance.com'
         self.testnet = testnet
         
@@ -112,7 +122,7 @@ class BinanceClient:
             raise ValueError(
                 "必须提供 api_key 和 secret_key。可以通过以下方式提供：\n"
                 "1. 作为参数传入：BinanceClient(api_key='...', secret_key='...')\n"
-                "2. 在 .env 文件中设置：BINANCE_API_KEY=... 和 BINANCE_SECRET_KEY=..."
+                "2. 在 .env.production 中设置：TRADE_RELAY_BINANCE_API_KEY=... 和 TRADE_RELAY_BINANCE_API_SECRET=..."
             )
         
         # 解析并设置代理配置

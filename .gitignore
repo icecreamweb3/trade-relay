@@ -41,3 +41,5 @@ __pycache__/
 # macOS
 .DS_Store
 node_modules
+
+.env.production

@@ -3,11 +3,16 @@
  * Replaced Qt6 + TCP NDJSON bridge with standard Electron IPC.
  */
 const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, shell } = require('electron')
+const fs = require('fs')
 const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
 const https = require('https')
-require('dotenv').config({ path: path.join(__dirname, '../.env') })
+const envPath = [
+  path.join(__dirname, '../.env.production'),
+  path.join(__dirname, '../.env'),
+].find((candidate) => fs.existsSync(candidate))
+require('dotenv').config(envPath ? { path: envPath } : {})
 const { logger } = require('./logger')
 
 const isDev = process.env.NODE_ENV === 'development'

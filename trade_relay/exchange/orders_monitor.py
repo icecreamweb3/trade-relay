@@ -50,8 +50,8 @@ def get_proxy_config() -> tuple:
         - 否则返回 (False, None, None)
     """
     import os
-    from dotenv import load_dotenv
-    load_dotenv()
+    from trade_relay.env_loader import load_env
+    load_env()
     
     # 从环境变量读取 PROXY 配置
     proxy = os.getenv('PROXY', '').strip()
