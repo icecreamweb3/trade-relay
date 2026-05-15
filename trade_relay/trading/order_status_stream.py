@@ -857,7 +857,7 @@ def restore_active_order_status_streams() -> None:
 def sync_active_orders_on_startup() -> None:
     """At startup, query Binance for the current status of every active (NEW/PARTIALLY_FILLED)
     order in the DB and update it.  Results are written to the log."""
-    active_rows = db.get_active_orders()
+    active_rows = db.get_active_orders_for_sync()
     if not active_rows:
         logger.info("Startup order sync: no active orders found in DB")
         return

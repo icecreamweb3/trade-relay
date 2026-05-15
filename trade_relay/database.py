@@ -1161,11 +1161,12 @@ def get_all_orders(limit: int = 200) -> list:
 
 
 def get_active_orders(user_id: Optional[int] = None) -> list:
-    """返回当前委托（未完结订单）。"""
+    """返回 Basic 当前委托（未完结订单）。"""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     params: list = list(ACTIVE_STATUSES)
     sql = f"""SELECT * FROM orders
-              WHERE status IN ({placeholders})"""
+              WHERE status IN ({placeholders})
+                AND order_category = 'Basic'"""
     if user_id is not None:
         sql += " AND user_id = %s"
         params.append(user_id)
@@ -1180,13 +1181,31 @@ def get_active_orders(user_id: Optional[int] = None) -> list:
         conn.close()
 
 
+def get_active_orders_for_sync() -> list:
+    """Return all active orders for backend startup/status sync across all categories."""
+    placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT * FROM orders
+                      WHERE status IN ({placeholders})
+                      ORDER BY created_at DESC""",
+                list(ACTIVE_STATUSES),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def get_active_orders_for_user(username: str) -> list:
-    """返回指定用户的当前委托（未完结订单），按 username 过滤。"""
+    """返回指定用户的 Basic 当前委托（未完结订单），按 username 过滤。"""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     params: list = list(ACTIVE_STATUSES)
     params.append(username)
     sql = f"""SELECT * FROM orders
               WHERE status IN ({placeholders})
+                AND order_category = 'Basic'
                 AND username = %s
               ORDER BY created_at DESC"""
     conn = get_connection()
@@ -1199,7 +1218,7 @@ def get_active_orders_for_user(username: str) -> list:
 
 
 def get_active_order_usernames() -> list[str]:
-    """Return usernames that currently have active orders."""
+    """Return usernames that currently have active orders in any category."""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     conn = get_connection()
     try:

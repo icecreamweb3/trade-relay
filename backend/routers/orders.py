@@ -184,7 +184,7 @@ class CancelOrderRequest(BaseModel):
     exchange_order_id: str
 
 
-@router.post("/{order_id}/cancel")
+@router.post("/{order_id:int}/cancel")
 async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Depends(get_current_user)):
     """Cancel an open order on Binance and mark it CANCELED in DB."""
     username = user["username"]
@@ -245,6 +245,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
 
     result: list[ConditionalOrderOut] = []
     seen_algo_ids: set[int] = set()
+    client: FuturesBinanceClient | None = None
 
     # 1. Try Binance Algo Order API (may not be available for all accounts)
     api_key = cfg.get_api_key(username)
@@ -262,16 +263,16 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     symbol=str(o.get("symbol") or ""),
                     side=str(o.get("side") or ""),
                     position_side=str(o.get("positionSide") or "BOTH"),
-                    order_type=str(o.get("type") or ""),
-                    quantity=float(o.get("executedQty") or o.get("qty") or 0),
+                    order_type=str(o.get("orderType") or o.get("type") or ""),
+                    quantity=float(o.get("quantity") or o.get("qty") or o.get("executedQty") or 0),
                     trigger_price=float(o.get("triggerPrice") or 0),
                     status=str(o.get("algoStatus") or o.get("status") or ""),
-                    created_at=str(o.get("bookTime") or o.get("time") or ""),
+                    created_at=str(o.get("createTime") or o.get("bookTime") or o.get("time") or ""),
                 ))
             except Exception:
                 continue
 
-    # 2. Merge DB-stored TP/SL orders (order_type IN TAKE_PROFIT_MARKET, STOP_MARKET, status=NEW)
+    # 2. Merge DB-stored conditional orders when Algo Order openOrders API is unavailable.
     _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
     db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
     for row in db_rows:
@@ -292,8 +293,23 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             trigger = float(row["price"] or 0) if row.get("price") is not None else 0.0
         else:
             trigger = float(row["stop_price"] or 0) if row.get("stop_price") is not None else 0.0
-        # Infer position_side: BUY closes SHORT, SELL closes LONG
-        position_side = "SHORT" if side == "BUY" else "LONG"
+
+        if trigger <= 0 and client and algo_id:
+            try:
+                algo_detail = await asyncio.to_thread(client.get_algo_order, algo_id=algo_id)
+            except Exception:
+                algo_detail = None
+            if algo_detail:
+                trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
+                order_type = str(algo_detail.get("orderType") or order_type or "")
+
+        trade_direction = str(row.get("trade_direction") or "").upper()
+        if trade_direction == "OPEN":
+            position_side = "LONG" if side == "BUY" else "SHORT"
+        elif trade_direction == "CLOSE":
+            position_side = "SHORT" if side == "BUY" else "LONG"
+        else:
+            position_side = "SHORT" if side == "BUY" else "LONG"
         result.append(ConditionalOrderOut(
             algo_id=algo_id,
             symbol=str(row.get("symbol") or ""),
@@ -317,14 +333,28 @@ class CancelConditionalOrderRequest(BaseModel):
 async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: dict = Depends(get_current_user)):
     """Cancel an open conditional (algo) order on Binance."""
     username = user["username"]
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
     api_key = cfg.get_api_key(username)
     api_secret = cfg.get_api_secret(username)
     if not api_key or not api_secret:
         raise HTTPException(status_code=400, detail="No API credentials configured")
     testnet = cfg.is_testnet(username)
     client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
-    ok = await asyncio.to_thread(client.cancel_algo_order, body.algo_id)
-    if not ok:
+    order_row = next(
+        (
+            row for row in db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+            if str(row.get("exchange_order_id") or "") == str(body.algo_id)
+        ),
+        None,
+    )
+    symbol = str(order_row.get("symbol") or "") if order_row else None
+    _log.info("Cancel conditional order request: user=%s algo_id=%s symbol=%s", username, body.algo_id, symbol)
+    result = await asyncio.to_thread(client.cancel_algo_order, body.algo_id, None, symbol)
+    if not result:
+        _log.warning("Cancel conditional order failed: user=%s algo_id=%s symbol=%s", username, body.algo_id, symbol)
         raise HTTPException(status_code=502, detail="Failed to cancel algo order on Binance")
+    _log.info("Cancel conditional order success: user=%s algo_id=%s symbol=%s result=%s", username, body.algo_id, symbol, result)
+    if order_row:
+        db_module.update_order_status(int(order_row["id"]), "CANCELED")
     return {"ok": True}
 

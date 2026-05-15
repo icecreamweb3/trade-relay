@@ -2838,25 +2838,6 @@ class BinanceClient:
             logger.debug(f"Failed to get open algo orders: {e}")
             return []
 
-    def cancel_algo_order(self, algo_id: int) -> bool:
-        """Cancel an algo (conditional) order by algoId via DELETE /fapi/v1/algoOrder."""
-        try:
-            import requests as _req
-            params: dict[str, object] = {"algoId": algo_id}
-            _, query = self._generate_signed_request_body(params, debug=False)
-            url = f"{self.base_url}/fapi/v1/algoOrder"
-            resp = _req.delete(
-                f"{url}?{query}",
-                headers={"X-MBX-APIKEY": self.api_key},
-                proxies=self.proxy_config,
-                timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
-            )
-            resp.raise_for_status()
-            return True
-        except Exception as e:
-            logger.debug(f"Failed to cancel algo order {algo_id}: {e}")
-            return False
-
     def get_open_orders(self, symbol: str) -> List[dict]:
         """Get all open orders for a symbol
         
