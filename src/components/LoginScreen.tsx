@@ -12,7 +12,7 @@ export function LoginScreen() {
   const { login, isLoading, error, clearError } = useAuthStore()
   const showToast = useToastStore((state) => state.showToast)
 
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
 
   useEffect(() => {

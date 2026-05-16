@@ -15,7 +15,7 @@ export function LoginModal({ onClose }: LoginModalProps) {
   const { t } = useTranslation(locale)
   const { login, isLoading, error, clearError } = useAuthStore()
 
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const usernameRef = useRef<HTMLInputElement>(null)
