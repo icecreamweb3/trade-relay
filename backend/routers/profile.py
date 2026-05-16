@@ -24,26 +24,57 @@ class DailyPnl(BaseModel):
     date: str
     pnl: float
     commission: float
+    trades: int
+    win_rate: float
+
+
+class DailyLeaderboardEntry(BaseModel):
+    rank: int
+    username: str
+    date: str
+    pnl: float
+    trades: int
+    win_rate: float
+    commission: float
 
 
 class ProfileOverview(BaseModel):
     stats: ProfileStats
     daily_pnl: list[DailyPnl]
+    daily_leaderboard: list[DailyLeaderboardEntry]
 
 
 def _build_profile_overview(user_id: int) -> ProfileOverview:
     rows = db_module.get_daily_pnl(user_id)
     commission_rows = db_module.get_total_commission_by_asset(user_id)
+    leaderboard_rows = db_module.get_daily_profile_leaderboard()
     daily_pnl = [
         DailyPnl(
             date=str(r["date"]),
             pnl=round(float(r.get("pnl") or 0), 4),
             commission=round(float(r.get("commission") or 0), 4),
+            trades=int(r.get("trades") or 0),
+            win_rate=round(float(r.get("win_rate") or 0), 2),
         )
         for r in rows
     ]
+    daily_leaderboard = [
+        DailyLeaderboardEntry(
+            rank=index + 1,
+            username=str(row.get("username") or "-"),
+            date=str(row.get("date")),
+            pnl=round(float(row.get("pnl") or 0), 4),
+            trades=int(row.get("trades") or 0),
+            win_rate=round(float(row.get("win_rate") or 0), 2),
+            commission=round(float(row.get("commission") or 0), 4),
+        )
+        for index, row in enumerate(leaderboard_rows)
+    ]
 
     total_pnl = sum(item.pnl for item in daily_pnl)
+    total_trades = sum(item.trades for item in daily_pnl)
+    total_wins = sum(1 for item in daily_pnl for _ in range(0))
+    total_wins = int(sum((item.win_rate * item.trades / 100.0) for item in daily_pnl))
     total_commission_by_asset = [
         {
             "asset": str(row.get("asset") or "UNKNOWN"),
@@ -52,24 +83,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
         for row in commission_rows
     ]
     total_commission = round(sum(float(item["total"]) for item in total_commission_by_asset), 8)
-
-    conn = db_module.get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT COUNT(*) AS cnt,
-                          SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS wins
-                   FROM position_history
-                   WHERE user_id = %s""",
-                (user_id,),
-            )
-            row = cur.fetchone()
-            total_trades = int(row["cnt"]) if row else 0
-            wins = int(row["wins"] or 0) if row else 0
-    finally:
-        conn.close()
-
-    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+    win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
 
     return ProfileOverview(
         stats=ProfileStats(
@@ -80,6 +94,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
             total_commission_by_asset=total_commission_by_asset,
         ),
         daily_pnl=daily_pnl,
+        daily_leaderboard=daily_leaderboard,
     )
 
 

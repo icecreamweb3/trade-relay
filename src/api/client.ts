@@ -171,12 +171,25 @@ interface ApiProfileStats {
 interface ApiDailyPnl {
   date: string
   pnl: number
+  commission: number
   trades: number
+  win_rate: number
+}
+
+interface ApiDailyLeaderboardEntry {
+  rank: number
+  username: string
+  date: string
+  pnl: number
+  trades: number
+  win_rate: number
+  commission: number
 }
 
 interface ApiProfileOverview {
   stats: ApiProfileStats
   daily_pnl: ApiDailyPnl[]
+  daily_leaderboard: ApiDailyLeaderboardEntry[]
 }
 
 const inflightGetRequests = new Map<string, Promise<unknown>>()

@@ -276,6 +276,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'profile.trades': '总交易次数',
     'profile.commission': '总手续费',
     'profile.dailyPnl': '每日盈亏',
+    'profile.dailyLeaderboard': '今日排行榜',
+    'profile.rank': '排名',
+    'profile.user': '用户',
     'profile.loading': '加载中...',
 
     // Right panels
@@ -566,6 +569,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'profile.trades': 'Total Trades',
     'profile.commission': 'Total Commission',
     'profile.dailyPnl': 'Daily P&L',
+    'profile.dailyLeaderboard': 'Today Leaderboard',
+    'profile.rank': 'Rank',
+    'profile.user': 'User',
     'profile.loading': 'Loading...',
 
     'orderbook.title': 'Order Book',

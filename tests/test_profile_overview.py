@@ -1,40 +1,11 @@
 from backend.routers import profile as profile_router
 
 
-class _FakeCursor:
-    def __init__(self, row):
-        self._row = row
-
-    def execute(self, sql, params):
-        assert "FROM position_history" in sql
-        assert params == (5,)
-
-    def fetchone(self):
-        return self._row
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class _FakeConnection:
-    def __init__(self, row):
-        self._row = row
-
-    def cursor(self):
-        return _FakeCursor(self._row)
-
-    def close(self):
-        return None
-
-
-def test_build_profile_overview_uses_position_history_for_win_rate(monkeypatch):
+def test_build_profile_overview_uses_daily_profile_for_win_rate(monkeypatch):
     monkeypatch.setattr(
         profile_router.db_module,
         "get_daily_pnl",
-        lambda user_id: [{"date": "2026-05-16", "pnl": 12.5, "commission": 0.7}],
+        lambda user_id: [{"date": "2026-05-16", "pnl": 12.5, "commission": 0.7, "trades": 5, "win_rate": 60.0}],
     )
     monkeypatch.setattr(
         profile_router.db_module,
@@ -43,8 +14,8 @@ def test_build_profile_overview_uses_position_history_for_win_rate(monkeypatch):
     )
     monkeypatch.setattr(
         profile_router.db_module,
-        "get_connection",
-        lambda: _FakeConnection({"cnt": 5, "wins": 3}),
+        "get_daily_profile_leaderboard",
+        lambda: [{"username": "alice", "date": "2026-05-16", "pnl": 12.5, "trades": 5, "win_rate": 60.0, "commission": 0.7}],
     )
 
     overview = profile_router._build_profile_overview(5)
@@ -54,15 +25,17 @@ def test_build_profile_overview_uses_position_history_for_win_rate(monkeypatch):
     assert overview.stats.total_pnl == 12.5
     assert overview.stats.total_commission == 0.7
     assert overview.stats.total_commission_by_asset == [{"asset": "USDC", "total": 0.7}]
+    assert overview.daily_leaderboard[0].username == "alice"
+    assert overview.daily_leaderboard[0].rank == 1
 
 
-def test_build_profile_overview_totals_follow_position_history_aggregation(monkeypatch):
+def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypatch):
     monkeypatch.setattr(
         profile_router.db_module,
         "get_daily_pnl",
         lambda user_id: [
-            {"date": "2026-05-16", "pnl": 5.0229, "commission": 0.0},
-            {"date": "2026-05-17", "pnl": -1.5, "commission": 0.25},
+            {"date": "2026-05-16", "pnl": 5.0229, "commission": 0.0, "trades": 3, "win_rate": 66.6667},
+            {"date": "2026-05-17", "pnl": -1.5, "commission": 0.25, "trades": 1, "win_rate": 0.0},
         ],
     )
     monkeypatch.setattr(
@@ -72,8 +45,8 @@ def test_build_profile_overview_totals_follow_position_history_aggregation(monke
     )
     monkeypatch.setattr(
         profile_router.db_module,
-        "get_connection",
-        lambda: _FakeConnection({"cnt": 4, "wins": 2}),
+        "get_daily_profile_leaderboard",
+        lambda: [],
     )
 
     overview = profile_router._build_profile_overview(5)
@@ -81,5 +54,25 @@ def test_build_profile_overview_totals_follow_position_history_aggregation(monke
     assert overview.stats.total_pnl == 3.5229
     assert overview.stats.total_commission == 0.25
     assert overview.stats.total_commission_by_asset == [{"asset": "USDC", "total": 0.25}]
+    assert overview.stats.total_trades == 4
+    assert overview.stats.win_rate == 50.0
     assert overview.daily_pnl[0].pnl == 5.0229
     assert overview.daily_pnl[1].commission == 0.25
+
+
+def test_build_profile_overview_preserves_leaderboard_order(monkeypatch):
+    monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_daily_profile_leaderboard",
+        lambda: [
+            {"username": "bob", "date": "2026-05-16", "pnl": 8.0, "trades": 2, "win_rate": 50.0, "commission": 0.2},
+            {"username": "alice", "date": "2026-05-16", "pnl": 5.0, "trades": 1, "win_rate": 100.0, "commission": 0.1},
+        ],
+    )
+
+    overview = profile_router._build_profile_overview(5)
+
+    assert [entry.rank for entry in overview.daily_leaderboard] == [1, 2]
+    assert [entry.username for entry in overview.daily_leaderboard] == ["bob", "alice"]

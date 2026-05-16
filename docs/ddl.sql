@@ -97,6 +97,22 @@ CREATE TABLE position_history (
     KEY idx_created_at (created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史';
 
+CREATE TABLE daily_profile (
+    id            BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    user_id       BIGINT          NOT NULL COMMENT '用户ID',
+    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+    profile_date  DATE            NOT NULL COMMENT 'UTC自然日',
+    pnl           DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日已实现盈亏',
+    trade_count   INT             NOT NULL DEFAULT 0 COMMENT '当日交易次数',
+    win_count     INT             NOT NULL DEFAULT 0 COMMENT '当日盈利次数',
+    win_rate      DECIMAL(10,4)   NOT NULL DEFAULT 0 COMMENT '当日胜率',
+    commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日手续费',
+    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_user_date (user_id, profile_date),
+    KEY idx_profile_date (profile_date, pnl DESC),
+    KEY idx_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='每日收益汇总';
+
 CREATE TABLE ticker_messages (
     id          BIGINT   NOT NULL PRIMARY KEY AUTO_INCREMENT,
     contents_zh TEXT     NOT NULL COMMENT '中文播报内容',
@@ -207,6 +223,18 @@ ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission,
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission,
     ADD COLUMN IF NOT EXISTS update_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at;
+
+ALTER TABLE daily_profile
+    ADD COLUMN IF NOT EXISTS username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id,
+    ADD COLUMN IF NOT EXISTS trade_count INT NOT NULL DEFAULT 0 COMMENT '当日交易次数' AFTER pnl,
+    ADD COLUMN IF NOT EXISTS win_count INT NOT NULL DEFAULT 0 COMMENT '当日盈利次数' AFTER trade_count,
+    ADD COLUMN IF NOT EXISTS win_rate DECIMAL(10,4) NOT NULL DEFAULT 0 COMMENT '当日胜率' AFTER win_count,
+    ADD COLUMN IF NOT EXISTS commission DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '当日手续费' AFTER win_rate,
+    ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER commission;
+
+ALTER TABLE daily_profile ADD UNIQUE KEY uk_user_date (user_id, profile_date);
+ALTER TABLE daily_profile ADD INDEX idx_profile_date (profile_date, pnl DESC);
+ALTER TABLE daily_profile ADD INDEX idx_username (username);
 
 -- positions 旧结构不再兼容。应用启动时会：
 -- 1. 备份旧表到 positions_legacy_backup

@@ -19,7 +19,7 @@ import logging
 import os
 from queue import Empty, Full, Queue
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from threading import Condition, Event, RLock, Thread
 from typing import Optional
@@ -227,6 +227,210 @@ def _mysql_pool_size() -> int:
             raw_value,
         )
         return 8
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _coerce_utc_date(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value).date()
+    raise TypeError(f"Unsupported date value: {value!r}")
+
+
+def _get_profile_day_bounds(profile_date: date) -> tuple[datetime, datetime]:
+    start_at = datetime.combine(profile_date, time.min)
+    return start_at, start_at + timedelta(days=1)
+
+
+def _refresh_daily_profile_for_user_date(
+    cur,
+    user_id: int,
+    username: str,
+    profile_date: date,
+) -> None:
+    start_at, end_at = _get_profile_day_bounds(profile_date)
+    cur.execute(
+        """
+        SELECT COUNT(*) AS trade_count,
+               SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+               SUM(COALESCE(realized_pnl, 0)) AS pnl,
+               SUM(COALESCE(commission, 0)) AS commission,
+               MAX(NULLIF(TRIM(COALESCE(username, '')), '')) AS latest_username
+        FROM position_history
+        WHERE user_id = %s
+          AND created_at >= %s
+          AND created_at < %s
+        """,
+        (user_id, start_at, end_at),
+    )
+    row = cur.fetchone() or {}
+    trade_count = int(row.get("trade_count") or 0)
+    if trade_count <= 0:
+        cur.execute(
+            "DELETE FROM daily_profile WHERE user_id = %s AND profile_date = %s",
+            (user_id, profile_date),
+        )
+        return
+
+    win_count = int(row.get("win_count") or 0)
+    win_rate = (win_count / trade_count * 100.0) if trade_count > 0 else 0.0
+    resolved_username = str(row.get("latest_username") or username or "")
+    cur.execute(
+        """
+        INSERT INTO daily_profile
+            (user_id, username, profile_date, pnl, trade_count, win_count, win_rate, commission, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            username = VALUES(username),
+            pnl = VALUES(pnl),
+            trade_count = VALUES(trade_count),
+            win_count = VALUES(win_count),
+            win_rate = VALUES(win_rate),
+            commission = VALUES(commission),
+            updated_at = VALUES(updated_at)
+        """,
+        (
+            user_id,
+            resolved_username,
+            profile_date,
+            float(row.get("pnl") or 0),
+            trade_count,
+            win_count,
+            win_rate,
+            float(row.get("commission") or 0),
+            _utc_now_naive(),
+        ),
+    )
+
+
+def _refresh_daily_profile_for_history_row(cur, history_id: int) -> None:
+    cur.execute(
+        "SELECT user_id, username, created_at FROM position_history WHERE id = %s LIMIT 1",
+        (history_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    _refresh_daily_profile_for_user_date(
+        cur,
+        int(row["user_id"]),
+        str(row.get("username") or ""),
+        _coerce_utc_date(row["created_at"]),
+    )
+
+
+def _rebuild_daily_profile_from_history(
+    cur,
+    *,
+    user_id: Optional[int] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> dict[str, int]:
+    delete_sql = ["DELETE FROM daily_profile WHERE 1 = 1"]
+    delete_params: list[object] = []
+    history_filters = ["WHERE 1 = 1"]
+    history_params: list[object] = []
+
+    if user_id is not None:
+        delete_sql.append("AND user_id = %s")
+        delete_params.append(user_id)
+        history_filters.append("AND user_id = %s")
+        history_params.append(user_id)
+
+    if start_date is not None:
+        delete_sql.append("AND profile_date >= %s")
+        delete_params.append(start_date)
+        history_filters.append("AND created_at >= %s")
+        history_params.append(datetime.combine(start_date, time.min))
+
+    if end_date is not None:
+        delete_sql.append("AND profile_date <= %s")
+        delete_params.append(end_date)
+        history_filters.append("AND created_at < %s")
+        history_params.append(datetime.combine(end_date + timedelta(days=1), time.min))
+
+    cur.execute("\n".join(delete_sql), delete_params)
+    deleted_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    cur.execute(
+        """
+        INSERT INTO daily_profile
+            (user_id, username, profile_date, pnl, trade_count, win_count, win_rate, commission, updated_at)
+        SELECT user_id,
+               COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+               DATE(created_at) AS profile_date,
+               SUM(COALESCE(realized_pnl, 0)) AS pnl,
+               COUNT(*) AS trade_count,
+               SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+               CASE
+                   WHEN COUNT(*) = 0 THEN 0
+                   ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+               END AS win_rate,
+               SUM(COALESCE(commission, 0)) AS commission,
+               %s AS updated_at
+        FROM position_history
+        """
+        + "\n".join(history_filters)
+        + "\nGROUP BY user_id, DATE(created_at)",
+        [_utc_now_naive(), *history_params],
+    )
+    rebuilt_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    return {"deleted": int(deleted_rows), "rebuilt": int(rebuilt_rows)}
+
+
+def rebuild_daily_profile(
+    *,
+    username: Optional[str] = None,
+    start_date: Optional[date | str] = None,
+    end_date: Optional[date | str] = None,
+) -> dict[str, object]:
+    normalized_username = str(username or "").strip() or None
+    start_day = _coerce_utc_date(start_date) if start_date is not None else None
+    end_day = _coerce_utc_date(end_date) if end_date is not None else None
+    if start_day and end_day and start_day > end_day:
+        raise ValueError("start_date cannot be later than end_date")
+
+    user_id: Optional[int] = None
+    if normalized_username:
+        user = get_user_by_username(normalized_username)
+        if not user:
+            return {
+                "ok": False,
+                "user_found": False,
+                "username": normalized_username,
+                "start_date": str(start_day) if start_day else None,
+                "end_date": str(end_day) if end_day else None,
+                "deleted": 0,
+                "rebuilt": 0,
+            }
+        user_id = int(user["id"])
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            result = _rebuild_daily_profile_from_history(
+                cur,
+                user_id=user_id,
+                start_date=start_day,
+                end_date=end_day,
+            )
+        conn.commit()
+        return {
+            "ok": True,
+            "user_found": True,
+            "username": normalized_username,
+            "start_date": str(start_day) if start_day else None,
+            "end_date": str(end_day) if end_day else None,
+            **result,
+        }
+    finally:
+        conn.close()
 
 
 @contextmanager
@@ -734,6 +938,50 @@ def init_db() -> None:
                     cur.execute(_ddl)
                 except Exception:
                     pass  # column already exists
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS daily_profile (
+                    id            BIGINT          NOT NULL AUTO_INCREMENT,
+                    user_id       BIGINT          NOT NULL COMMENT '用户ID',
+                    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+                    profile_date  DATE            NOT NULL COMMENT 'UTC自然日',
+                    pnl           DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日已实现盈亏',
+                    trade_count   INT             NOT NULL DEFAULT 0 COMMENT '当日交易次数',
+                    win_count     INT             NOT NULL DEFAULT 0 COMMENT '当日盈利次数',
+                    win_rate      DECIMAL(10,4)   NOT NULL DEFAULT 0 COMMENT '当日胜率',
+                    commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日手续费',
+                    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_user_date (user_id, profile_date),
+                    KEY idx_profile_date (profile_date, pnl DESC),
+                    KEY idx_username (username)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='每日收益汇总'
+            """)
+            for _col, _ddl in [
+                ("username", "ALTER TABLE daily_profile ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
+                ("trade_count", "ALTER TABLE daily_profile ADD COLUMN trade_count INT NOT NULL DEFAULT 0 COMMENT '当日交易次数' AFTER pnl"),
+                ("win_count", "ALTER TABLE daily_profile ADD COLUMN win_count INT NOT NULL DEFAULT 0 COMMENT '当日盈利次数' AFTER trade_count"),
+                ("win_rate", "ALTER TABLE daily_profile ADD COLUMN win_rate DECIMAL(10,4) NOT NULL DEFAULT 0 COMMENT '当日胜率' AFTER win_count"),
+                ("commission", "ALTER TABLE daily_profile ADD COLUMN commission DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '当日手续费' AFTER win_rate"),
+                ("updated_at", "ALTER TABLE daily_profile ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER commission"),
+            ]:
+                try:
+                    cur.execute(_ddl)
+                except Exception:
+                    pass
+            try:
+                cur.execute("ALTER TABLE daily_profile ADD UNIQUE KEY uk_user_date (user_id, profile_date)")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE daily_profile ADD INDEX idx_profile_date (profile_date, pnl DESC)")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE daily_profile ADD INDEX idx_username (username)")
+            except Exception:
+                pass
+            _rebuild_daily_profile_from_history(cur)
 
             # ── ticker_messages（滚动播报文案）───────────────────────────
             cur.execute("""
@@ -1727,25 +1975,53 @@ def get_recent_platform_trades(limit: int = 30) -> list:
 
 
 def get_daily_pnl(user_id: int) -> list:
-    """Return daily realized P&L for a user from position history.
+    """Return daily realized P&L for a user from daily_profile.
 
-    Each row: { date: str, pnl: float, commission: float }
-    P&L and commission are aggregated from closed-position records.
+    Each row: { date: str, pnl: float, commission: float, trades: int, win_rate: float }
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DATE(created_at) AS date,
-                       SUM(COALESCE(realized_pnl, 0)) AS pnl,
-                       SUM(COALESCE(commission, 0))   AS commission
-                FROM position_history
+                SELECT profile_date AS date,
+                       pnl,
+                       commission,
+                       trade_count AS trades,
+                       win_rate
+                FROM daily_profile
                 WHERE user_id = %s
-                GROUP BY DATE(created_at)
                 ORDER BY date ASC
                 """,
                 (user_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_daily_profile_leaderboard(
+    profile_date: Optional[date] = None,
+    limit: int = 10,
+) -> list:
+    leaderboard_date = profile_date or _utc_now_naive().date()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username,
+                       profile_date AS date,
+                       pnl,
+                       trade_count AS trades,
+                       win_rate,
+                       commission
+                FROM daily_profile
+                WHERE profile_date = %s
+                ORDER BY pnl DESC, win_rate DESC, trade_count DESC, username ASC
+                LIMIT %s
+                """,
+                (leaderboard_date, limit),
             )
             return cur.fetchall()
     finally:
@@ -2031,6 +2307,7 @@ def add_position_history(
     position_id: Optional[int] = None,
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
+    created_at = _utc_now_naive()
     _log_db_write(
         "insert",
         "position_history",
@@ -2046,6 +2323,7 @@ def add_position_history(
             "commission": commission,
             "commission_asset": commission_asset,
             "position_id": position_id,
+            "created_at": created_at,
         },
     )
     conn = get_connection()
@@ -2053,10 +2331,25 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id),
+                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, update_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    user_id,
+                    username,
+                    symbol,
+                    side.upper(),
+                    entry_price,
+                    close_price,
+                    quantity,
+                    realized_pnl,
+                    commission,
+                    commission_asset,
+                    position_id,
+                    created_at,
+                    created_at,
+                ),
             )
+            _refresh_daily_profile_for_user_date(cur, user_id, username, created_at.date())
             conn.commit()
             _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
             return cur.lastrowid
@@ -2093,6 +2386,8 @@ def update_position_history_values(
                     "UPDATE position_history SET realized_pnl = %s, commission = %s, commission_asset = %s WHERE id = %s",
                     (realized_pnl, commission, commission_asset, history_id),
                 )
+            if cur.rowcount > 0:
+                _refresh_daily_profile_for_history_row(cur, history_id)
             conn.commit()
             success = cur.rowcount > 0
             _log_db_write_result("update", "position_history", history_id=history_id, affected_rows=cur.rowcount, success=success)
