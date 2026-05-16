@@ -49,9 +49,9 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT COUNT(*) AS cnt,
-                          SUM(CASE WHEN side='SELL' AND avg_price > 0 THEN 1 ELSE 0 END) AS wins
-                   FROM orders
-                   WHERE user_id = %s AND status = 'FILLED' AND filled_qty > 0""",
+                          SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS wins
+                   FROM position_history
+                   WHERE user_id = %s""",
                 (user_id,),
             )
             row = cur.fetchone()

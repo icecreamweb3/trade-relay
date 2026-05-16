@@ -179,7 +179,7 @@ export function OrderLogScreen() {
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
-                <td className="text-[#858585]">{o.created_at ? new Date(o.created_at).toLocaleString() : '-'}</td>
+                <td className="text-[#858585]">{formatLogTimestamp(o.created_at)}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">{o.symbol}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>
@@ -289,4 +289,18 @@ function formatOrderStatus(status: string, t: (key: string) => string) {
 function toBackendDateTime(value: string) {
   if (!value) return undefined
   return `${value.replace('T', ' ')}:00`
+}
+
+function formatLogTimestamp(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${month}/${day}/${year}, ${hours}:${minutes}:${seconds}`
 }
