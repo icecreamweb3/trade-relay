@@ -145,6 +145,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.marginType.cross': '全仓',
     'pos.marginType.isolated': '逐仓',
     'trade.commission': '手续费',
+    'trade.commissionAsset': '手续费币种',
 
     // Order log
     'log.title': '订单记录',
@@ -440,6 +441,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.marginType.cross': 'Cross',
     'pos.marginType.isolated': 'Isolated',
     'trade.commission': 'Commission',
+    'trade.commissionAsset': 'Commission Asset',
 
     'log.title': 'Order Log',
     'log.time': 'Time',

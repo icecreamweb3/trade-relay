@@ -15,6 +15,7 @@ import websocket
 from trade_relay import config as cfg
 from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
+from trade_relay.trading.close_trade_sync import sync_close_order_trade_details, sync_filled_order_trade_details
 from trade_relay.trading.tpsl_service import place_tp_sl_orders
 
 logger = logging.getLogger(__name__)
@@ -377,7 +378,9 @@ class UserOrderStatusStream:
                     fill_qty=executed_qty,
                     fill_price=avg_price,
                 )
+                sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
             elif trade_direction == "OPEN" and new_status == "FILLED":
+                sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
                 self._place_open_fill_tpsl(db_row, executed_qty, avg_price)
 
             symbols_to_sync.add(symbol)
@@ -661,6 +664,7 @@ class UserOrderStatusStream:
                 history_id, position_id, self.username, symbol, position_side,
                 last_fill_qty, entry_price, last_fill_price, realized_pnl, commission,
             )
+            sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_order)
         except Exception:
             logger.exception(
                 "Failed to create position_history for user=%s exchange_order_id=%s",
@@ -691,6 +695,8 @@ class UserOrderStatusStream:
         db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
         if not db_order:
             return
+
+        sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_order)
 
         executed_qty = _safe_float(order.get("z") or order.get("executedQty") or db_order.get("filled_qty") or 0)
         avg_price = _safe_float(order.get("ap") or order.get("avgPrice") or db_order.get("avg_price") or 0)

@@ -72,6 +72,9 @@ interface ApiOrder {
   quantity: number
   price: number
   avg_price?: number | null
+  realized_pnl?: number | null
+  commission?: number | null
+  commission_asset?: string | null
   stop_price?: number | null
   reduce_only?: boolean
   post_only?: boolean
@@ -107,6 +110,7 @@ interface ApiTrade {
   quantity: number
   price?: number | null
   avg_price: number | null
+  realized_pnl?: number | null
   status?: string
   commission: number
   commission_asset: string

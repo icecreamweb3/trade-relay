@@ -15,6 +15,7 @@ from trade_relay import database as db_module
 from trade_relay import config as cfg
 from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
+from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
@@ -56,6 +57,9 @@ class OrderOut(BaseModel):
     status: str
     filled_qty: float
     avg_price: Optional[float]
+    realized_pnl: Optional[float] = None
+    commission: Optional[float] = None
+    commission_asset: Optional[str] = None
     exchange_order_id: Optional[str]
     error_message: Optional[str]
     created_at: str
@@ -89,6 +93,9 @@ def _row_to_out(r: dict) -> OrderOut:
         status=r["status"],
         filled_qty=float(r.get("filled_qty") or 0),
         avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
+        realized_pnl=float(r["realized_pnl"]) if r.get("realized_pnl") is not None else None,
+        commission=float(r["commission"]) if r.get("commission") is not None else None,
+        commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
         exchange_order_id=r.get("exchange_order_id"),
         error_message=r.get("error_message"),
         created_at=str(r["created_at"]),
@@ -109,6 +116,9 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         status="FILLED",
         filled_qty=float(r.get("filled_qty") or 0),
         avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
+        realized_pnl=float(r["realized_pnl"]) if r.get("realized_pnl") is not None else None,
+        commission=float(r["commission"]) if r.get("commission") is not None else None,
+        commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
         exchange_order_id=None,
         error_message=None,
         created_at=str(r["created_at"]),
@@ -527,7 +537,9 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     avg_price=avg_price if db_status == "FILLED" and avg_price > 0 else None,
                 )
                 if db_status == "FILLED":
-                    _record_close_fill_history_from_conditional(row, filled_qty, avg_price)
+                    if str(row.get("trade_direction") or "").upper() == "CLOSE":
+                        _record_close_fill_history_from_conditional(row, filled_qty, avg_price)
+                    sync_filled_order_trade_details(username=username, client=client, order_row={**row, "status": db_status})
                 continue
             if trigger <= 0:
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)

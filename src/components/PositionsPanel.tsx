@@ -24,6 +24,7 @@ interface Order {
   id: number; symbol: string; side: string; order_type: string
   quantity: number; price: number; stop_price?: number | null
   reduce_only?: boolean; post_only?: boolean
+  commission?: number | null; commission_asset?: string | null
   status: string; username?: string; created_at?: string; exchange_order_id?: string
 }
 
@@ -501,7 +502,10 @@ export function PositionsPanel({
             <table className="trade-table w-full">
               <thead><tr>
                 <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
-                <th>{t('log.qty')}</th><th>{t('log.price')}</th><th>{t('log.status')}</th>
+                <th>{t('log.qty')}</th><th>{t('log.price')}</th>
+                {tab === 'history' && <th>{t('trade.commission')}</th>}
+                {tab === 'history' && <th>{t('trade.commissionAsset')}</th>}
+                <th>{t('log.status')}</th>
                 {tab === 'openOrders' && <th>{t('pos.reduceOnly')}</th>}
                 {tab === 'openOrders' && <th>{t('pos.postOnly')}</th>}
                 {tab === 'openOrders' && <th>{t('pos.triggerConditions')}</th>}
@@ -510,7 +514,7 @@ export function PositionsPanel({
               </tr></thead>
               <tbody>
                 {(tab === 'openOrders' ? openOrders : history).length === 0
-                  ? <tr><td colSpan={tab === 'openOrders' ? 12 : 7} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                  ? <tr><td colSpan={tab === 'openOrders' ? 12 : 9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                   : (tab === 'openOrders' ? openOrders : history).map(o => (
                     <tr key={o.id}>
                       <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
@@ -519,6 +523,8 @@ export function PositionsPanel({
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                       <td className="font-mono">{o.quantity}</td>
                       <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
+                      {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission != null ? o.commission.toFixed(4) : '—'}</td>}
+                      {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission_asset ?? '—'}</td>}
                       <td><StatusBadge status={o.status} t={t} /></td>
                       {tab === 'openOrders' && <td className="text-center">{o.reduce_only ? t('common.yes') : t('common.no')}</td>}
                       {tab === 'openOrders' && <td className="text-center">{o.post_only ? t('common.yes') : t('common.no')}</td>}

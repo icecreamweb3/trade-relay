@@ -603,6 +603,7 @@ def init_db() -> None:
                     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
                     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
                     avg_price         DECIMAL(20,8)   DEFAULT NULL COMMENT '成交均价',
+                    realized_pnl      DECIMAL(30,10)  DEFAULT NULL COMMENT '已实现盈亏',
                     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
                     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
                     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
@@ -631,6 +632,7 @@ def init_db() -> None:
                 ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
                 ("tp_price",        "ALTER TABLE orders ADD COLUMN tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price"),
                 ("sl_price",        "ALTER TABLE orders ADD COLUMN sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price"),
+                ("realized_pnl",    "ALTER TABLE orders ADD COLUMN realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -1096,6 +1098,7 @@ def create_order(
     client_order_id: Optional[str] = None,
     trade_direction: Optional[str] = None,     # OPEN | CLOSE
     position_id: Optional[int] = None,         # 关联持仓ID
+    realized_pnl: Optional[float] = None,
     reduce_only: bool = False,
     post_only: bool = False,
     order_category: str = 'Basic',             # Basic | Conditional
@@ -1122,6 +1125,7 @@ def create_order(
                     "status": status,
                     "exchange_order_id": binance_order_id,
                     "client_order_id": client_order_id,
+                    "realized_pnl": realized_pnl,
                     "trade_direction": trade_direction,
                     "reduce_only": int(reduce_only),
                     "post_only": int(post_only),
@@ -1135,13 +1139,13 @@ def create_order(
                    (user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     exchange_order_id, client_order_id,
-                    trade_direction, reduce_only, post_only, position_id, order_category, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    trade_direction, reduce_only, post_only, position_id, realized_pnl, order_category, error_message)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     binance_order_id, client_order_id,
-                    trade_direction, int(reduce_only), int(post_only), position_id, normalized_order_category, error_message,
+                    trade_direction, int(reduce_only), int(post_only), position_id, realized_pnl, normalized_order_category, error_message,
                 ),
             )
             conn.commit()
@@ -1165,6 +1169,7 @@ def update_order_status(
     status: str,
     filled_qty: Optional[float] = None,
     avg_price: Optional[float] = None,
+    realized_pnl: Optional[float] = None,
     commission: Optional[float] = None,
     commission_asset: Optional[str] = None,
     error_message: Optional[str] = None,
@@ -1176,6 +1181,8 @@ def update_order_status(
         fields.append("filled_qty = %s"); params.append(filled_qty)
     if avg_price is not None:
         fields.append("avg_price = %s"); params.append(avg_price)
+    if realized_pnl is not None:
+        fields.append("realized_pnl = %s"); params.append(realized_pnl)
     if commission is not None:
         fields.append("commission = %s"); params.append(commission)
     if commission_asset is not None:
@@ -1192,6 +1199,7 @@ def update_order_status(
             "status": status,
             "filled_qty": filled_qty,
             "avg_price": avg_price,
+            "realized_pnl": realized_pnl,
             "commission": commission,
             "commission_asset": commission_asset,
             "error_message": error_message,
@@ -1252,6 +1260,7 @@ def update_order_status_by_exchange_id(
     status: str,
     filled_qty: Optional[float] = None,
     avg_price: Optional[float] = None,
+    realized_pnl: Optional[float] = None,
     commission: Optional[float] = None,
     commission_asset: Optional[str] = None,
     error_message: Optional[str] = None,
@@ -1263,6 +1272,8 @@ def update_order_status_by_exchange_id(
         fields.append("filled_qty = %s"); params.append(filled_qty)
     if avg_price is not None:
         fields.append("avg_price = %s"); params.append(avg_price)
+    if realized_pnl is not None:
+        fields.append("realized_pnl = %s"); params.append(realized_pnl)
     if commission is not None:
         fields.append("commission = %s"); params.append(commission)
     if commission_asset is not None:
@@ -1280,6 +1291,7 @@ def update_order_status_by_exchange_id(
             "status": status,
             "filled_qty": filled_qty,
             "avg_price": avg_price,
+            "realized_pnl": realized_pnl,
             "commission": commission,
             "commission_asset": commission_asset,
             "error_message": error_message,
@@ -1641,7 +1653,8 @@ def query_orders(
 
 def get_recent_platform_trades(limit: int = 30) -> list:
     """返回平台内所有用户最近的已成交订单。
-    每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price, created_at
+    每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price,
+    realized_pnl, commission, commission_asset, created_at
     """
     conn = get_connection()
     try:
@@ -1649,7 +1662,9 @@ def get_recent_platform_trades(limit: int = 30) -> list:
             cur.execute(
                 """
                 SELECT username, symbol, side, trade_direction, order_type, order_category,
-                       filled_qty, price, avg_price, created_at
+                      filled_qty, price, avg_price, realized_pnl,
+                      COALESCE(commission, 0) AS commission,
+                      commission_asset, created_at
                 FROM orders
                 WHERE status = 'FILLED'
                   AND filled_qty > 0
@@ -1976,6 +1991,31 @@ def add_position_history(
             conn.commit()
             _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
             return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_position_history_values(history_id: int, realized_pnl: float, commission: float) -> bool:
+    _log_db_write(
+        "update",
+        "position_history",
+        {
+            "history_id": history_id,
+            "realized_pnl": realized_pnl,
+            "commission": commission,
+        },
+    )
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE position_history SET realized_pnl = %s, commission = %s WHERE id = %s",
+                (realized_pnl, commission, history_id),
+            )
+            conn.commit()
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "position_history", history_id=history_id, affected_rows=cur.rowcount, success=success)
+            return success
     finally:
         conn.close()
 

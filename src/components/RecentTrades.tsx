@@ -19,11 +19,14 @@ interface Fill {
   quantity: number
   price?: number | null
   avg_price: number | null
+  realized_pnl?: number | null
+  commission?: number | null
+  commission_asset?: string | null
   status?: string
   created_at?: string
 }
 
-const GRID_TEMPLATE = 'minmax(40px, 0.8fr) minmax(64px, 0.95fr) 68px 42px 42px 46px 70px 66px 56px 88px'
+const GRID_TEMPLATE = 'minmax(52px, 0.9fr) minmax(72px, 1fr) 52px 52px 58px 88px 84px 112px 120px 78px 96px'
 
 function getTradeKind(fill: Fill, t: (key: string) => string): { label: string; className: string } {
   const orderCategory = String(fill.order_category || '').toUpperCase()
@@ -71,6 +74,12 @@ function fmtTime(ts?: string): string {
 function fmtNum(n: number | null, dp = 2): string {
   if (n == null) return '—'
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
+}
+
+function fmtSignedNum(n: number | null, dp = 2): string {
+  if (n == null) return '—'
+  const formatted = n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
+  return n > 0 ? `+${formatted}` : formatted
 }
 
 export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: boolean; refreshTrigger?: number }) {
@@ -165,23 +174,24 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
         </select>
       </div>
 
-      {/* Column labels */}
-      <div className="grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]"
-        style={{ gridTemplateColumns: GRID_TEMPLATE }}>
-        <span>{t('log.user')}</span>
-        <span className="-ml-[5px] text-left">{t('log.symbol')}</span>
-        <span className="text-left">{t('recentTrades.kind')}</span>
-        <span className="-ml-[7px] text-left">{t('log.side')}</span>
-        <span className="pl-[5px] text-left">{t('log.qty')}</span>
-        <span className="pl-[5px] text-left">{t('log.dir')}</span>
-        <span className="-ml-[7px] text-center">{t('log.price')}</span>
-        <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
-        <span className="text-left">{t('log.status')}</span>
-        <span className="text-center">{t('log.time')}</span>
-      </div>
+      <div className="flex-1 min-h-0 overflow-auto">
+        {/* Column labels */}
+        <div className="sticky top-0 z-10 grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider whitespace-nowrap shrink-0 border-b border-[#2a2a2a] bg-[#161616]"
+          style={{ gridTemplateColumns: GRID_TEMPLATE }}>
+          <span>{t('log.user')}</span>
+          <span className="-ml-[5px] text-left">{t('log.symbol')}</span>
+          <span className="-ml-[7px] text-left">{t('log.side')}</span>
+          <span className="pl-[5px] text-left">{t('log.qty')}</span>
+          <span className="pl-[5px] text-left">{t('log.dir')}</span>
+          <span className="-ml-[7px] text-center">{t('log.price')}</span>
+          <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
+          <span className="ml-[30px] text-center">{t('pos.realizedPnl')}</span>
+          <span className="ml-[30px] text-center">{t('trade.commission')}</span>
+          <span className="text-left">{t('recentTrades.kind')}</span>
+          <span className="text-center">{t('log.time')}</span>
+        </div>
 
-      {/* Rows */}
-      <div className="flex-1 overflow-y-auto">
+        {/* Rows */}
         {(() => {
           const filtered = userFilter.trim()
             ? fills.filter(f => (f.username ?? '').toLowerCase().includes(userFilter.trim().toLowerCase()))
@@ -192,6 +202,14 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
           return filtered.map((f, i) => {
             const isBuy = f.side === 'BUY'
             const value = f.avg_price != null ? f.quantity * f.avg_price : null
+            const commissionText = f.commission != null
+              ? `${fmtNum(f.commission, 4)}${f.commission_asset ? ` ${f.commission_asset}` : ''}`
+              : '—'
+            const realizedPnlClass = (f.realized_pnl ?? 0) > 0
+              ? 'text-[#0ecb81]'
+              : (f.realized_pnl ?? 0) < 0
+                ? 'text-[#f6465d]'
+                : 'text-[#aaa]'
             const tradeKind = getTradeKind(f, t)
             return (
               <div
@@ -201,11 +219,6 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
                 <span className="pl-[5px] text-[#888] truncate pr-1">{f.symbol}</span>
-                <span className="truncate pr-1">
-                  <span className={`inline-flex min-w-[64px] items-center justify-center rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
-                    {tradeKind.label}
-                  </span>
-                </span>
                 <span className={`${isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'} truncate pl-[10px] text-left`}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
                 <span className="pl-[15px] text-left text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
                 <span className={`pl-[15px] text-left ${f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
@@ -213,11 +226,13 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                 </span>
                 <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
                 <span className="-ml-[10px] text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
-                <span className={`pl-[10px] text-left truncate ${
-                  f.status === 'FILLED' ? 'text-[#0ecb81]' :
-                  f.status === 'NEW' || f.status === 'PARTIALLY_FILLED' ? 'text-[#f0b90b]' :
-                  'text-[#555]'
-                }`}>{f.status ?? '—'}</span>
+                <span className={`ml-[30px] text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
+                <span className="ml-[30px] text-center text-[#aaa]">{commissionText}</span>
+                <span className="truncate pr-1">
+                  <span className={`inline-flex min-w-[64px] items-center justify-center rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
+                    {tradeKind.label}
+                  </span>
+                </span>
                 <span className="text-right text-[#aaa]" title={f.created_at ?? ''}>{fmtTime(f.created_at)}</span>
               </div>
             )

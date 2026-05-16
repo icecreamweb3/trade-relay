@@ -29,6 +29,7 @@ CREATE TABLE orders (
     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
     avg_price         DECIMAL(20,8)   DEFAULT NULL COMMENT '成交均价',
+    realized_pnl      DECIMAL(30,10)  DEFAULT NULL COMMENT '已实现盈亏',
     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
@@ -168,7 +169,8 @@ ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only,
     ADD COLUMN IF NOT EXISTS order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id,
     ADD COLUMN IF NOT EXISTS tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price,
-    ADD COLUMN IF NOT EXISTS sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price;
+    ADD COLUMN IF NOT EXISTS sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price,
+    ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price;
 
 ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';
