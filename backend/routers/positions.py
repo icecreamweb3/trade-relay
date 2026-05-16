@@ -17,6 +17,7 @@ from trade_relay.trading.order_status_stream import ensure_user_order_status_str
 from trade_relay.trading.tpsl_service import place_tp_sl_orders, validate_tpsl_prices
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
+from backend.time_utils import serialize_utc_timestamp, serialize_utc_timestamp_required
 
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 _log = get_logger(__name__)
@@ -356,8 +357,8 @@ def get_position_history(user: dict = Depends(get_current_user)):
             realized_pnl=float(r["realized_pnl"]),
             commission=float(r["commission"]),
             commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
-            created_at=str(r["created_at"]),
-            update_at=str(r["update_at"]) if r.get("update_at") else None,
+            created_at=serialize_utc_timestamp_required(r.get("created_at")),
+            update_at=serialize_utc_timestamp(r.get("update_at")),
         )
         for r in rows
     ]
@@ -393,6 +394,6 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         realized_pnl=float(r["realized_pnl"]),
         commission=float(r["commission"]),
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
-        created_at=str(r["created_at"]),
-        update_at=str(r["update_at"]) if r.get("update_at") else None,
+        created_at=serialize_utc_timestamp_required(r.get("created_at")),
+        update_at=serialize_utc_timestamp(r.get("update_at")),
     )

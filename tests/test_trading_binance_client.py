@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1076,6 +1077,166 @@ def test_create_order_stores_conditional_algo_id_separately(monkeypatch):
     assert insert_params[12] == "4000001327195551"
     assert insert_params[13] == "client-algo-1"
     assert insert_params[14] is None
+
+
+def test_get_position_history_orders_by_latest_update_at(monkeypatch):
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    rows = db_module.get_position_history(user_id=5, limit=20)
+
+    assert rows == []
+    sql, params = queries[-1]
+    assert "ORDER BY COALESCE(update_at, created_at) DESC, id DESC LIMIT %s" in sql
+    assert params == [5, 20]
+
+
+def test_create_mysql_connection_sets_session_timezone_to_utc(monkeypatch):
+    from trade_relay import database as db_module
+
+    executed = []
+
+    class _StubCursor:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+    monkeypatch.setattr(db_module, "_mysql_cfg", lambda: {"host": "127.0.0.1"})
+    monkeypatch.setattr(db_module, "_mysql_proxy_cfg", lambda: None)
+    monkeypatch.setattr(db_module.pymysql, "connect", lambda **kwargs: _StubConn())
+
+    conn = db_module._create_mysql_connection()
+
+    assert conn is not None
+    assert executed == [(db_module._MYSQL_SESSION_UTC_SQL, None)]
+
+
+def test_pooled_connection_checkout_resets_session_timezone_to_utc():
+    from trade_relay import database as db_module
+
+    executed = []
+
+    class _StubCursor:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def __init__(self):
+            self.pings = []
+
+        def ping(self, reconnect=True):
+            self.pings.append(reconnect)
+
+        def cursor(self):
+            return _StubCursor()
+
+    conn = _StubConn()
+    pool = db_module._MySQLConnectionPool(max_size=1)
+
+    assert pool._prepare_for_checkout(conn) is True
+    assert conn.pings == [True]
+    assert executed == [(db_module._MYSQL_SESSION_UTC_SQL, None)]
+
+
+def test_serialize_utc_timestamp_normalizes_datetime_and_epoch_millis():
+    from backend.time_utils import serialize_utc_timestamp
+
+    assert serialize_utc_timestamp(datetime(2026, 5, 16, 20, 34, 1)) == "2026-05-16T20:34:01Z"
+
+    epoch_ms = int(datetime(2026, 5, 16, 18, 29, 13, tzinfo=timezone.utc).timestamp() * 1000)
+    assert serialize_utc_timestamp(epoch_ms) == "2026-05-16T18:29:13Z"
+    assert serialize_utc_timestamp(str(epoch_ms)) == "2026-05-16T18:29:13Z"
+
+
+def test_order_row_to_out_serializes_created_at_as_utc_iso():
+    from backend.routers import orders as orders_router
+
+    out = orders_router._row_to_out({
+        "id": 1,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "order_type": "LIMIT",
+        "trade_direction": "OPEN",
+        "quantity": 0.002,
+        "price": 78000.0,
+        "stop_price": None,
+        "reduce_only": 0,
+        "post_only": 0,
+        "order_category": "Basic",
+        "status": "NEW",
+        "filled_qty": 0,
+        "avg_price": None,
+        "realized_pnl": None,
+        "commission": None,
+        "commission_asset": None,
+        "algo_id": None,
+        "algo_client_id": None,
+        "exchange_order_id": None,
+        "error_message": None,
+        "created_at": datetime(2026, 5, 16, 12, 34, 2),
+    })
+
+    assert out.created_at == "2026-05-16T12:34:02Z"
+
+
+def test_user_out_from_row_serializes_created_and_updated_at_as_utc_iso(monkeypatch):
+    from backend.routers import users as users_router
+
+    monkeypatch.setattr(users_router.cfg_module, "load_user_config", lambda username: {})
+    monkeypatch.setattr(users_router.db_module, "decrypt_api_credential", lambda value: "")
+
+    out = users_router._user_out_from_row({
+        "id": 5,
+        "username": "Will",
+        "role": "user",
+        "is_active": 1,
+        "binance_api_key": "",
+        "binance_api_secret": "",
+        "created_at": datetime(2026, 5, 16, 14, 21, 16),
+        "updated_at": datetime(2026, 5, 16, 20, 34, 1),
+    })
+
+    assert out.created_at == "2026-05-16T14:21:16Z"
+    assert out.updated_at == "2026-05-16T20:34:01Z"
 
 
 def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):

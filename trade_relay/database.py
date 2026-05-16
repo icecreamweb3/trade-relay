@@ -35,6 +35,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 logger = logging.getLogger(__name__)
 
+_MYSQL_SESSION_UTC_SQL = "SET time_zone = '+00:00'"
+
 _PYMYSQL_SOCKET_PATCH_LOCK = RLock()
 _MYSQL_PROXY_SCHEME_NAMES = frozenset({"socks5", "socks5h", "socks4", "socks4a", "http", "https"})
 
@@ -231,6 +233,11 @@ def _mysql_pool_size() -> int:
 
 def _utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _set_mysql_session_utc(conn: pymysql.connections.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(_MYSQL_SESSION_UTC_SQL)
 
 
 def _coerce_utc_date(value) -> date:
@@ -492,7 +499,9 @@ def _create_mysql_connection() -> pymysql.connections.Connection:
             proxy_cfg["port"],
         )
     with _pymysql_proxy_socket_patch(proxy_cfg):
-        return pymysql.connect(**mysql_cfg)
+        conn = pymysql.connect(**mysql_cfg)
+    _set_mysql_session_utc(conn)
+    return conn
 
 
 class _PooledMySQLConnection:
@@ -564,6 +573,7 @@ class _MySQLConnectionPool:
     def _prepare_for_checkout(self, conn: pymysql.connections.Connection) -> bool:
         try:
             conn.ping(reconnect=True)
+            _set_mysql_session_utc(conn)
             return True
         except Exception:
             return False
@@ -717,7 +727,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         if margin_type not in {"CROSS", "ISOLATED"}:
             margin_type = "CROSS"
 
-        updated_at = row.get("updated_at") or row.get("created_at") or row.get("opened_at") or datetime.now()
+        updated_at = row.get("updated_at") or row.get("created_at") or row.get("opened_at") or _utc_now_naive()
 
         cur.execute(
             """INSERT INTO positions
@@ -2527,7 +2537,7 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
     if user_id is not None:
         sql += " WHERE user_id = %s"
         params.append(user_id)
-    sql += " ORDER BY created_at DESC LIMIT %s"
+    sql += " ORDER BY COALESCE(update_at, created_at) DESC, id DESC LIMIT %s"
     params.append(limit)
     conn = get_connection()
     try:

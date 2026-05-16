@@ -3,6 +3,7 @@ import { Calendar } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { parseUtcTimestamp } from '../utils/datetime'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
@@ -293,8 +294,8 @@ function toBackendDateTime(value: string) {
 
 function formatLogTimestamp(value?: string) {
   if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  const date = parseUtcTimestamp(value)
+  if (!date) return value
 
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')

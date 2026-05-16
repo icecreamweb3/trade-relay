@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom'
 import { api, ApiConditionalOrder, getBackendWebSocketUrl } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
-import { useToastStore } from '../store/toastStore'
+import { useToastStore, type ToastKind } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { formatUtcTimestampToLocalString } from '../utils/datetime'
 import { perfSignalDone } from '../utils/perf'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
@@ -628,7 +629,7 @@ export function PositionsPanel({
                 ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positionHistory.map(ph => (
                   <tr key={ph.id}>
-                    <td className="text-[#858585]">{formatTimestamp(ph.created_at)}</td>
+                    <td className="text-[#858585]">{formatTimestamp(ph.update_at || ph.created_at)}</td>
                     <td className="font-semibold">{ph.symbol}</td>
                     <td className={ph.side === 'LONG' ? 'text-buy' : 'text-sell'}>{ph.side}</td>
                     <td className="font-mono">{ph.quantity}</td>
@@ -866,7 +867,7 @@ function TpSlModal({
   username: string
   onClose: () => void
   onSaved: (posId: number, tp: number | null, sl: number | null) => void
-  showToast: (type: string, msg: string) => void
+  showToast: (type: ToastKind, msg: string) => void
 }) {
   const { t } = useTranslation(locale)
   const { quoteAsset } = splitTradingSymbol(position.symbol)
@@ -1042,8 +1043,7 @@ function TpSlModal({
 }
 
 function formatTimestamp(value?: string) {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
+  return formatUtcTimestampToLocalString(value)
 }
 
 function StatusBadge({ status, t }: { status: string; t: (key: string) => string }) {
@@ -1150,7 +1150,9 @@ function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', acti
 
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const liveReferencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
-  const price = Number.isFinite(liveReferencePrice) ? liveReferencePrice : (Number.isFinite(position.entry_price) ? position.entry_price : 0)
+  const price: number = typeof liveReferencePrice === 'number' && Number.isFinite(liveReferencePrice)
+    ? liveReferencePrice
+    : (typeof position.entry_price === 'number' && Number.isFinite(position.entry_price) ? position.entry_price : 0)
   const quoteValue = position.quantity * price
   if (!quoteValue) return `— ${quoteAsset}`
   return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`

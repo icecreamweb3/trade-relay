@@ -19,6 +19,7 @@ from trade_relay.auth.manager import (
 )
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
+from backend.time_utils import serialize_utc_timestamp
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 _log = get_logger(__name__)
@@ -72,8 +73,8 @@ def _user_out_from_row(row: dict) -> UserOut:
         is_active=bool(row["is_active"]),
         binance_api_key=api_key,
         binance_api_secret=api_secret,
-        created_at=row["created_at"].isoformat(sep=" ") if row.get("created_at") else None,
-        updated_at=row["updated_at"].isoformat(sep=" ") if row.get("updated_at") else None,
+        created_at=serialize_utc_timestamp(row.get("created_at")),
+        updated_at=serialize_utc_timestamp(row.get("updated_at")),
     )
 
 

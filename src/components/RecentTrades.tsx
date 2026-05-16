@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
+import { formatUtcTimestampToLocalString, parseUtcTimestamp } from '../utils/datetime'
 
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
@@ -58,17 +59,14 @@ function getTradeKind(fill: Fill, t: (key: string) => string): { label: string; 
 
 function fmtTime(ts?: string): string {
   if (!ts) return '—'
-  try {
-    const d = new Date(ts)
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
-    const hh = String(d.getHours()).padStart(2, '0')
-    const min = String(d.getMinutes()).padStart(2, '0')
-    const ss = String(d.getSeconds()).padStart(2, '0')
-    return `${mm}/${dd} ${hh}:${min}:${ss}`
-  } catch {
-    return ts
-  }
+  const d = parseUtcTimestamp(ts)
+  if (!d) return ts
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  const ss = String(d.getSeconds()).padStart(2, '0')
+  return `${mm}/${dd} ${hh}:${min}:${ss}`
 }
 
 function fmtNum(n: number | null, dp = 2): string {
@@ -76,7 +74,7 @@ function fmtNum(n: number | null, dp = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
 }
 
-function fmtSignedNum(n: number | null, dp = 2): string {
+function fmtSignedNum(n: number | null | undefined, dp = 2): string {
   if (n == null) return '—'
   const formatted = n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
   return n > 0 ? `+${formatted}` : formatted
@@ -237,7 +235,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                     {tradeKind.label}
                   </span>
                 </span>
-                <span className="text-right text-[#aaa]" title={f.created_at ?? ''}>{fmtTime(f.created_at)}</span>
+                <span className="text-right text-[#aaa]" title={formatUtcTimestampToLocalString(f.created_at)}>{fmtTime(f.created_at)}</span>
               </div>
             )
           })

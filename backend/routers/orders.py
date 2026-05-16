@@ -19,6 +19,7 @@ from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
+from backend.time_utils import serialize_utc_timestamp_required
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 _log = get_logger(__name__)
@@ -102,7 +103,7 @@ def _row_to_out(r: dict) -> OrderOut:
         algo_client_id=str(r["algo_client_id"]) if r.get("algo_client_id") is not None else None,
         exchange_order_id=r.get("exchange_order_id"),
         error_message=r.get("error_message"),
-        created_at=str(r["created_at"]),
+        created_at=serialize_utc_timestamp_required(r.get("created_at")),
     )
 
 
@@ -127,7 +128,7 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         algo_client_id=None,
         exchange_order_id=None,
         error_message=None,
-        created_at=str(r["created_at"]),
+        created_at=serialize_utc_timestamp_required(r.get("created_at")),
     )
 
 
@@ -486,7 +487,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     quantity=float(o.get("quantity") or o.get("qty") or o.get("executedQty") or (local_row.get("quantity") if local_row else 0) or 0),
                     trigger_price=trigger_price,
                     status=str(o.get("algoStatus") or o.get("status") or ""),
-                    created_at=str(o.get("createTime") or o.get("bookTime") or o.get("time") or (local_row.get("created_at") if local_row else "") or ""),
+                    created_at=serialize_utc_timestamp_required(o.get("createTime") or o.get("bookTime") or o.get("time") or (local_row.get("created_at") if local_row else None)),
                     trade_direction=trade_direction,
                     exchange_order_id=str(local_row.get("exchange_order_id") or "") if local_row and local_row.get("exchange_order_id") else None,
                     client_order_id=str(local_row.get("client_order_id") or "") if local_row and local_row.get("client_order_id") else None,
@@ -578,7 +579,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             quantity=float(row.get("quantity") or 0),
             trigger_price=trigger,
             status=str(row.get("status") or "NEW"),
-            created_at=str(row.get("created_at") or ""),
+            created_at=serialize_utc_timestamp_required(row.get("created_at")),
             trade_direction=trade_direction or None,
             exchange_order_id=str(row.get("exchange_order_id") or "") or None,
             client_order_id=str(row.get("client_order_id") or "") or None,
