@@ -304,6 +304,107 @@ def _map_algo_status_to_db_status(algo_status: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _resolve_close_fill_entry_context(row: dict) -> tuple[int | None, float | None, str | None]:
+    user_id = int(row.get("user_id") or 0)
+    if user_id <= 0:
+        return None, None, None
+
+    symbol = str(row.get("symbol") or "").upper()
+    position_side = _derive_conditional_position_side(
+        str(row.get("side") or ""),
+        str(row.get("trade_direction") or ""),
+    )
+    requested_position_id = int(row["position_id"]) if row.get("position_id") else None
+
+    positions = db_module.get_positions(user_id=user_id)
+    matched_position = None
+    if requested_position_id is not None:
+        matched_position = next(
+            (position for position in positions if int(position.get("id") or 0) == requested_position_id),
+            None,
+        )
+    if matched_position is None:
+        matched_position = next(
+            (
+                position for position in positions
+                if str(position.get("symbol") or "").upper() == symbol
+                and str(position.get("position_side") or "").upper() == position_side
+            ),
+            None,
+        )
+    if matched_position is not None:
+        entry_price = float(matched_position.get("avg_entry_price") or 0)
+        if entry_price > 0:
+            return int(matched_position.get("id") or requested_position_id or 0) or requested_position_id, entry_price, position_side
+
+    filled_rows = db_module.query_orders(user_id=user_id, status="FILLED", limit=500)
+    for candidate in filled_rows:
+        if str(candidate.get("trade_direction") or "").upper() != "OPEN":
+            continue
+        if str(candidate.get("symbol") or "").upper() != symbol:
+            continue
+        candidate_side = _derive_conditional_position_side(
+            str(candidate.get("side") or ""),
+            str(candidate.get("trade_direction") or ""),
+        )
+        if candidate_side != position_side:
+            continue
+        candidate_position_id = int(candidate["position_id"]) if candidate.get("position_id") else None
+        if requested_position_id is not None and candidate_position_id not in {None, requested_position_id}:
+            continue
+        entry_price = float(candidate.get("avg_price") or 0)
+        if entry_price > 0:
+            return candidate_position_id or requested_position_id, entry_price, position_side
+
+    return requested_position_id, None, position_side
+
+
+def _record_close_fill_history_from_conditional(row: dict, filled_qty: float, avg_price: float) -> None:
+    if str(row.get("trade_direction") or "").upper() != "CLOSE":
+        return
+    if filled_qty <= 0 or avg_price <= 0:
+        return
+
+    user_id = int(row.get("user_id") or 0)
+    username = str(row.get("username") or "")
+    symbol = str(row.get("symbol") or "").upper()
+    if user_id <= 0 or not username or not symbol:
+        return
+
+    position_id, entry_price, position_side = _resolve_close_fill_entry_context(row)
+    if entry_price is None or entry_price <= 0 or position_side not in {"LONG", "SHORT"}:
+        _log.warning(
+            "[ORDER_FLOW] phase=conditional_fill_history_skipped order_id=%s reason=missing_entry_context symbol=%s user_id=%s",
+            row.get("id"),
+            symbol,
+            user_id,
+        )
+        return
+
+    realized_pnl = (avg_price - entry_price) * filled_qty if position_side == "LONG" else (entry_price - avg_price) * filled_qty
+    db_module.add_position_history(
+        user_id=user_id,
+        username=username,
+        symbol=symbol,
+        side=position_side,
+        entry_price=entry_price,
+        close_price=avg_price,
+        quantity=filled_qty,
+        realized_pnl=realized_pnl,
+        commission=0.0,
+        position_id=position_id,
+    )
+    _log.info(
+        "[ORDER_FLOW] phase=conditional_fill_history_created order_id=%s symbol=%s side=%s qty=%s entry=%s close=%s",
+        row.get("id"),
+        symbol,
+        position_side,
+        filled_qty,
+        entry_price,
+        avg_price,
+    )
+
+
 @router.get("/conditional", response_model=list[ConditionalOrderOut])
 async def get_conditional_orders(user: dict = Depends(get_current_user)):
     """Fetch open conditional (algo) orders — merged from Binance Algo API and local DB."""
@@ -417,12 +518,16 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             algo_status = str(algo_detail.get("algoStatus") or algo_detail.get("status") or "")
             db_status = _map_algo_status_to_db_status(algo_status)
             if db_status and db_status != "NEW":
+                filled_qty = float(algo_detail.get("quantity") or row.get("quantity") or 0) if db_status == "FILLED" else 0.0
+                avg_price = float(algo_detail.get("actualPrice") or 0) if db_status == "FILLED" and float(algo_detail.get("actualPrice") or 0) > 0 else 0.0
                 db_module.update_order_status(
                     int(row["id"]),
                     db_status,
-                    filled_qty=float(algo_detail.get("quantity") or row.get("quantity") or 0) if db_status == "FILLED" else None,
-                    avg_price=float(algo_detail.get("actualPrice") or 0) if db_status == "FILLED" and float(algo_detail.get("actualPrice") or 0) > 0 else None,
+                    filled_qty=filled_qty if db_status == "FILLED" else None,
+                    avg_price=avg_price if db_status == "FILLED" and avg_price > 0 else None,
                 )
+                if db_status == "FILLED":
+                    _record_close_fill_history_from_conditional(row, filled_qty, avg_price)
                 continue
             if trigger <= 0:
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
