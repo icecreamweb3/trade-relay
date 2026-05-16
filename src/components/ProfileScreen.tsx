@@ -21,9 +21,9 @@ export function ProfileScreen() {
     const load = async () => {
       setLoading(true)
       try {
-        const [s, d] = await Promise.all([api.getProfileStats(), api.getDailyPnl()])
-        setStats(s)
-        setDaily(d)
+        const overview = await api.getProfileOverview()
+        setStats(overview.stats)
+        setDaily(overview.daily_pnl)
       } catch { /* ignore */ }
       setLoading(false)
     }

@@ -163,6 +163,11 @@ interface ApiDailyPnl {
   trades: number
 }
 
+interface ApiProfileOverview {
+  stats: ApiProfileStats
+  daily_pnl: ApiDailyPnl[]
+}
+
 function makeBackendError(status: number, body: unknown) {
   const detail =
     typeof body === 'object' && body !== null && 'detail' in body
@@ -373,6 +378,10 @@ export const api = {
   async getDailyPnl(userId?: number): Promise<ApiDailyPnl[]> {
     const params = userId ? { user_id: userId } : undefined
     return request<ApiDailyPnl[]>('GET', '/api/profile/daily-pnl', { params })
+  },
+
+  async getProfileOverview(): Promise<ApiProfileOverview> {
+    return request<ApiProfileOverview>('GET', '/api/profile/overview')
   },
 
   // ── Ticker messages ───────────────────────────────────────────────────────

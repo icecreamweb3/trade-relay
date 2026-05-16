@@ -5,6 +5,8 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import asyncio
+import time
+from threading import Lock
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -19,6 +21,9 @@ from backend.logger import get_logger
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 _log = get_logger(__name__)
+_RECENT_FILLS_CACHE_TTL = 2.0
+_recent_fills_cache_lock = Lock()
+_recent_fills_cache: tuple[float, list["OrderOut"]] | None = None
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -88,6 +93,43 @@ def _row_to_out(r: dict) -> OrderOut:
         error_message=r.get("error_message"),
         created_at=str(r["created_at"]),
     )
+
+
+def _recent_fill_to_out(r: dict) -> OrderOut:
+    return OrderOut(
+        id=0,
+        username=r["username"],
+        symbol=r["symbol"],
+        side=r["side"],
+        order_type=str(r.get("order_type") or ""),
+        trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
+        quantity=float(r.get("filled_qty") or 0),
+        price=float(r["price"]) if r.get("price") else None,
+        order_category=str(r.get("order_category") or "Basic"),
+        status="FILLED",
+        filled_qty=float(r.get("filled_qty") or 0),
+        avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
+        exchange_order_id=None,
+        error_message=None,
+        created_at=str(r["created_at"]),
+    )
+
+
+def _get_recent_fills_cached() -> list[OrderOut]:
+    global _recent_fills_cache
+
+    now = time.monotonic()
+    with _recent_fills_cache_lock:
+        cached = _recent_fills_cache
+        if cached and now - cached[0] < _RECENT_FILLS_CACHE_TTL:
+            return cached[1]
+
+    rows = db_module.get_recent_platform_trades(limit=50)
+    result = [_recent_fill_to_out(r) for r in rows]
+
+    with _recent_fills_cache_lock:
+        _recent_fills_cache = (time.monotonic(), result)
+    return result
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -165,23 +207,7 @@ def get_order_history(user: dict = Depends(get_current_user)):
 
 @router.get("/fills", response_model=list[OrderOut])
 def get_fills(user: dict = Depends(get_current_user)):
-    rows = db_module.get_recent_platform_trades(limit=50)
-    return [
-        OrderOut(
-            id=0, username=r["username"], symbol=r["symbol"], side=r["side"],
-            order_type=str(r.get("order_type") or ""),
-            trade_direction=str(r["trade_direction"]).upper() if r.get("trade_direction") else None,
-            quantity=float(r.get("filled_qty") or 0),
-            price=float(r["price"]) if r.get("price") else None,
-            order_category=str(r.get("order_category") or "Basic"),
-            status="FILLED",
-            filled_qty=float(r.get("filled_qty") or 0),
-            avg_price=float(r["avg_price"]) if r.get("avg_price") is not None else None,
-            exchange_order_id=None, error_message=None,
-            created_at=str(r["created_at"]),
-        )
-        for r in rows
-    ]
+    return _get_recent_fills_cached()
 
 
 class CancelOrderRequest(BaseModel):
@@ -194,10 +220,10 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
     """Cancel an open order on Binance and mark it CANCELED in DB."""
     username = user["username"]
 
-    # Verify the order belongs to this user (or admin can cancel any)
-    rows = db_module.query_orders(user_id=None, username=username if user["role"] != "admin" else None)
-    order_row = next((r for r in rows if r["id"] == order_id), None)
+    order_row = db_module.get_order_by_id(order_id)
     if not order_row:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if user["role"] != "admin" and order_row.get("username") != username:
         raise HTTPException(status_code=404, detail="Order not found")
     if order_row.get("exchange_order_id") != body.exchange_order_id:
         raise HTTPException(status_code=400, detail="exchange_order_id mismatch")

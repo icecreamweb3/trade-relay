@@ -17,10 +17,11 @@ Tables:
 import base64
 import logging
 import os
+from queue import Empty, Full, Queue
 from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
-from threading import Condition, RLock
+from threading import Condition, Event, RLock, Thread
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -45,6 +46,12 @@ _DB_LOG_REDACT_KEYS = frozenset({
     "enc_secret",
 })
 
+_OP_LOG_STOP = object()
+_OP_LOG_WORKER_LOCK = RLock()
+_op_log_queue: Optional[Queue] = None
+_op_log_worker: Optional[Thread] = None
+_op_log_stop_event = Event()
+
 
 def _sanitize_db_log_value(key: str, value):
     if key in _DB_LOG_REDACT_KEYS:
@@ -56,7 +63,13 @@ def _sanitize_db_log_fields(fields: dict) -> dict:
     return {key: _sanitize_db_log_value(key, value) for key, value in fields.items()}
 
 
+def _should_skip_db_log(db_action: str, table: str) -> bool:
+    return table == "positions" and db_action == "delete"
+
+
 def _log_db_write(db_action: str, table: str, fields: dict) -> None:
+    if _should_skip_db_log(db_action, table):
+        return
     logger.info(
         "DB write | action=%s table=%s fields=%s",
         db_action,
@@ -66,12 +79,27 @@ def _log_db_write(db_action: str, table: str, fields: dict) -> None:
 
 
 def _log_db_write_result(db_action: str, table: str, **result) -> None:
+    if _should_skip_db_log(db_action, table):
+        return
     logger.info(
         "DB write result | action=%s table=%s result=%s",
         db_action,
         table,
         _sanitize_db_log_fields(result),
     )
+
+
+@lru_cache(maxsize=1)
+def _operation_log_queue_size() -> int:
+    raw_value = (os.environ.get("TRADE_RELAY_OPERATION_LOG_QUEUE_SIZE") or "1000").strip()
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid TRADE_RELAY_OPERATION_LOG_QUEUE_SIZE=%r, falling back to 1000",
+            raw_value,
+        )
+        return 1000
 
 
 # ──────────────────────────────────────────────
@@ -1763,17 +1791,12 @@ def delete_position(
         conn.close()
 
 
-# ──────────────────────────────────────────────
-# Operation log（操作日志）
-# ──────────────────────────────────────────────
-
-def log_operation(
+def _write_operation_log_sync(
     user_id: Optional[int],
     username: Optional[str],
     action: str,
     details: str = "",
 ) -> None:
-    _log_db_write("insert", "operation_logs", {"user_id": user_id, "username": username, "action": action, "details": details})
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -1785,6 +1808,94 @@ def log_operation(
             _log_db_write_result("insert", "operation_logs", log_id=cur.lastrowid, user_id=user_id, action=action)
     finally:
         conn.close()
+
+
+def _operation_log_worker_loop() -> None:
+    global _op_log_queue
+
+    queue_ref = _op_log_queue
+    if queue_ref is None:
+        return
+
+    while True:
+        try:
+            item = queue_ref.get(timeout=0.5)
+        except Empty:
+            if _op_log_stop_event.is_set():
+                break
+            continue
+
+        try:
+            if item is _OP_LOG_STOP:
+                break
+            user_id, username, action, details = item
+            _write_operation_log_sync(user_id, username, action, details)
+        except Exception:
+            logger.exception("Failed to persist operation log | action=%s username=%s", item[2], item[1] if item is not _OP_LOG_STOP else None)
+        finally:
+            queue_ref.task_done()
+
+
+def start_operation_log_worker() -> None:
+    global _op_log_queue, _op_log_worker
+
+    with _OP_LOG_WORKER_LOCK:
+        if _op_log_worker is not None and _op_log_worker.is_alive():
+            return
+
+        _op_log_stop_event.clear()
+        _op_log_queue = Queue(maxsize=_operation_log_queue_size())
+        _op_log_worker = Thread(
+            target=_operation_log_worker_loop,
+            name="trade-relay-op-log-worker",
+            daemon=True,
+        )
+        _op_log_worker.start()
+
+
+def stop_operation_log_worker() -> None:
+    global _op_log_queue, _op_log_worker
+
+    with _OP_LOG_WORKER_LOCK:
+        queue_ref = _op_log_queue
+        worker = _op_log_worker
+        if queue_ref is None or worker is None:
+            return
+
+        _op_log_stop_event.set()
+        try:
+            queue_ref.put(_OP_LOG_STOP, timeout=1)
+        except Full:
+            pass
+
+    worker.join(timeout=5)
+
+    with _OP_LOG_WORKER_LOCK:
+        _op_log_queue = None
+        _op_log_worker = None
+
+
+# ──────────────────────────────────────────────
+# Operation log（操作日志）
+# ──────────────────────────────────────────────
+
+def log_operation(
+    user_id: Optional[int],
+    username: Optional[str],
+    action: str,
+    details: str = "",
+) -> None:
+    _log_db_write("insert", "operation_logs", {"user_id": user_id, "username": username, "action": action, "details": details})
+    queue_ref = _op_log_queue
+    if queue_ref is None:
+        _write_operation_log_sync(user_id, username, action, details)
+        return
+
+    try:
+        queue_ref.put_nowait((user_id, username, action, details))
+    except Full:
+        logger.warning("Operation log queue is full, falling back to synchronous write")
+        _write_operation_log_sync(user_id, username, action, details)
 
 
 # ──────────────────────────────────────────────
@@ -1844,6 +1955,20 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
             cur.execute(
                 "SELECT * FROM orders WHERE username = %s AND exchange_order_id = %s LIMIT 1",
                 (username, exchange_order_id),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_order_by_id(order_id: int) -> Optional[dict]:
+    """按主键查询单条订单，失败返回 None。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM orders WHERE id = %s LIMIT 1",
+                (order_id,),
             )
             return cur.fetchone()
     finally:
