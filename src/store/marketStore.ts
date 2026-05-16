@@ -43,6 +43,7 @@ interface MarketStore {
 
   setSymbol: (symbol: string) => void
   setConnected: (connected: boolean) => void
+  setCurrentPrice: (symbol: string, price: number) => void
   setChartInterval: (interval: string) => void
   setChartExpanded: (v: boolean) => void
   processMarketEvent: (event: MarketEvent) => void
@@ -77,6 +78,11 @@ export const useMarketStore = create<MarketStore>((set) => ({
     }
   }),
   setConnected: (connected) => set({ isConnected: connected }),
+  setCurrentPrice: (symbol, price) => set((state) => {
+    const nextSymbol = normalizeSymbol(symbol)
+    if (!Number.isFinite(price) || !nextSymbol || nextSymbol !== state.symbol) return {}
+    return { currentPrice: price, isConnected: true }
+  }),
   setChartInterval: (interval) => set({ chartInterval: interval }),
   setChartExpanded: (v) => set({ isChartExpanded: v }),
 

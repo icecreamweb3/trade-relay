@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { api } from '../api/client'
+import { api, getBackendWebSocketUrl } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -36,6 +36,14 @@ interface AccountSummary {
   wallet_balance: number | null
   has_api_credentials: boolean
   message?: string | null
+}
+
+interface PositionSnapshot {
+  symbol: string
+  side: string
+  quantity: number
+  entry_price: number | null
+  unrealized_pnl: number | null
 }
 
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -201,10 +209,12 @@ export function OrderFormWidget({
   const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
   const [positionLongQty, setPositionLongQty] = useState<number | null>(null)
   const [positionShortQty, setPositionShortQty] = useState<number | null>(null)
+  const [liveSymbolPositions, setLiveSymbolPositions] = useState<PositionSnapshot[] | null>(null)
   const showToast = useToastStore((state) => state.showToast)
   const lastAccountErrorRef = useRef<string | null>(null)
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
+  const loadSymbolPositionsRef = useRef<(() => Promise<void>) | null>(null)
   const _accountFirstLoadDone = useRef(false)
 
   useEffect(() => {
@@ -298,6 +308,7 @@ export function OrderFormWidget({
     if (!isActive || !user?.username || !symbol || isAdminAccount) {
       setPositionLongQty(null)
       setPositionShortQty(null)
+      setLiveSymbolPositions(null)
       return
     }
     let alive = true
@@ -306,22 +317,91 @@ export function OrderFormWidget({
         const all = await api.getPositions()
         if (!alive) return
         const sym = symbol.toUpperCase()
+        const nextPositions = all.filter((p) => p.symbol.toUpperCase() === sym)
         let longQty = 0
         let shortQty = 0
-        for (const p of all) {
-          if (p.symbol.toUpperCase() !== sym) continue
+        for (const p of nextPositions) {
           if (p.side === 'LONG') longQty += p.quantity
           else if (p.side === 'SHORT') shortQty += p.quantity
         }
+        setLiveSymbolPositions(nextPositions)
         setPositionLongQty(longQty)
         setPositionShortQty(shortQty)
       } catch {
         // silently ignore — account summary is fallback
       }
     }
+    loadSymbolPositionsRef.current = load
     void load()
-    return () => { alive = false }
+    return () => {
+      alive = false
+      loadSymbolPositionsRef.current = null
+    }
   }, [isActive, user?.username, symbol, refreshTrigger, isAdminAccount])
+
+  useEffect(() => {
+    if (!isActive || !user?.username || isAdminAccount) return
+
+    let alive = true
+    let socket: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null
+    let lastReloadAt = 0
+    const RELOAD_COOLDOWN_MS = 1500
+
+    const scheduleReload = () => {
+      if (!alive) return
+      if (reloadTimer) clearTimeout(reloadTimer)
+      const now = Date.now()
+      const delay = Math.max(200, lastReloadAt + RELOAD_COOLDOWN_MS - now)
+      reloadTimer = setTimeout(() => {
+        lastReloadAt = Date.now()
+        void loadSymbolPositionsRef.current?.()
+      }, delay)
+    }
+
+    const connect = async () => {
+      const token = await window.electronAPI?.getToken?.()
+      if (!alive || !token) return
+
+      const wsUrl = new URL(getBackendWebSocketUrl('/api/positions/ws'))
+      wsUrl.searchParams.set('token', token)
+      socket = new WebSocket(wsUrl.toString())
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data as string) as { type?: string; event?: string }
+          if (data.type === 'account_update') {
+            scheduleReload()
+          } else if (data.type === 'order_update' && (data.event === 'POLL' || data.event === 'SYNC' || data.event === 'REST_SYNC')) {
+            scheduleReload()
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      }
+
+      socket.onerror = () => {
+        socket?.close()
+      }
+
+      socket.onclose = () => {
+        if (!alive) return
+        reconnectTimer = setTimeout(() => {
+          void connect()
+        }, 3000)
+      }
+    }
+
+    void connect()
+
+    return () => {
+      alive = false
+      if (reloadTimer) clearTimeout(reloadTimer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [isActive, user?.username, isAdminAccount])
 
   const baseTicker = baseAsset
 
@@ -453,10 +533,13 @@ export function OrderFormWidget({
   const tpEstimate = useMemo(() => getTpSlEstimate(tp), [getTpSlEstimate, tp])
   const slEstimate = useMemo(() => getTpSlEstimate(sl), [getTpSlEstimate, sl])
 
+  const liveLongQty = positionLongQty ?? accountSummary?.long_position_qty ?? null
+  const liveShortQty = positionShortQty ?? accountSummary?.short_position_qty ?? null
+
   const fillPct = (pct: number) => {
     if (posDir === 'CLOSE') {
-      const longQty = accountSummary?.long_position_qty ?? 0
-      const shortQty = accountSummary?.short_position_qty ?? 0
+      const longQty = liveLongQty ?? 0
+      const shortQty = liveShortQty ?? 0
       const posQty = Math.max(longQty, shortQty)
       if (sizeUnit === 'QUOTE') {
         const refPrice = orderType === 'MARKET'
@@ -496,8 +579,7 @@ export function OrderFormWidget({
   }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
 
   const longCloseDisplay = useMemo(() => {
-    // Prefer live positions data (fast); fall back to account summary (slow)
-    const qty = positionLongQty ?? accountSummary?.long_position_qty ?? null
+    const qty = liveLongQty
     if (qty == null) return '—'
     if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
@@ -510,10 +592,10 @@ export function OrderFormWidget({
     const restPrice = accountSummary?.rest_mark_price ?? null
     if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
     return `${fmt(qty, 3)} ${baseTicker}`
-  }, [positionLongQty, accountSummary?.long_position_qty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+  }, [liveLongQty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
-    const qty = positionShortQty ?? accountSummary?.short_position_qty ?? null
+    const qty = liveShortQty
     if (qty == null) return '—'
     if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
     if (qty === 0) return withAsset(0, quoteAsset)
@@ -524,12 +606,26 @@ export function OrderFormWidget({
     const restPrice = accountSummary?.rest_mark_price ?? null
     if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
     return `${fmt(qty, 3)} ${baseTicker}`
-  }, [positionShortQty, accountSummary?.short_position_qty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+  }, [liveShortQty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   // Unrealized PnL adjusted in real-time using the latest available price.
   // base_pnl comes from the REST poll; we add the delta caused by price movement
   // since that poll: delta = net_qty × (live_price − rest_mark_price).
+  const livePositionUnrealizedPnl = useMemo(() => {
+    if (liveSymbolPositions == null) return null
+    if (liveSymbolPositions.length === 0) return 0
+    const livePrice = markPrice ?? currentPrice
+    return liveSymbolPositions.reduce((total, position) => {
+      if (livePrice != null && position.entry_price != null) {
+        if (position.side === 'LONG') return total + position.quantity * (livePrice - position.entry_price)
+        if (position.side === 'SHORT') return total + position.quantity * (position.entry_price - livePrice)
+      }
+      return total + (position.unrealized_pnl ?? 0)
+    }, 0)
+  }, [liveSymbolPositions, markPrice, currentPrice])
+
   const liveUnrealizedPnl = useMemo(() => {
+    if (livePositionUnrealizedPnl != null) return livePositionUnrealizedPnl
     const basePnl = accountSummary?.unrealized_pnl ?? null
     if (basePnl == null) return null
     const restMark = accountSummary?.rest_mark_price ?? null
@@ -540,6 +636,7 @@ export function OrderFormWidget({
     const netQty = longQty - shortQty
     return basePnl + netQty * (livePrice - restMark)
   }, [
+    livePositionUnrealizedPnl,
     accountSummary?.unrealized_pnl,
     accountSummary?.rest_mark_price,
     accountSummary?.long_position_qty,

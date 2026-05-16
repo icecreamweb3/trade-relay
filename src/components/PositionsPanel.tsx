@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { api, ApiConditionalOrder, getBackendWebSocketUrl } from '../api/client'
+import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -54,6 +55,7 @@ export function PositionsPanel({
   sizeUnit?: 'QUOTE' | 'BASE'
 }) {
   const { t } = useTranslation(locale)
+  const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
   const showToast = useToastStore((state) => state.showToast)
@@ -420,11 +422,11 @@ export function PositionsPanel({
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
-                    <td className="font-mono">{formatPositionSize(p, sizeUnit)}</td>
+                    <td className="font-mono">{formatPositionSize(p, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
                     <td className="font-mono">{p.entry_price != null ? p.entry_price.toFixed(2) : '-'}</td>
                     <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
-                    <td className={`font-mono font-semibold ${(p.unrealized_pnl ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
-                      {p.unrealized_pnl != null ? `${p.unrealized_pnl >= 0 ? '+' : ''}${p.unrealized_pnl.toFixed(2)}` : '-'}
+                    <td className={`font-mono font-semibold ${(getLiveUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice) ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
+                      {formatUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice)}
                     </td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                     <td>
@@ -1117,11 +1119,31 @@ function splitTradingSymbol(symbol: string) {
   return { baseAsset: upperSymbol, quoteAsset: 'USDT' }
 }
 
-function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE') {
+function getLiveReferencePrice(position: Position, activeSymbol: string, livePrice: number | null) {
+  if (position.symbol.toUpperCase() !== activeSymbol.toUpperCase()) return null
+  return livePrice
+}
+
+function getLiveUnrealizedPnl(position: Position, activeSymbol: string, livePrice: number | null) {
+  const referencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
+  if (referencePrice == null || position.entry_price == null) return position.unrealized_pnl
+  if (position.side === 'LONG') return position.quantity * (referencePrice - position.entry_price)
+  if (position.side === 'SHORT') return position.quantity * (position.entry_price - referencePrice)
+  return position.unrealized_pnl
+}
+
+function formatUnrealizedPnl(position: Position, activeSymbol: string, livePrice: number | null) {
+  const pnl = getLiveUnrealizedPnl(position, activeSymbol, livePrice)
+  if (pnl == null) return '-'
+  return `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`
+}
+
+function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {
   if (sizeUnit === 'BASE') return position.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 
   const { quoteAsset } = splitTradingSymbol(position.symbol)
-  const price = Number.isFinite(position.entry_price) ? position.entry_price : 0
+  const liveReferencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
+  const price = Number.isFinite(liveReferencePrice) ? liveReferencePrice : (Number.isFinite(position.entry_price) ? position.entry_price : 0)
   const quoteValue = position.quantity * price
   if (!quoteValue) return `— ${quoteAsset}`
   return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`

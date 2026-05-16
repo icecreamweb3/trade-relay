@@ -43,7 +43,7 @@ function fmt(n: number, dp = 1): string {
 
 export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) => void }) {
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice } = useMarketStore()
+  const { symbol, currentPrice, setCurrentPrice } = useMarketStore()
   const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
   const [asks, setAsks] = useState<Level[]>([])
   const [bids, setBids] = useState<Level[]>([])
@@ -66,6 +66,9 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           const data = JSON.parse(e.data)
           const newAsks = buildLevels(data.a ?? [], 'ask')
           const newBids = buildLevels(data.b ?? [], 'bid')
+          if (newAsks.length > 0 && newBids.length > 0) {
+            setCurrentPrice(symbol, (newAsks[0].price + newBids[0].price) / 2)
+          }
           // For display: asks reversed so highest ask is at top, bids start from highest
           setAsks([...newAsks].reverse())
           setBids(newBids)
@@ -82,7 +85,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       alive = false
       ws?.close()
     }
-  }, [symbol])
+  }, [symbol, setCurrentPrice])
 
   const maxSum = Math.max(
     asks[asks.length - 1]?.sum ?? 0,
