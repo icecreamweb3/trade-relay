@@ -72,7 +72,6 @@ export function ProfileScreen() {
   const maxPnl = Math.max(...daily.map(d => Math.abs(d.pnl)), 1)
   const hasSingleDay = daily.length === 1
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
-  const chartAxisMin = formatSignedAmount(-maxPnl, 2)
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] overflow-auto">
@@ -105,20 +104,17 @@ export function ProfileScreen() {
               <div className="rounded border border-[#31343b] bg-[#202225] px-3 py-4">
                 <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
                   <span>{daily[0].date}</span>
-                  <span className="font-mono">range {chartAxisMin} / {chartAxisMax}</span>
+                  <span className="font-mono">range 0.00 / {chartAxisMax}</span>
                 </div>
                 <div className="mb-2 flex items-center justify-between text-[10px] text-[#59606c]">
                   <span>{chartAxisMax}</span>
                   <span>0.00</span>
-                  <span>{chartAxisMin}</span>
                 </div>
                 <div className={`flex h-40 items-end gap-3 ${hasSingleDay ? 'justify-center' : 'justify-between'}`}>
                   {daily.map((d) => {
-                    const barHeight = Math.max(6, Math.round((Math.abs(d.pnl) / maxPnl) * 48))
+                    const barHeight = Math.max(10, Math.round((Math.abs(d.pnl) / maxPnl) * 88))
                     const isUp = d.pnl >= 0
-                    const barStyle = isUp
-                      ? { bottom: '50%', height: `${barHeight}px` }
-                      : { top: '50%', height: `${barHeight}px` }
+                    const barStyle = { height: `${barHeight}px` }
 
                     return (
                       <div
@@ -129,10 +125,9 @@ export function ProfileScreen() {
                         <div className={`text-[11px] font-mono ${isUp ? 'text-buy' : 'text-sell'}`}>
                           {formatSignedAmount(d.pnl, 2)}
                         </div>
-                        <div className="relative h-28 w-full rounded-md border border-[#31343b] bg-[#17191d] px-2">
-                          <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-[#48505c]" />
+                        <div className="flex h-28 w-full items-end justify-center px-3">
                           <div
-                            className={`absolute left-2 right-2 rounded-sm ${isUp ? 'bg-[#00c853]' : 'bg-[#ff1744]'} opacity-85 transition-opacity hover:opacity-100`}
+                            className={`w-full rounded-t-sm ${isUp ? 'bg-[#00c853]' : 'bg-[#ff1744]'} opacity-90 transition-opacity hover:opacity-100`}
                             style={barStyle}
                           />
                         </div>
