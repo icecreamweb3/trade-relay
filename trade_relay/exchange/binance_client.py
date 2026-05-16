@@ -233,18 +233,34 @@ class BinanceClient:
                 total_buffer = self.timestamp_buffer + max(network_latency_ms, 0) + 500
                 self.client.timestamp_offset = offset - total_buffer
                 self.last_time_sync = time_module.time()
-                
-                logger.debug(f"🕐 时间同步成功: 服务器时间={server_time_ms}, 本地时间={local_time_ms}, 网络延迟={network_latency_ms}ms, 偏移量={offset}ms, 总缓冲={total_buffer}ms, 设置偏移={self.client.timestamp_offset}ms")
+
+                logger.info(
+                    "🕐 Binance 时间同步 | force=%s server_time=%s local_time=%s latency_ms=%s raw_offset_ms=%s total_buffer_ms=%s applied_offset_ms=%s",
+                    force,
+                    server_time_ms,
+                    local_time_ms,
+                    network_latency_ms,
+                    offset,
+                    total_buffer,
+                    self.client.timestamp_offset,
+                )
             else:
                 # If can't get server time, set offset to negative value to slow down timestamp
                 self.client.timestamp_offset = -3000  # 增加默认缓冲
                 self.last_time_sync = time_module.time()
-                logger.debug(f"⚠️  无法获取服务器时间，设置默认偏移量: {self.client.timestamp_offset}ms")
+                logger.warning(
+                    "⚠️ Binance 时间同步未返回 serverTime，使用默认偏移 applied_offset_ms=%s",
+                    self.client.timestamp_offset,
+                )
         except Exception as e:
             # 如果同步失败，设置一个保守的负偏移量
             self.client.timestamp_offset = -3000  # 增加默认缓冲
             self.last_time_sync = time_module.time()
-            logger.debug(f"⚠️  时间同步失败: {e}，设置默认偏移量: {self.client.timestamp_offset}ms")
+            logger.warning(
+                "⚠️ Binance 时间同步失败: %s，使用默认偏移 applied_offset_ms=%s",
+                e,
+                self.client.timestamp_offset,
+            )
     
     def _should_resync_time(self) -> bool:
         """
@@ -855,6 +871,8 @@ class BinanceClient:
                 if symbol:
                     params["symbol"] = symbol
                 _, query = self._generate_signed_request_body(params, debug=False)
+                request_timestamp = params.get("timestamp")
+                request_recv_window = params.get("recvWindow")
                 response = _requests.get(
                     f"{url}?{query}",
                     headers={"X-MBX-APIKEY": self.api_key},
@@ -865,7 +883,22 @@ class BinanceClient:
                 return response.json() or []
             except Exception as e:
                 if self._is_timestamp_error_exception(e) and attempt < self.MAX_TIMESTAMP_RETRIES:
-                    logger.warning(f"⏰ get_position_information 时间戳错误重试 (attempt {attempt + 1}/{self.MAX_TIMESTAMP_RETRIES + 1})")
+                    response_text = ""
+                    if hasattr(e, "response") and getattr(e, "response") is not None:
+                        try:
+                            response_text = getattr(e.response, "text", "") or ""
+                        except Exception:
+                            response_text = ""
+                    logger.warning(
+                        "⏰ get_position_information 时间戳错误重试 (attempt %s/%s) | symbol=%s request_timestamp=%s recv_window=%s applied_offset_ms=%s response=%s",
+                        attempt + 1,
+                        self.MAX_TIMESTAMP_RETRIES + 1,
+                        symbol or "ALL",
+                        request_timestamp,
+                        request_recv_window,
+                        getattr(self.client, 'timestamp_offset', None),
+                        response_text[:500] if response_text else str(e),
+                    )
                     self.set_timestamp_offset(force=True)
                     continue
                 logger.debug(f"get_position_information v2 failed, falling back to SDK: {e}")
