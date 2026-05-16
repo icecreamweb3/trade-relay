@@ -127,6 +127,17 @@ class LeverageUpdateIn(BaseModel):
     leverage: int
 
 
+def _admin_account_summary(symbol: str | None) -> AccountSummaryOut:
+    base_asset, quote_asset = split_trading_symbol(symbol)
+    return AccountSummaryOut(
+        symbol=symbol,
+        base_asset=base_asset,
+        quote_asset=quote_asset,
+        has_api_credentials=False,
+        message=None,
+    )
+
+
 @router.get("/summary", response_model=AccountSummaryOut)
 def get_account_summary(
     symbol: str | None = Query(default=None),
@@ -136,6 +147,10 @@ def get_account_summary(
     username = user["username"]
     user_id = int(user["sub"])
     normalized_symbol = symbol.upper() if symbol else None
+    if user.get("role") == "admin":
+        _invalidate_account_summary_cache(username, normalized_symbol)
+        return _admin_account_summary(normalized_symbol)
+
     base_asset, quote_asset = split_trading_symbol(normalized_symbol)
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)

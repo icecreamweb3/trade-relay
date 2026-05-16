@@ -180,6 +180,7 @@ export function OrderFormWidget({
   const { symbol, currentPrice, markPrice } = useMarketStore()
   const { user } = useAuthStore()
   const { baseAsset, quoteAsset } = useMemo(() => splitTradingSymbol(symbol), [symbol])
+  const isAdminAccount = user?.role === 'admin'
 
   const [side, setSide] = useState<Side>('BUY')
   const [marginType, setMarginType] = useState<MarginType>('CROSS')
@@ -234,7 +235,7 @@ export function OrderFormWidget({
       return () => { alive = false }
     }
 
-    if (!user?.username) {
+    if (!user?.username || isAdminAccount) {
       setAccountSummary(emptyAccountSummary)
       setAccountLoading(false)
       return () => { alive = false }
@@ -284,17 +285,17 @@ export function OrderFormWidget({
     forceLoadAccountSummaryRef.current = () => loadAccountSummary(true)
     const timer = setInterval(loadAccountSummary, 15000)
     return () => { alive = false; clearInterval(timer) }
-  }, [isActive, user?.username, symbol, baseAsset, quoteAsset])
+  }, [isActive, user?.username, isAdminAccount, symbol, baseAsset, quoteAsset])
 
   // Refresh account summary immediately when external trigger fires (e.g. position closed)
   useEffect(() => {
-    if (!refreshTrigger || !isActive || !user?.username) return
+    if (!refreshTrigger || !isActive || !user?.username || isAdminAccount) return
     void forceLoadAccountSummaryRef.current?.()
-  }, [refreshTrigger, isActive, user?.username])
+  }, [refreshTrigger, isActive, user?.username, isAdminAccount])
 
   // Load positions for current symbol to compute Avail. Close instantly (without waiting for account summary)
   useEffect(() => {
-    if (!isActive || !user?.username || !symbol) {
+    if (!isActive || !user?.username || !symbol || isAdminAccount) {
       setPositionLongQty(null)
       setPositionShortQty(null)
       return
@@ -320,7 +321,7 @@ export function OrderFormWidget({
     }
     void load()
     return () => { alive = false }
-  }, [isActive, user?.username, symbol, refreshTrigger])
+  }, [isActive, user?.username, symbol, refreshTrigger, isAdminAccount])
 
   const baseTicker = baseAsset
 
