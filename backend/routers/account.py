@@ -8,6 +8,8 @@ import re
 import time
 from threading import Lock
 
+import requests
+
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
@@ -135,6 +137,12 @@ class LeverageUpdateIn(BaseModel):
     leverage: int
 
 
+class OrderBookDepthOut(BaseModel):
+    lastUpdateId: int | None = None
+    bids: list[list[str]] = []
+    asks: list[list[str]] = []
+
+
 def _admin_account_summary(symbol: str | None) -> AccountSummaryOut:
     base_asset, quote_asset = split_trading_symbol(symbol)
     return AccountSummaryOut(
@@ -143,6 +151,34 @@ def _admin_account_summary(symbol: str | None) -> AccountSummaryOut:
         quote_asset=quote_asset,
         has_api_credentials=False,
         message=None,
+    )
+
+
+@router.get("/order-book-depth", response_model=OrderBookDepthOut)
+def get_order_book_depth(
+    symbol: str = Query(..., min_length=1),
+    limit: int = Query(default=1000, ge=5, le=1000),
+):
+    normalized_symbol = symbol.upper()
+    try:
+        response = requests.get(
+            "https://fapi.binance.com/fapi/v1/depth",
+            params={"symbol": normalized_symbol, "limit": limit},
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch Binance order book depth for {normalized_symbol}: {exc}") from exc
+
+    return OrderBookDepthOut(
+        lastUpdateId=payload.get("lastUpdateId"),
+        bids=payload.get("bids") or [],
+        asks=payload.get("asks") or [],
     )
 
 
