@@ -37,7 +37,7 @@ interface Trade {
 interface PositionHistory {
   id: number; username: string; symbol: string; side: string
   entry_price: number; close_price: number; quantity: number
-  realized_pnl: number; commission: number; created_at: string
+  realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; update_at?: string | null
 }
 
 interface MarketCloseConfirm {
@@ -621,11 +621,11 @@ export function PositionsPanel({
             <thead><tr>
               <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th>
               <th>{t('pos.size')}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
-              <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th>
+              <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th>
             </tr></thead>
             <tbody>
               {positionHistory.length === 0
-                ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positionHistory.map(ph => (
                   <tr key={ph.id}>
                     <td className="text-[#858585]">{formatTimestamp(ph.created_at)}</td>
@@ -638,6 +638,7 @@ export function PositionsPanel({
                       {ph.realized_pnl >= 0 ? '+' : ''}{ph.realized_pnl.toFixed(4)}
                     </td>
                     <td className="font-mono text-[#858585]">{ph.commission.toFixed(4)}</td>
+                    <td className="font-mono text-[#858585]">{ph.commission_asset || '-'}</td>
                   </tr>
                 ))
               }

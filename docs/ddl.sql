@@ -85,8 +85,10 @@ CREATE TABLE position_history (
     quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
     realized_pnl  DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
     commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
+    commission_asset VARCHAR(16)  DEFAULT NULL COMMENT '手续费币种',
     position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     KEY idx_user_id (user_id),
     KEY idx_username (username),
     KEY idx_symbol (symbol),
@@ -184,7 +186,9 @@ ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id,
     ADD COLUMN IF NOT EXISTS username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id,
     ADD COLUMN IF NOT EXISTS side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol,
-    ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission;
+    ADD COLUMN IF NOT EXISTS commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission,
+    ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission,
+    ADD COLUMN IF NOT EXISTS update_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at;
 
 -- positions 旧结构不再兼容。应用启动时会：
 -- 1. 备份旧表到 positions_legacy_backup

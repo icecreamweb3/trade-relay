@@ -686,8 +686,10 @@ def init_db() -> None:
                     quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
                     realized_pnl  DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
                     commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
+                    commission_asset VARCHAR(16)  DEFAULT NULL COMMENT '手续费币种',
                     position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
                     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    update_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                     PRIMARY KEY (id),
                     KEY idx_user_id (user_id),
                     KEY idx_username (username),
@@ -700,7 +702,9 @@ def init_db() -> None:
                 ("user_id",     "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
                 ("username",    "ALTER TABLE position_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
                 ("side",        "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
+                ("commission_asset", "ALTER TABLE position_history ADD COLUMN commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission"),
                 ("position_id", "ALTER TABLE position_history ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission"),
+                ("update_at",   "ALTER TABLE position_history ADD COLUMN update_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -1680,12 +1684,10 @@ def get_recent_platform_trades(limit: int = 30) -> list:
 
 
 def get_daily_pnl(user_id: int) -> list:
-    """Return daily realized P&L for a user from filled orders.
+    """Return daily realized P&L for a user from position history.
 
     Each row: { date: str, pnl: float, commission: float }
-    P&L is approximated as sum of (avg_price * filled_qty * sign) per day,
-    where SELL = +revenue and BUY = -cost (net cash flow proxy).
-    commission is subtracted.
+    P&L and commission are aggregated from closed-position records.
     """
     conn = get_connection()
     try:
@@ -1693,17 +1695,39 @@ def get_daily_pnl(user_id: int) -> list:
             cur.execute(
                 """
                 SELECT DATE(created_at) AS date,
-                       SUM(CASE WHEN side='SELL' THEN  avg_price * filled_qty
-                                WHEN side='BUY'  THEN -avg_price * filled_qty
-                                ELSE 0 END)           AS pnl,
-                       SUM(COALESCE(commission, 0))    AS commission
+                       SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                       SUM(COALESCE(commission, 0))   AS commission
+                FROM position_history
+                WHERE user_id = %s
+                GROUP BY DATE(created_at)
+                ORDER BY date ASC
+                """,
+                (user_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_total_commission_by_asset(user_id: int) -> list:
+    """Return total commission grouped by commission_asset for a user.
+
+    Each row: { asset: str, total: float }
+    Data is aggregated from filled orders to preserve existing totals for historical rows.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(TRIM(commission_asset), ''), 'UNKNOWN') AS asset,
+                       SUM(COALESCE(commission, 0)) AS total
                 FROM orders
                 WHERE user_id = %s
                   AND status = 'FILLED'
-                  AND avg_price IS NOT NULL
-                  AND filled_qty > 0
-                GROUP BY DATE(created_at)
-                ORDER BY date ASC
+                  AND (commission IS NOT NULL OR commission_asset IS NOT NULL)
+                GROUP BY COALESCE(NULLIF(TRIM(commission_asset), ''), 'UNKNOWN')
+                ORDER BY asset ASC
                 """,
                 (user_id,),
             )
@@ -1960,6 +1984,7 @@ def add_position_history(
     quantity: float,
     realized_pnl: float = 0.0,
     commission: float = 0.0,
+    commission_asset: Optional[str] = None,
     position_id: Optional[int] = None,
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
@@ -1976,6 +2001,7 @@ def add_position_history(
             "quantity": quantity,
             "realized_pnl": realized_pnl,
             "commission": commission,
+            "commission_asset": commission_asset,
             "position_id": position_id,
         },
     )
@@ -1984,9 +2010,9 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, position_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission, position_id),
+                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (user_id, username, symbol, side.upper(), entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id),
             )
             conn.commit()
             _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
@@ -1995,7 +2021,12 @@ def add_position_history(
         conn.close()
 
 
-def update_position_history_values(history_id: int, realized_pnl: float, commission: float) -> bool:
+def update_position_history_values(
+    history_id: int,
+    realized_pnl: float,
+    commission: float,
+    commission_asset: Optional[str] = None,
+) -> bool:
     _log_db_write(
         "update",
         "position_history",
@@ -2003,15 +2034,22 @@ def update_position_history_values(history_id: int, realized_pnl: float, commiss
             "history_id": history_id,
             "realized_pnl": realized_pnl,
             "commission": commission,
+            "commission_asset": commission_asset,
         },
     )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE position_history SET realized_pnl = %s, commission = %s WHERE id = %s",
-                (realized_pnl, commission, history_id),
-            )
+            if commission_asset is None:
+                cur.execute(
+                    "UPDATE position_history SET realized_pnl = %s, commission = %s WHERE id = %s",
+                    (realized_pnl, commission, history_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE position_history SET realized_pnl = %s, commission = %s, commission_asset = %s WHERE id = %s",
+                    (realized_pnl, commission, commission_asset, history_id),
+                )
             conn.commit()
             success = cur.rowcount > 0
             _log_db_write_result("update", "position_history", history_id=history_id, affected_rows=cur.rowcount, success=success)
@@ -2068,7 +2106,7 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
     """返回持仓历史记录。user_id=None 时返回所有用户。"""
     params: list = []
     sql = """SELECT id, user_id, username, symbol, side, entry_price, close_price,
-                    quantity, realized_pnl, commission, created_at
+                    quantity, realized_pnl, commission, commission_asset, position_id, created_at, update_at
              FROM position_history"""
     if user_id is not None:
         sql += " WHERE user_id = %s"

@@ -36,7 +36,9 @@ class PositionHistoryOut(BaseModel):
     quantity: float
     realized_pnl: float
     commission: float
+    commission_asset: Optional[str] = None
     created_at: str
+    update_at: Optional[str] = None
 
 # Per-user TTL cache: user_id (None = admin) → (timestamp, result)
 _positions_cache: dict[int | None, tuple[float, list]] = {}
@@ -353,7 +355,9 @@ def get_position_history(user: dict = Depends(get_current_user)):
             quantity=float(r["quantity"]),
             realized_pnl=float(r["realized_pnl"]),
             commission=float(r["commission"]),
+            commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
             created_at=str(r["created_at"]),
+            update_at=str(r["update_at"]) if r.get("update_at") else None,
         )
         for r in rows
     ]
@@ -374,6 +378,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         quantity=body.quantity,
         realized_pnl=body.realized_pnl,
         commission=body.commission,
+        commission_asset=body.commission_asset,
     )
     rows = db_module.get_position_history(user_id=user_id, limit=1)
     r = next((x for x in rows if x["id"] == new_id), rows[0])
@@ -387,5 +392,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         quantity=float(r["quantity"]),
         realized_pnl=float(r["realized_pnl"]),
         commission=float(r["commission"]),
+        commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
         created_at=str(r["created_at"]),
+        update_at=str(r["update_at"]) if r.get("update_at") else None,
     )

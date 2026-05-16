@@ -62,22 +62,49 @@ def _select_related_position_history_rows(order_row: dict, total_qty: float) -> 
     return selected_rows or [matching_rows[0]]
 
 
-def _sync_position_history_metrics(order_row: dict, total_qty: float, total_realized_pnl: float, total_commission: float) -> None:
+def _normalize_commission_asset(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_filled_order_metrics(order_row: dict) -> tuple[float, float, float, str | None]:
+    total_qty = abs(_safe_float(order_row.get("filled_qty")))
+    if total_qty <= 0:
+        total_qty = abs(_safe_float(order_row.get("quantity")))
+
+    total_realized_pnl = _safe_float(order_row.get("realized_pnl"))
+    total_commission = _safe_float(order_row.get("commission"))
+    commission_asset = _normalize_commission_asset(order_row.get("commission_asset"))
+    return total_qty, total_realized_pnl, total_commission, commission_asset
+
+
+def _sync_position_history_metrics(
+    order_row: dict,
+    total_qty: float,
+    total_realized_pnl: float,
+    total_commission: float,
+    commission_asset: str | None,
+) -> int:
     selected_rows = _select_related_position_history_rows(order_row, total_qty)
     if not selected_rows:
-        return
+        return 0
 
     current_realized = sum(_safe_float(row.get("realized_pnl")) for row in selected_rows)
     current_commission = sum(_safe_float(row.get("commission")) for row in selected_rows)
     delta_realized = total_realized_pnl - current_realized
     delta_commission = total_commission - current_commission
+    asset_needs_update = commission_asset is not None and any(
+        _normalize_commission_asset(row.get("commission_asset")) != commission_asset
+        for row in selected_rows
+    )
 
-    if abs(delta_realized) < 1e-12 and abs(delta_commission) < 1e-12:
-        return
+    if abs(delta_realized) < 1e-12 and abs(delta_commission) < 1e-12 and not asset_needs_update:
+        return 0
 
     total_selected_qty = sum(abs(_safe_float(row.get("quantity"))) for row in selected_rows)
     remaining_realized = delta_realized
     remaining_commission = delta_commission
+    updated_rows = 0
 
     for index, row in enumerate(selected_rows):
         current_row_realized = _safe_float(row.get("realized_pnl"))
@@ -95,11 +122,41 @@ def _sync_position_history_metrics(order_row: dict, total_qty: float, total_real
             next_realized = current_row_realized + realized_piece
             next_commission = current_row_commission + commission_piece
 
-        db.update_position_history_values(
+        if db.update_position_history_values(
             int(row["id"]),
             realized_pnl=next_realized,
             commission=next_commission,
-        )
+            commission_asset=commission_asset,
+        ):
+            updated_rows += 1
+
+    return updated_rows
+
+
+def sync_position_history_from_filled_close_order(order_row: Optional[dict]) -> int:
+    if not order_row:
+        return 0
+
+    latest_order_row = dict(order_row)
+    if order_row.get("id"):
+        refreshed = db.get_order_by_id(int(order_row["id"]))
+        if refreshed:
+            latest_order_row = {
+                **refreshed,
+                **{key: value for key, value in order_row.items() if value is not None},
+            }
+
+    if str(latest_order_row.get("trade_direction") or "").upper() != "CLOSE":
+        return 0
+
+    total_qty, total_realized_pnl, total_commission, commission_asset = _resolve_filled_order_metrics(latest_order_row)
+    return _sync_position_history_metrics(
+        latest_order_row,
+        total_qty,
+        total_realized_pnl,
+        total_commission,
+        commission_asset,
+    )
 
 
 def sync_filled_order_trade_details(*, username: str, client, order_row: Optional[dict]) -> None:
@@ -155,7 +212,15 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
         **update_kwargs,
     )
     if trade_direction == "CLOSE":
-        _sync_position_history_metrics(latest_order_row, total_qty, total_realized_pnl, total_commission)
+        sync_position_history_from_filled_close_order(
+            {
+                **latest_order_row,
+                "filled_qty": total_qty if total_qty > 0 else latest_order_row.get("filled_qty"),
+                "realized_pnl": total_realized_pnl,
+                "commission": total_commission,
+                "commission_asset": commission_asset,
+            }
+        )
     logger.info(
         "[ORDER_FLOW] phase=filled_order_trade_details_synced username=%s order_id=%s exchange_order_id=%s direction=%s qty=%s rpnl=%s commission=%s asset=%s",
         username,

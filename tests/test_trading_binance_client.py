@@ -368,7 +368,7 @@ def test_sync_close_order_trade_details_updates_orders_and_position_history(monk
     monkeypatch.setattr(
         close_trade_sync.db,
         "update_position_history_values",
-        lambda history_id, realized_pnl, commission: history_updates.append((history_id, realized_pnl, commission)) or True,
+        lambda history_id, realized_pnl, commission, commission_asset=None: history_updates.append((history_id, realized_pnl, commission, commission_asset)) or True,
     )
 
     close_trade_sync.sync_close_order_trade_details(
@@ -395,6 +395,7 @@ def test_sync_close_order_trade_details_updates_orders_and_position_history(monk
     assert len(history_updates) == 2
     assert round(sum(item[1] for item in history_updates), 8) == 4.0
     assert round(sum(item[2] for item in history_updates), 8) == 0.3
+    assert {item[3] for item in history_updates} == {"USDC"}
 
 
 def test_sync_filled_open_order_trade_details_updates_order_commission_only(monkeypatch):
@@ -443,7 +444,7 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
     monkeypatch.setattr(
         close_trade_sync.db,
         "update_position_history_values",
-        lambda history_id, realized_pnl, commission: history_updates.append((history_id, realized_pnl, commission)) or True,
+        lambda history_id, realized_pnl, commission, commission_asset=None: history_updates.append((history_id, realized_pnl, commission, commission_asset)) or True,
     )
 
     close_trade_sync.sync_filled_order_trade_details(
@@ -467,6 +468,114 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
         },
     )]
     assert history_updates == []
+
+
+def test_sync_position_history_from_filled_close_order_uses_order_totals(monkeypatch):
+    from trade_relay.trading import close_trade_sync
+
+    history_updates = []
+
+    latest_order = {
+        "id": 61,
+        "user_id": 1,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "trade_direction": "CLOSE",
+        "position_id": 12,
+        "filled_qty": 0.003,
+        "realized_pnl": 4.0,
+        "commission": 0.3,
+        "commission_asset": "USDC",
+    }
+
+    monkeypatch.setattr(close_trade_sync.db, "get_order_by_id", lambda order_id: latest_order if order_id == 61 else None)
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "get_position_history",
+        lambda user_id, limit=200: [
+            {
+                "id": 701,
+                "symbol": "BTCUSDC",
+                "side": "LONG",
+                "quantity": 0.001,
+                "realized_pnl": 0.0,
+                "commission": 0.0,
+                "commission_asset": None,
+                "position_id": 12,
+            },
+            {
+                "id": 702,
+                "symbol": "BTCUSDC",
+                "side": "LONG",
+                "quantity": 0.002,
+                "realized_pnl": 0.0,
+                "commission": 0.0,
+                "commission_asset": None,
+                "position_id": 12,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "update_position_history_values",
+        lambda history_id, realized_pnl, commission, commission_asset=None: history_updates.append((history_id, realized_pnl, commission, commission_asset)) or True,
+    )
+
+    updated_rows = close_trade_sync.sync_position_history_from_filled_close_order({"id": 61, "trade_direction": "CLOSE"})
+
+    assert updated_rows == 2
+    assert round(sum(item[1] for item in history_updates), 8) == 4.0
+    assert round(sum(item[2] for item in history_updates), 8) == 0.3
+    assert {item[3] for item in history_updates} == {"USDC"}
+
+
+def test_sync_position_history_from_filled_close_order_backfills_asset_without_numeric_delta(monkeypatch):
+    from trade_relay.trading import close_trade_sync
+
+    history_updates = []
+
+    latest_order = {
+        "id": 62,
+        "user_id": 1,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "trade_direction": "CLOSE",
+        "position_id": 13,
+        "filled_qty": 0.003,
+        "realized_pnl": 4.0,
+        "commission": 0.3,
+        "commission_asset": "USDC",
+    }
+
+    monkeypatch.setattr(close_trade_sync.db, "get_order_by_id", lambda order_id: latest_order if order_id == 62 else None)
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "get_position_history",
+        lambda user_id, limit=200: [
+            {
+                "id": 703,
+                "symbol": "BTCUSDC",
+                "side": "LONG",
+                "quantity": 0.003,
+                "realized_pnl": 4.0,
+                "commission": 0.3,
+                "commission_asset": None,
+                "position_id": 13,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "update_position_history_values",
+        lambda history_id, realized_pnl, commission, commission_asset=None: history_updates.append((history_id, realized_pnl, commission, commission_asset)) or True,
+    )
+
+    updated_rows = close_trade_sync.sync_position_history_from_filled_close_order({"id": 62, "trade_direction": "CLOSE"})
+
+    assert updated_rows == 1
+    assert history_updates == [(703, 4.0, 0.3, "USDC")]
 
 
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):

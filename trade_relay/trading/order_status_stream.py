@@ -502,6 +502,7 @@ class UserOrderStatusStream:
                 quantity=fill_qty,
                 realized_pnl=realized_pnl,
                 commission=0.0,  # commission not available from poll; WS path has it
+                commission_asset=None,
                 position_id=position_id,
             )
             logger.info(
@@ -656,6 +657,7 @@ class UserOrderStatusStream:
                 quantity=last_fill_qty,
                 realized_pnl=realized_pnl,
                 commission=commission,
+                commission_asset=str(commission_asset) if commission_asset else None,
                 position_id=position_id,
             )
             logger.info(

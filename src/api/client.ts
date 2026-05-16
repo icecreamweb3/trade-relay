@@ -128,7 +128,9 @@ interface ApiPositionHistory {
   quantity: number
   realized_pnl: number
   commission: number
+  commission_asset?: string | null
   created_at: string
+  update_at?: string | null
 }
 
 interface ApiAccountSummary {
@@ -159,6 +161,10 @@ interface ApiProfileStats {
   win_rate: number
   total_trades: number
   total_commission: number
+  total_commission_by_asset: Array<{
+    asset: string
+    total: number
+  }>
 }
 
 interface ApiDailyPnl {
