@@ -168,6 +168,26 @@ interface ApiProfileOverview {
   daily_pnl: ApiDailyPnl[]
 }
 
+const inflightGetRequests = new Map<string, Promise<unknown>>()
+
+function buildRequestKey(path: string, params?: Record<string, QueryValue>): string {
+  if (!params || Object.keys(params).length === 0) return path
+  const url = new URL(path, 'http://local.request')
+  const entries = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .sort(([left], [right]) => left.localeCompare(right))
+
+  for (const [key, value] of entries) {
+    if (Array.isArray(value)) {
+      for (const item of value) url.searchParams.append(key, String(item))
+    } else {
+      url.searchParams.set(key, String(value))
+    }
+  }
+
+  return `${url.pathname}?${url.searchParams.toString()}`
+}
+
 function makeBackendError(status: number, body: unknown) {
   const detail =
     typeof body === 'object' && body !== null && 'detail' in body
@@ -185,11 +205,17 @@ async function request<T>(
   path: string,
   options: { body?: unknown; params?: Record<string, QueryValue> } = {},
 ): Promise<T> {
+  const requestKey = method === 'GET' ? buildRequestKey(path, options.params) : null
+  if (requestKey) {
+    const inflight = inflightGetRequests.get(requestKey)
+    if (inflight) return inflight as Promise<T>
+  }
+
   const perfLabel = `${method} ${path}`
   const perfActive = perf.isActive()
   const perfSpan = perfActive ? perf.spanStart(`api ${perfLabel}`) : null
 
-  try {
+  const execute = async (): Promise<T> => {
     let result: T
     if (window.electronAPI?.backendRequest) {
       const res = await window.electronAPI.backendRequest(method, path, {
@@ -214,9 +240,19 @@ async function request<T>(
     }
     if (perfActive) perf.spanEnd(perfSpan, 'ok')
     return result
-  } catch (err) {
+  }
+
+  const pending = execute().catch((err) => {
     if (perfActive) perf.spanEnd(perfSpan, 'error')
     throw err
+  })
+
+  if (requestKey) inflightGetRequests.set(requestKey, pending)
+
+  try {
+    return await pending
+  } finally {
+    if (requestKey) inflightGetRequests.delete(requestKey)
   }
 }
 

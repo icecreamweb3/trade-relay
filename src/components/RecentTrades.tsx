@@ -132,7 +132,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
   useEffect(() => {
     load()
     if (!isActive || !isAuthenticated || !isWindowVisible) return
-    const t = setInterval(load, 5000)
+    const t = setInterval(load, 10000)
     return () => clearInterval(t)
   }, [isActive, isAuthenticated, isWindowVisible, load])
 

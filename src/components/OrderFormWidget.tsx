@@ -283,7 +283,7 @@ export function OrderFormWidget({
     loadAccountSummary()
     loadAccountSummaryRef.current = loadAccountSummary
     forceLoadAccountSummaryRef.current = () => loadAccountSummary(true)
-    const timer = setInterval(loadAccountSummary, 15000)
+    const timer = setInterval(loadAccountSummary, 30000)
     return () => { alive = false; clearInterval(timer) }
   }, [isActive, user?.username, isAdminAccount, symbol, baseAsset, quoteAsset])
 

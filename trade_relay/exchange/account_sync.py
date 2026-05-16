@@ -22,6 +22,7 @@ import logging
 _log = logging.getLogger(__name__)
 
 SYNC_INTERVAL_SECONDS = 15
+INITIAL_SYNC_DELAY_SECONDS = max(0.0, float(os.environ.get("ACCOUNT_SYNC_INITIAL_DELAY_SECONDS", "5")))
 
 # 启动时立即同步一次用到的 symbol 白名单，来自环境变量（逗号分隔）
 # 例如 BINANCE_SYMBOL=BTCUSDC  or  ACCOUNT_SYNC_SYMBOLS=BTCUSDC,ETHUSDC
@@ -194,8 +195,16 @@ _sync_thread: threading.Thread | None = None
 
 
 def _sync_loop() -> None:
-    _log.info("[ACCOUNT_SYNC] phase=thread_start interval_seconds=%s", SYNC_INTERVAL_SECONDS)
-    # 第一次立即执行
+    _log.info(
+        "[ACCOUNT_SYNC] phase=thread_start interval_seconds=%s initial_delay_seconds=%s",
+        SYNC_INTERVAL_SECONDS,
+        INITIAL_SYNC_DELAY_SECONDS,
+    )
+    if INITIAL_SYNC_DELAY_SECONDS > 0:
+        _log.info("[ACCOUNT_SYNC] phase=initial_delay seconds=%s", INITIAL_SYNC_DELAY_SECONDS)
+        if _stop_event.wait(timeout=INITIAL_SYNC_DELAY_SECONDS):
+            _log.info("[ACCOUNT_SYNC] phase=thread_stop")
+            return
     _run_once()
     while not _stop_event.wait(timeout=SYNC_INTERVAL_SECONDS):
         _run_once()
