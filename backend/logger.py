@@ -32,8 +32,20 @@ class _SuppressRoutinePollingFilter(logging.Filter):
                 return False
         return True
 
-# 日志目录: <project_root>/logs/
-_LOG_DIR = Path(__file__).parent.parent / "logs"
+# 日志目录: 默认 <project_root>/logs/，Docker 中默认 /app/logs，可通过
+# TRADE_RELAY_LOG_DIR 覆盖。
+def _resolve_log_dir() -> Path:
+    explicit = os.getenv("TRADE_RELAY_LOG_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    default_dir = Path(__file__).parent.parent / "logs"
+    if Path("/app").exists():
+        return Path("/app/logs")
+    return default_dir
+
+
+_LOG_DIR = _resolve_log_dir()
 _MAX_BYTES = 100 * 1024 * 1024   # 100 MB
 _BACKUP_COUNT = 9                  # 最多保留 9 个滚动备份
 

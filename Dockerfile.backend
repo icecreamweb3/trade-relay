@@ -17,6 +17,7 @@ COPY backend ./backend
 COPY trade_relay ./trade_relay
 COPY configs ./configs
 COPY main.py ./
+RUN mkdir -p /app/logs
 
 EXPOSE 8000
 

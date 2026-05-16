@@ -136,8 +136,10 @@ def _get_recent_fills_cached() -> list[OrderOut]:
 
 @router.post("")
 async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)):
-    _log.info("Place order: user=%s symbol=%s side=%s type=%s qty=%s price=%s pos_dir=%s",
-              user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price, body.position_direction)
+    _log.info(
+        "[ORDER_FLOW] phase=request username=%s symbol=%s side=%s type=%s qty=%s price=%s pos_dir=%s",
+        user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price, body.position_direction,
+    )
     session = Session(int(user["sub"]), user["username"], user["role"])
     result = await submit_order(
         session,
@@ -153,9 +155,9 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.position_direction,
     )
     if not result.success:
-        _log.warning("Order failed: user=%s reason=%s", user["username"], result.message)
+        _log.warning("[ORDER_FLOW] phase=failed username=%s reason=%s", user["username"], result.message)
         raise HTTPException(status_code=400, detail=result.message)
-    _log.info("Order placed: order_id=%s user=%s", result.order_id, user["username"])
+    _log.info("[ORDER_FLOW] phase=success order_id=%s username=%s", result.order_id, user["username"])
     return {"ok": True, "order_id": result.order_id, "message": result.message}
 
 
@@ -219,6 +221,13 @@ class CancelOrderRequest(BaseModel):
 async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Depends(get_current_user)):
     """Cancel an open order on Binance and mark it CANCELED in DB."""
     username = user["username"]
+    _log.info(
+        "[ORDER_FLOW] phase=cancel_request username=%s order_id=%s symbol=%s exchange_order_id=%s",
+        username,
+        order_id,
+        body.symbol,
+        body.exchange_order_id,
+    )
 
     order_row = db_module.get_order_by_id(order_id)
     if not order_row:
@@ -234,7 +243,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
     mock = cfg.is_mock_mode(target_username)
     if mock:
         db_module.update_order_status(order_id, "CANCELED")
-        _log.info("Mock cancel: order_id=%s", order_id)
+        _log.info("[ORDER_FLOW] phase=cancel_mock_success order_id=%s username=%s", order_id, username)
         return {"ok": True}
 
     api_key = cfg.get_api_key(target_username)
@@ -247,12 +256,13 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
         client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
         import asyncio
         result = await asyncio.to_thread(client.cancel_order, body.symbol, body.exchange_order_id)
-        _log.info("Binance cancel result: order_id=%s result=%s", order_id, result)
+        _log.info("[ORDER_FLOW] phase=cancel_exchange_success order_id=%s username=%s result=%s", order_id, username, result)
     except Exception as exc:
-        _log.warning("Cancel order failed on Binance: order_id=%s error=%s", order_id, exc)
+        _log.warning("[ORDER_FLOW] phase=cancel_exchange_error order_id=%s username=%s error=%s", order_id, username, exc)
         raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
 
     db_module.update_order_status(order_id, "CANCELED")
+    _log.info("[ORDER_FLOW] phase=cancel_db_success order_id=%s username=%s", order_id, username)
     return {"ok": True}
 
 

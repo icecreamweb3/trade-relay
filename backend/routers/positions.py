@@ -121,16 +121,22 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
 def sync_positions(user: dict = Depends(get_current_user)):
     """从 Binance 拉取最新持仓，写入数据库，并返回更新后的持仓列表。"""
     username = str(user.get("username") or "")
+    _log.info("[POSITION_SYNC] phase=request username=%s", username)
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)
     if api_key and api_secret:
         testnet = cfg_module.is_testnet(username)
+        _log.info("[POSITION_SYNC] phase=exchange_sync username=%s testnet=%s", username, testnet)
         sync_initial_positions_for_user(username, api_key, api_secret, testnet)
         # Invalidate position cache so the subsequent read sees fresh data
         user_id = int(user["sub"]) if user["role"] != "admin" else None
         _positions_cache.pop(user_id, None)
+    else:
+        _log.warning("[POSITION_SYNC] phase=missing_credentials username=%s", username)
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    return _db_positions(user_id=user_id)
+    result = _db_positions(user_id=user_id)
+    _log.info("[POSITION_SYNC] phase=response username=%s positions=%s", username, len(result))
+    return result
 
 
 @router.get("", response_model=list[PositionOut])
@@ -139,9 +145,11 @@ def get_positions(user: dict = Depends(get_current_user)):
     now = time.monotonic()
     cached = _positions_cache.get(user_id)
     if cached and now - cached[0] < _POSITIONS_CACHE_TTL:
+        _log.info("[POSITION_SYNC] phase=cache_hit user_id=%s positions=%s", user_id, len(cached[1]))
         return cached[1]
     result = _db_positions(user_id=user_id)
     _positions_cache[user_id] = (now, result)
+    _log.info("[POSITION_SYNC] phase=cache_miss user_id=%s positions=%s", user_id, len(result))
     return result
 
 
@@ -190,7 +198,7 @@ def set_position_tpsl(
     if validation_errors:
         raise HTTPException(status_code=400, detail="; ".join(validation_errors))
     _log.info(
-        "TP/SL validated: user=%s pos=%d symbol=%s side=%s entry_price=%s tp=%s sl=%s",
+        "[POSITION_SYNC] phase=tpsl_validated user=%s pos=%d symbol=%s side=%s entry_price=%s tp=%s sl=%s",
         username, position_id, symbol, position_side, entry_price, body.tp_price, body.sl_price,
     )
 
@@ -218,7 +226,7 @@ def set_position_tpsl(
     # Invalidate position cache
     _positions_cache.pop(user_id, None)
 
-    _log.info("TP/SL set for %s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
+    _log.info("[POSITION_SYNC] phase=tpsl_set user=%s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
     return {"ok": True, "tp_price": body.tp_price, "sl_price": body.sl_price}
 
 

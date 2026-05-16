@@ -71,7 +71,7 @@ def _log_db_write(db_action: str, table: str, fields: dict) -> None:
     if _should_skip_db_log(db_action, table):
         return
     logger.info(
-        "DB write | action=%s table=%s fields=%s",
+        "[DB_WRITE] phase=request action=%s table=%s fields=%s",
         db_action,
         table,
         _sanitize_db_log_fields(fields),
@@ -82,10 +82,28 @@ def _log_db_write_result(db_action: str, table: str, **result) -> None:
     if _should_skip_db_log(db_action, table):
         return
     logger.info(
-        "DB write result | action=%s table=%s result=%s",
+        "[DB_WRITE] phase=result action=%s table=%s result=%s",
         db_action,
         table,
         _sanitize_db_log_fields(result),
+    )
+
+
+def _log_db_query(table: str, query_name: str, **details) -> None:
+    logger.info(
+        "[DB_QUERY] phase=request table=%s query=%s details=%s",
+        table,
+        query_name,
+        _sanitize_db_log_fields(details),
+    )
+
+
+def _log_db_query_result(table: str, query_name: str, **details) -> None:
+    logger.info(
+        "[DB_QUERY] phase=result table=%s query=%s details=%s",
+        table,
+        query_name,
+        _sanitize_db_log_fields(details),
     )
 
 
@@ -830,6 +848,7 @@ def upsert_account_summary(user_id: int, symbol: Optional[str], data: dict) -> N
 def get_account_summary_from_db(user_id: int, symbol: Optional[str]) -> Optional[dict]:
     """Read the latest account_summary snapshot from DB. Returns None if not found."""
     normalized = symbol.upper() if symbol else None
+    _log_db_query("account_summary", "get_account_summary_from_db", user_id=user_id, symbol=normalized)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -837,7 +856,15 @@ def get_account_summary_from_db(user_id: int, symbol: Optional[str]) -> Optional
                 "SELECT * FROM account_summary WHERE user_id = %s AND symbol <=> %s",
                 (user_id, normalized),
             )
-            return cur.fetchone()
+            row = cur.fetchone()
+            _log_db_query_result(
+                "account_summary",
+                "get_account_summary_from_db",
+                user_id=user_id,
+                symbol=normalized,
+                found=bool(row),
+            )
+            return row
     finally:
         conn.close()
 

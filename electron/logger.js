@@ -26,8 +26,14 @@ let _filePath  = null   // 当前日志文件路径
 let _written   = 0      // 已写入字节数
 
 function _resolveLogDir() {
+  const explicitDir = String(process.env.TRADE_RELAY_LOG_DIR || '').trim()
+  if (explicitDir) return explicitDir
+
   const packagedDir = __dirname.includes('app.asar')
   if (!packagedDir) return path.join(__dirname, '../logs')
+
+  const exeDir = path.dirname(process.execPath)
+  if (exeDir) return path.join(exeDir, 'logs')
 
   if (process.platform === 'win32') {
     const base = process.env.APPDATA || process.env.LOCALAPPDATA

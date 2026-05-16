@@ -8,6 +8,8 @@ services:
     env_file:
       - path: .env.production
         required: false
+    volumes:
+      - ./logs:/app/logs
     expose:
       - "8000"
     healthcheck:

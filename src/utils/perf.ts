@@ -20,7 +20,7 @@ export const perf = {
   start(label = 'login-submit') {
     _start = performance.now()
     _prev = _start
-    log(`[perf] ▶ START — ${label}`)
+    log(`[FRONTEND_PERF] START | ${label}`)
   },
 
   mark(label: string) {
@@ -29,7 +29,7 @@ export const perf = {
     const elapsed = Math.round(now - _start)
     const delta = Math.round(now - _prev)
     _prev = now
-    log(`[perf] t=${elapsed}ms prev=+${delta}ms | ${label}`)
+    log(`[FRONTEND_PERF] MARK | t=${elapsed}ms prev=+${delta}ms | ${label}`)
   },
 
   spanStart(label: string) {
@@ -37,7 +37,7 @@ export const perf = {
     const token = `${label}#${performance.now()}#${Math.random().toString(36).slice(2, 8)}`
     const now = performance.now()
     _spans.set(token, { label, startedAt: now })
-    log(`[perf] t=${fmtElapsed(now)} | ${label} | start`)
+    log(`[FRONTEND_PERF] SPAN_START | t=${fmtElapsed(now)} | ${label}`)
     return token
   },
 
@@ -48,14 +48,14 @@ export const perf = {
     _spans.delete(token)
     const now = performance.now()
     const duration = Math.round(now - span.startedAt)
-    log(`[perf] t=${fmtElapsed(now)} | ${span.label} | ${status} | duration=${duration}ms`)
+    log(`[FRONTEND_PERF] SPAN_END | t=${fmtElapsed(now)} | ${span.label} | ${status} | duration=${duration}ms`)
   },
 
   finish(label = 'all-data-loaded') {
     if (_start === 0) return
     this.mark(label)
     const total = Math.round(performance.now() - _start)
-    log(`[perf] ■ TOTAL: ${total}ms`)
+    log(`[FRONTEND_PERF] TOTAL | ${total}ms`)
     _start = 0
     _prev = 0
     _spans.clear()

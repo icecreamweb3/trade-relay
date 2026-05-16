@@ -87,6 +87,14 @@ def _set_cached_account_summary(username: str, symbol: str | None, summary: 'Acc
     ttl_seconds = _account_summary_cache_ttl(summary)
     with _account_summary_cache_lock:
         _account_summary_cache[cache_key] = (time.monotonic() + ttl_seconds, payload)
+    _log.info(
+        "[ACCOUNT_SUMMARY] phase=cache_set username=%s symbol=%s ttl_seconds=%s has_message=%s has_api_credentials=%s",
+        username,
+        symbol,
+        round(ttl_seconds, 2),
+        bool(summary.message),
+        summary.has_api_credentials,
+    )
 
 
 def _invalidate_account_summary_cache(username: str, symbol: str | None = None) -> None:
@@ -147,8 +155,10 @@ def get_account_summary(
     username = user["username"]
     user_id = int(user["sub"])
     normalized_symbol = symbol.upper() if symbol else None
+    _log.info("[ACCOUNT_SUMMARY] phase=request username=%s user_id=%s symbol=%s force=%s", username, user_id, normalized_symbol, force)
     if user.get("role") == "admin":
         _invalidate_account_summary_cache(username, normalized_symbol)
+        _log.info("[ACCOUNT_SUMMARY] phase=admin_bypass username=%s symbol=%s", username, normalized_symbol)
         return _admin_account_summary(normalized_symbol)
 
     base_asset, quote_asset = split_trading_symbol(normalized_symbol)
@@ -157,15 +167,19 @@ def get_account_summary(
 
     if force:
         _invalidate_account_summary_cache(username, normalized_symbol)
+        _log.info("[ACCOUNT_SUMMARY] phase=cache_invalidate username=%s symbol=%s reason=force", username, normalized_symbol)
     else:
         # 1. 先查内存缓存（最快）
         cached = _get_cached_account_summary(username, normalized_symbol)
         if cached is not None:
+            _log.info("[ACCOUNT_SUMMARY] phase=cache_hit username=%s symbol=%s", username, normalized_symbol)
             return cached
+        _log.info("[ACCOUNT_SUMMARY] phase=cache_miss username=%s symbol=%s", username, normalized_symbol)
 
         # 2. 再查 DB 快照（毫秒级，后台同步服务负责刷新）
         db_row = db_module.get_account_summary_from_db(user_id, normalized_symbol)
         if db_row is not None:
+            _log.info("[ACCOUNT_SUMMARY] phase=db_hit username=%s user_id=%s symbol=%s", username, user_id, normalized_symbol)
             # 回填内存缓存，ttl 设为 SYNC_INTERVAL_SECONDS 对齐同步周期
             summary = AccountSummaryOut(**{
                 k: db_row[k]
@@ -178,9 +192,11 @@ def get_account_summary(
                     _account_summary_cache_key(username, normalized_symbol)
                 ] = (time.monotonic() + SYNC_INTERVAL_SECONDS, _model_to_dict(summary))
             return summary
+        _log.info("[ACCOUNT_SUMMARY] phase=db_miss username=%s user_id=%s symbol=%s", username, user_id, normalized_symbol)
 
     # 3. DB 无数据（首次）或 force=True：同步调用 Binance，并写入 DB + 缓存
     if not api_key or not api_secret:
+        _log.warning("[ACCOUNT_SUMMARY] phase=missing_credentials username=%s symbol=%s", username, normalized_symbol)
         summary = AccountSummaryOut(
             symbol=normalized_symbol,
             base_asset=base_asset,
@@ -193,6 +209,7 @@ def get_account_summary(
 
     testnet = cfg_module.is_testnet(username)
     try:
+        _log.info("[ACCOUNT_SUMMARY] phase=binance_fetch username=%s symbol=%s testnet=%s", username, normalized_symbol, testnet)
         client = BinanceClient(
             api_key=api_key,
             secret_key=api_secret,
@@ -293,10 +310,11 @@ def get_account_summary(
         )
         _set_cached_account_summary(username, normalized_symbol, summary)
         db_module.upsert_account_summary(user_id, normalized_symbol, _model_to_dict(summary))
+        _log.info("[ACCOUNT_SUMMARY] phase=binance_fetch_success username=%s user_id=%s symbol=%s", username, user_id, normalized_symbol)
         return summary
     except Exception as exc:
         _log.exception(
-            "Account summary failed for user=%s symbol=%s testnet=%s",
+            "[ACCOUNT_SUMMARY] phase=binance_fetch_error user=%s symbol=%s testnet=%s",
             username, normalized_symbol, testnet,
         )
         summary = AccountSummaryOut(
@@ -337,12 +355,12 @@ def update_account_leverage(
         )
         result = client.set_leverage(symbol, leverage)
         _invalidate_account_summary_cache(username, symbol)
-        _log.info("Updated leverage: user=%s symbol=%s leverage=%s", username, symbol, leverage)
+        _log.info("[ACCOUNT_SUMMARY] phase=leverage_update user=%s symbol=%s leverage=%s", username, symbol, leverage)
         return {"ok": True, "symbol": symbol, "leverage": leverage, "exchange": result}
     except HTTPException:
         raise
     except Exception as exc:
-        _log.exception("Set leverage failed for user=%s symbol=%s leverage=%s", username, symbol, leverage)
+        _log.exception("[ACCOUNT_SUMMARY] phase=leverage_update_error user=%s symbol=%s leverage=%s", username, symbol, leverage)
         raise HTTPException(status_code=400, detail=str(exc))
 
 

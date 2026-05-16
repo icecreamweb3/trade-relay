@@ -235,7 +235,7 @@ class BinanceClient:
                 self.last_time_sync = time_module.time()
 
                 logger.info(
-                    "🕐 Binance 时间同步 | force=%s server_time=%s local_time=%s latency_ms=%s raw_offset_ms=%s total_buffer_ms=%s applied_offset_ms=%s",
+                    "[BINANCE_SYNC] phase=sync force=%s server_time=%s local_time=%s latency_ms=%s raw_offset_ms=%s total_buffer_ms=%s applied_offset_ms=%s",
                     force,
                     server_time_ms,
                     local_time_ms,
@@ -249,7 +249,7 @@ class BinanceClient:
                 self.client.timestamp_offset = -3000  # 增加默认缓冲
                 self.last_time_sync = time_module.time()
                 logger.warning(
-                    "⚠️ Binance 时间同步未返回 serverTime，使用默认偏移 applied_offset_ms=%s",
+                    "[BINANCE_SYNC] phase=missing_server_time applied_offset_ms=%s",
                     self.client.timestamp_offset,
                 )
         except Exception as e:
@@ -257,7 +257,7 @@ class BinanceClient:
             self.client.timestamp_offset = -3000  # 增加默认缓冲
             self.last_time_sync = time_module.time()
             logger.warning(
-                "⚠️ Binance 时间同步失败: %s，使用默认偏移 applied_offset_ms=%s",
+                "[BINANCE_SYNC] phase=sync_error error=%s applied_offset_ms=%s",
                 e,
                 self.client.timestamp_offset,
             )
@@ -906,7 +906,7 @@ class BinanceClient:
                         except Exception:
                             response_text = ""
                     logger.warning(
-                        "⏰ get_position_information 时间戳错误重试 (attempt %s/%s) | symbol=%s request_timestamp=%s recv_window=%s applied_offset_ms=%s response=%s",
+                        "[BINANCE_POSITION_RISK] phase=retry attempt=%s/%s symbol=%s request_timestamp=%s recv_window=%s applied_offset_ms=%s response=%s",
                         attempt + 1,
                         self.MAX_TIMESTAMP_RETRIES + 1,
                         symbol or "ALL",

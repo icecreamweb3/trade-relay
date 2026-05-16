@@ -51,12 +51,14 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
 
     normalized = symbol.upper() if symbol else None
     base_asset, quote_asset = split_trading_symbol(normalized)
+    _log.info("[ACCOUNT_SYNC] phase=fetch_start user_id=%s username=%s symbol=%s", user_id, username, normalized)
 
     api_key = cfg_module.get_api_key(username)
     api_secret = cfg_module.get_api_secret(username)
     testnet = cfg_module.is_testnet(username)
 
     if not api_key or not api_secret:
+        _log.warning("[ACCOUNT_SYNC] phase=missing_credentials user_id=%s username=%s symbol=%s", user_id, username, normalized)
         summary = AccountSummaryOut(
             symbol=normalized,
             base_asset=base_asset,
@@ -164,10 +166,10 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
             has_api_credentials=True,
         )
         _persist(user_id, username, normalized, summary)
-        _log.debug("account_sync: synced %s/%s ok", username, normalized)
+        _log.info("[ACCOUNT_SYNC] phase=fetch_success user_id=%s username=%s symbol=%s", user_id, username, normalized)
 
     except Exception:
-        _log.exception("account_sync: failed for user=%s symbol=%s", username, normalized)
+        _log.exception("[ACCOUNT_SYNC] phase=fetch_error user=%s symbol=%s", username, normalized)
 
 
 def _persist(user_id: int, username: str, symbol: str | None, summary: "AccountSummaryOut") -> None:
@@ -180,8 +182,9 @@ def _persist(user_id: int, username: str, symbol: str | None, summary: "AccountS
         else:
             data = summary.dict()
         db_module.upsert_account_summary(user_id, symbol, data)
+        _log.info("[ACCOUNT_SYNC] phase=persist_success user_id=%s username=%s symbol=%s has_message=%s", user_id, username, symbol, bool(summary.message))
     except Exception:
-        _log.exception("account_sync: DB upsert failed for user=%s symbol=%s", username, symbol)
+        _log.exception("[ACCOUNT_SYNC] phase=persist_error user=%s symbol=%s", username, symbol)
 
 
 # ── 后台线程 ──────────────────────────────────────────────────────────────────
@@ -191,12 +194,12 @@ _sync_thread: threading.Thread | None = None
 
 
 def _sync_loop() -> None:
-    _log.info("account_sync: background thread started (interval=%ds)", SYNC_INTERVAL_SECONDS)
+    _log.info("[ACCOUNT_SYNC] phase=thread_start interval_seconds=%s", SYNC_INTERVAL_SECONDS)
     # 第一次立即执行
     _run_once()
     while not _stop_event.wait(timeout=SYNC_INTERVAL_SECONDS):
         _run_once()
-    _log.info("account_sync: background thread stopped")
+    _log.info("[ACCOUNT_SYNC] phase=thread_stop")
 
 
 def _run_once() -> None:
@@ -204,18 +207,19 @@ def _run_once() -> None:
     try:
         users = db_module.get_all_active_users_with_api_keys()
     except Exception:
-        _log.exception("account_sync: failed to query active users")
+        _log.exception("[ACCOUNT_SYNC] phase=query_users_error")
         return
 
     # 当前默认同步主 symbol（BTCUSDC 等），后续可扩展为每个用户最近使用的 symbol
     symbol = _ENV_SYMBOL
+    _log.info("[ACCOUNT_SYNC] phase=run_once users=%s symbol=%s", len(users), symbol)
     for row in users:
         user_id = row["id"]
         username = row["username"]
         try:
             _fetch_and_store(user_id, username, symbol)
         except Exception:
-            _log.exception("account_sync: unhandled error for user=%s", username)
+            _log.exception("[ACCOUNT_SYNC] phase=unhandled_error user=%s", username)
 
 
 def start_account_sync() -> None:

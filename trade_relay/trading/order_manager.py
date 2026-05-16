@@ -2,6 +2,7 @@
 Order management: places orders via Binance and persists them to the DB.
 """
 import asyncio
+import logging
 from typing import Optional
 
 from trade_relay.auth.manager import Session
@@ -10,6 +11,9 @@ from trade_relay import config as cfg
 from trade_relay.trading.binance_client import place_order, place_order_mock
 from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, sync_order_status_once
 from trade_relay.i18n import t
+
+
+_log = logging.getLogger(__name__)
 
 
 class OrderResult:
@@ -60,6 +64,17 @@ async def submit_order(
         return OrderResult(False, "Invalid leverage")
 
     username = session.username
+    _log.info(
+        "[ORDER_FLOW] phase=validate_success user_id=%s username=%s symbol=%s side=%s order_type=%s qty=%s leverage=%s pos_dir=%s",
+        session.user_id,
+        username,
+        symbol,
+        side,
+        order_type,
+        quantity,
+        leverage,
+        position_direction,
+    )
 
     # Determine execution mode
     mock = cfg.is_mock_mode(username)
@@ -68,15 +83,18 @@ async def submit_order(
     testnet = False
 
     if mock:
+        _log.info("[ORDER_FLOW] phase=submit_mock username=%s symbol=%s side=%s type=%s", username, symbol, side, order_type)
         result = place_order_mock(symbol, side, order_type, quantity, price)
     else:
         api_key = cfg.get_api_key(username)
         api_secret = cfg.get_api_secret(username)
 
         if not api_key or not api_secret:
+            _log.warning("[ORDER_FLOW] phase=missing_credentials username=%s symbol=%s", username, symbol)
             return OrderResult(False, t("no_api_key"))
 
         testnet = cfg.is_testnet(username)
+        _log.info("[ORDER_FLOW] phase=submit_exchange username=%s symbol=%s side=%s type=%s testnet=%s", username, symbol, side, order_type, testnet)
         result = await place_order(
             api_key=api_key,
             api_secret=api_secret,
@@ -127,6 +145,14 @@ async def submit_order(
         post_only=False,
         order_category=order_category,
     )
+    _log.info(
+        "[ORDER_FLOW] phase=db_recorded username=%s order_db_id=%s exchange_order_id=%s status=%s success=%s",
+        username,
+        order_db_id,
+        result.order_id,
+        result.status if hasattr(result, 'status') else None,
+        result.success,
+    )
 
     if result.success and not mock and result.order_id and api_key and api_secret:
         # Start the per-user user-data stream and do one immediate REST sync to
@@ -134,8 +160,9 @@ async def submit_order(
         ensure_user_order_status_stream(username, api_key, api_secret, testnet)
         try:
             sync_order_status_once(username, api_key, api_secret, testnet, symbol, str(result.order_id))
+            _log.info("[ORDER_FLOW] phase=post_submit_sync username=%s symbol=%s exchange_order_id=%s", username, symbol, result.order_id)
         except Exception:
-            pass
+            _log.exception("[ORDER_FLOW] phase=post_submit_sync_error username=%s symbol=%s exchange_order_id=%s", username, symbol, result.order_id)
 
     # Log operation
     if result.success:
@@ -150,6 +177,7 @@ async def submit_order(
             msg = t("order_mock", side, quantity, symbol, quantity)
         else:
             msg = t("order_success", result.order_id)
+        _log.info("[ORDER_FLOW] phase=return_success username=%s order_db_id=%s message=%s", username, order_db_id, msg)
         return OrderResult(True, msg, order_db_id)
     else:
         db.log_operation(
@@ -158,4 +186,5 @@ async def submit_order(
             "ORDER_FAILED",
             f"{side} {quantity} {symbol}: {result.error}",
         )
+        _log.warning("[ORDER_FLOW] phase=return_failed username=%s order_db_id=%s error=%s", username, order_db_id, result.error)
         return OrderResult(False, t("order_failed", result.error), order_db_id)

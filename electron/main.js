@@ -36,9 +36,9 @@ require('dotenv').config(envPath ? { path: envPath } : {})
 const { logger } = require('./logger')
 
 if (envPath) {
-  logger.info('Loaded Electron env file: %s', envPath)
+  logger.info('Loaded Electron env file', { envPath })
 } else {
-  logger.warning('No .env.production/.env file found for Electron runtime; using process env/defaults')
+  logger.warn('No .env.production/.env file found for Electron runtime; using process env/defaults')
 }
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -67,6 +67,19 @@ function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
 }
 
+function summarizeError(error) {
+  if (!error) return { message: 'Unknown error' }
+  return {
+    name: error.name,
+    message: error.message,
+    code: error.code,
+    errno: error.errno,
+    syscall: error.syscall,
+    address: error.address,
+    port: error.port,
+  }
+}
+
 const _proxyAgentCache = new Map()
 
 function shouldBypassProxy(targetUrl) {
@@ -88,7 +101,7 @@ function shouldBypassProxy(targetUrl) {
 function getProxyUrlForTarget(targetUrl) {
   if (shouldBypassProxy(targetUrl)) return null
   if (targetUrl.protocol === 'https:') {
-    return process.env.HTTPS_PROXY || process.env.ALL_PROXY || process.env.PROXY || process.env.BACKEND_PROXY_URL || null
+    return process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY || process.env.PROXY || process.env.BACKEND_PROXY_URL || null
   }
   return process.env.HTTP_PROXY || process.env.ALL_PROXY || process.env.PROXY || process.env.BACKEND_PROXY_URL || null
 }
@@ -99,7 +112,7 @@ function getProxyAgent(targetUrl) {
   const cacheKey = `${targetUrl.protocol}|${proxyUrl}`
   if (!_proxyAgentCache.has(cacheKey)) {
     _proxyAgentCache.set(cacheKey, new ProxyAgent(proxyUrl))
-    logger.info('Electron backend requests using proxy %s for %s', proxyUrl, targetUrl.origin)
+    logger.info('[ELECTRON_BACKEND_PROXY] agent-created', { proxyUrl, target: targetUrl.origin })
   }
   return _proxyAgentCache.get(cacheKey)
 }
@@ -136,6 +149,17 @@ function httpRequest(method, path, body, token) {
     const targetUrl = new URL(path, `${BACKEND_BASE_URL}/`)
     const transport = targetUrl.protocol === 'https:' ? https : http
     const agent = getProxyAgent(targetUrl)
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const startedAt = Date.now()
+    const proxyUrl = getProxyUrlForTarget(targetUrl)
+
+    logger.info('[ELECTRON_BACKEND_HTTP] phase=request', {
+      requestId,
+      method,
+      url: targetUrl.toString(),
+      proxy: proxyUrl || 'DIRECT',
+      hasToken: Boolean(token),
+    })
 
     const req = transport.request(
       {
@@ -151,12 +175,30 @@ function httpRequest(method, path, body, token) {
         let chunks = ''
         res.on('data', d => (chunks += d))
         res.on('end', () => {
+          const durationMs = Date.now() - startedAt
+          logger.info('[ELECTRON_BACKEND_HTTP] phase=response', {
+            requestId,
+            method,
+            url: targetUrl.toString(),
+            status: res.statusCode,
+            durationMs,
+            bytes: Buffer.byteLength(chunks || '', 'utf8'),
+          })
           try { resolve({ status: res.statusCode, body: JSON.parse(chunks) }) }
           catch { resolve({ status: res.statusCode, body: chunks }) }
         })
       }
     )
-    req.on('error', reject)
+    req.on('error', (error) => {
+      logger.error('[ELECTRON_BACKEND_HTTP] phase=error', {
+        requestId,
+        method,
+        url: targetUrl.toString(),
+        durationMs: Date.now() - startedAt,
+        details: summarizeError(error),
+      })
+      reject(error)
+    })
     if (data) req.write(data)
     req.end()
   })
@@ -347,14 +389,22 @@ function updateBinanceViewBounds() {
 
 // ── Auth IPC ──────────────────────────────────────────────────────────────────
 ipcMain.handle('auth-login', async (_event, { username, password }) => {
+  logger.info('[ELECTRON_AUTH] action=login phase=request', { username, backend: BACKEND_BASE_URL })
   try {
     const res = await httpRequest('POST', '/api/auth/login', { username, password }, null)
     if (res.status === 200 && res.body.access_token) {
       storeToken(res.body.access_token)
+      logger.info('[ELECTRON_AUTH] action=login phase=success', { username })
       return { ok: true, user: res.body.user }
     }
+    logger.warn('[ELECTRON_AUTH] action=login phase=failed', {
+      username,
+      status: res.status,
+      detail: res.body?.detail || 'Login failed',
+    })
     return { ok: false, error: res.body?.detail || 'Login failed' }
   } catch (e) {
+    logger.error('[ELECTRON_AUTH] action=login phase=error', { username, details: summarizeError(e) })
     return { ok: false, error: `Backend unavailable: ${e.message}` }
   }
 })
@@ -385,7 +435,7 @@ ipcMain.handle('auth-get-status', async () => {
 // Renderer-to-main log forwarding — writes renderer WS logs into the Electron log file
 ipcMain.on('log-to-main', (_event, level, msg, extra) => {
   const fn = logger[level] || logger.info
-  fn.call(logger, `[renderer] ${msg}`, extra)
+  fn.call(logger, `[FRONTEND] ${msg}`, extra)
 })
 
 ipcMain.handle('get-ui-lang', () => UI_LANG)
