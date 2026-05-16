@@ -62,7 +62,14 @@ export function OrderLogScreen() {
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!user) {
+      setOrders([])
+      setLoading(false)
+      return
+    }
+    void load()
+  }, [user])
   useEffect(() => {
     if (!user) return
 
@@ -77,9 +84,10 @@ export function OrderLogScreen() {
   }, [user])
 
   useEffect(() => {
+    if (!user) return
     const t = setInterval(load, 10000)
     return () => clearInterval(t)
-  }, [filters])
+  }, [filters, user])
 
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault()

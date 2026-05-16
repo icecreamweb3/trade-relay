@@ -138,7 +138,7 @@ export function PositionsPanel({
   // re-triggering on every internal state change (which in dev HMR would cause
   // dozens of concurrent requests from stale component instances).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void loadRef.current() }, [refreshTrigger, tab])
+  useEffect(() => { void loadRef.current() }, [refreshTrigger, tab, isActive, isAuthenticated])
 
   // When refreshTrigger fires and we're NOT on the positions tab, still refresh positions
   // (load() only fetches the active tab's data)
