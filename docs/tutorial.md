@@ -159,6 +159,7 @@ TRADE_RELAY_MYSQL_PORT=3306
 TRADE_RELAY_MYSQL_USER=trade_relay
 TRADE_RELAY_MYSQL_PASSWORD=your_password
 TRADE_RELAY_MYSQL_DATABASE=trade_relay
+TRADE_RELAY_MYSQL_POOL_SIZE=8
 
 # JWT 签名密钥（请修改为随机长字符串）
 TRADE_RELAY_JWT_SECRET=change-me-to-a-random-secret-string
@@ -175,6 +176,8 @@ BACKEND_PORT=8000
 ALL_PROXY=socks5://127.0.0.1:10808
 # HTTPS_PROXY=http://127.0.0.1:10809
 ```
+
+远端 MySQL 或经代理访问 MySQL 时，建议保留 `TRADE_RELAY_MYSQL_POOL_SIZE` 大于 `0`，让应用复用已建立连接，避免每次请求都承担完整的建连耗时。默认值为 `8`。
 
 ### 5.2 手动初始化管理员账号
 

@@ -20,7 +20,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime
 from functools import lru_cache
-from threading import RLock
+from threading import Condition, RLock
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
@@ -170,6 +170,19 @@ def _mysql_proxy_cfg() -> Optional[dict]:
     }
 
 
+@lru_cache(maxsize=1)
+def _mysql_pool_size() -> int:
+    raw_value = (os.environ.get("TRADE_RELAY_MYSQL_POOL_SIZE") or "8").strip()
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid TRADE_RELAY_MYSQL_POOL_SIZE=%r, falling back to 8",
+            raw_value,
+        )
+        return 8
+
+
 @contextmanager
 def _pymysql_proxy_socket_patch(proxy_cfg: Optional[dict]):
     if not proxy_cfg:
@@ -216,8 +229,7 @@ def _pymysql_proxy_socket_patch(proxy_cfg: Optional[dict]):
             pymysql.connections.socket.create_connection = original_create_connection
 
 
-def get_connection() -> pymysql.connections.Connection:
-    """Get a new MySQL connection."""
+def _create_mysql_connection() -> pymysql.connections.Connection:
     mysql_cfg = _mysql_cfg()
     proxy_cfg = _mysql_proxy_cfg()
     if proxy_cfg:
@@ -231,6 +243,106 @@ def get_connection() -> pymysql.connections.Connection:
         )
     with _pymysql_proxy_socket_patch(proxy_cfg):
         return pymysql.connect(**mysql_cfg)
+
+
+class _PooledMySQLConnection:
+    def __init__(self, pool: "_MySQLConnectionPool", conn: pymysql.connections.Connection):
+        self._pool = pool
+        self._conn = conn
+        self._released = False
+
+    def close(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._pool.release(self._conn)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+class _MySQLConnectionPool:
+    def __init__(self, max_size: int):
+        self._max_size = max(1, max_size)
+        self._idle: list[pymysql.connections.Connection] = []
+        self._created = 0
+        self._condition = Condition()
+
+    def acquire(self) -> _PooledMySQLConnection:
+        conn: Optional[pymysql.connections.Connection] = None
+        should_create = False
+        with self._condition:
+            while True:
+                if self._idle:
+                    conn = self._idle.pop()
+                    break
+                if self._created < self._max_size:
+                    self._created += 1
+                    should_create = True
+                    break
+                self._condition.wait()
+
+        if should_create:
+            try:
+                conn = _create_mysql_connection()
+            except Exception:
+                with self._condition:
+                    self._created -= 1
+                    self._condition.notify()
+                raise
+
+        if conn is None:
+            raise RuntimeError("Failed to acquire MySQL connection")
+
+        if not self._prepare_for_checkout(conn):
+            self._discard(conn)
+            return self.acquire()
+
+        return _PooledMySQLConnection(self, conn)
+
+    def release(self, conn: pymysql.connections.Connection) -> None:
+        try:
+            conn.rollback()
+        except Exception:
+            self._discard(conn)
+            return
+
+        with self._condition:
+            self._idle.append(conn)
+            self._condition.notify()
+
+    def _prepare_for_checkout(self, conn: pymysql.connections.Connection) -> bool:
+        try:
+            conn.ping(reconnect=True)
+            return True
+        except Exception:
+            return False
+
+    def _discard(self, conn: pymysql.connections.Connection) -> None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        finally:
+            with self._condition:
+                self._created = max(0, self._created - 1)
+                self._condition.notify()
+
+
+@lru_cache(maxsize=1)
+def _mysql_connection_pool() -> Optional[_MySQLConnectionPool]:
+    pool_size = _mysql_pool_size()
+    if pool_size <= 0:
+        return None
+    return _MySQLConnectionPool(pool_size)
+
+
+def get_connection():
+    """Get a MySQL connection, reusing pooled connections when enabled."""
+    pool = _mysql_connection_pool()
+    if pool is None:
+        return _create_mysql_connection()
+    return pool.acquire()
 
 
 def _normalize_order_category(order_type: Optional[str], order_category: Optional[str]) -> str:
