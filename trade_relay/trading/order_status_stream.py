@@ -64,6 +64,8 @@ class UserOrderStatusStream:
         self._entry_price_cache_lock = threading.Lock()
         self._handled_open_tpsl: set[str] = set()
         self._handled_open_tpsl_lock = threading.Lock()
+        self._close_fill_metrics: dict[str, dict[str, object]] = {}
+        self._close_fill_metrics_lock = threading.Lock()
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -652,6 +654,7 @@ class UserOrderStatusStream:
         last_fill_qty = _safe_float(order.get("l") or order.get("z") or 0)
         last_fill_price = _safe_float(order.get("L") or order.get("ap") or 0)
         commission = abs(_safe_float(order.get("n") or 0))
+        commission_asset = str(order.get("N") or order.get("commissionAsset") or "").strip() or None
 
         if last_fill_qty is None or last_fill_qty <= 0 or last_fill_price is None or last_fill_price <= 0:
             return
@@ -698,10 +701,38 @@ class UserOrderStatusStream:
                 )
 
         # Realized PnL for this fill
+        websocket_realized_pnl = _safe_float(order.get("rp") or order.get("realizedPnl"))
         if position_side == "LONG":
-            realized_pnl = (last_fill_price - entry_price) * last_fill_qty
+            fallback_realized_pnl = (last_fill_price - entry_price) * last_fill_qty
         else:
-            realized_pnl = (entry_price - last_fill_price) * last_fill_qty
+            fallback_realized_pnl = (entry_price - last_fill_price) * last_fill_qty
+        realized_pnl = websocket_realized_pnl if abs(websocket_realized_pnl) > 1e-12 else fallback_realized_pnl
+
+        cumulative_filled_qty = _safe_float(order.get("z") or order.get("executedQty") or db_order.get("filled_qty") or 0)
+        cumulative_avg_price = _safe_float(order.get("ap") or order.get("avgPrice") or db_order.get("avg_price") or 0)
+        with self._close_fill_metrics_lock:
+            metrics = self._close_fill_metrics.setdefault(
+                exchange_order_id,
+                {"commission": 0.0, "realized_pnl": 0.0, "commission_asset": None},
+            )
+            metrics["commission"] = _safe_float(metrics.get("commission")) + commission
+            metrics["realized_pnl"] = _safe_float(metrics.get("realized_pnl")) + realized_pnl
+            if commission_asset:
+                metrics["commission_asset"] = commission_asset
+            accumulated_commission = _safe_float(metrics.get("commission"))
+            accumulated_realized_pnl = _safe_float(metrics.get("realized_pnl"))
+            accumulated_commission_asset = metrics.get("commission_asset")
+
+        db.update_order_status_by_exchange_id(
+            username=self.username,
+            exchange_order_id=exchange_order_id,
+            status=order_status,
+            filled_qty=cumulative_filled_qty if cumulative_filled_qty > 0 else None,
+            avg_price=cumulative_avg_price if cumulative_avg_price > 0 else None,
+            realized_pnl=accumulated_realized_pnl,
+            commission=accumulated_commission,
+            commission_asset=str(accumulated_commission_asset) if accumulated_commission_asset else None,
+        )
 
         try:
             history_id = db.add_position_history(
@@ -733,6 +764,8 @@ class UserOrderStatusStream:
         # For fully-filled closes, trigger a REST position sync as a fallback in case
         # the ACCOUNT_UPDATE WebSocket event is delayed or missed.
         if order_status == "FILLED":
+            with self._close_fill_metrics_lock:
+                self._close_fill_metrics.pop(exchange_order_id, None)
             threading.Thread(
                 target=self._sync_position_from_rest,
                 args=(symbol,),

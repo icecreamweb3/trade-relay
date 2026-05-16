@@ -752,6 +752,84 @@ def test_sync_position_history_from_filled_close_order_creates_missing_history_r
     assert created_rows[0]["position_id"] == 9
 
 
+def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_trades(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    order_updates = []
+    history_rows = []
+    trade_sync_calls = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_order_by_exchange_id",
+        lambda username, exchange_order_id: {
+            "id": 75,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "exchange_order_id": exchange_order_id,
+            "filled_qty": None,
+            "avg_price": None,
+            "realized_pnl": None,
+            "commission": None,
+            "commission_asset": None,
+        },
+    )
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 1})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda user_id, symbol, side: {"id": 13, "avg_entry_price": 78050.0},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda username, exchange_order_id, status, **kwargs: order_updates.append((username, exchange_order_id, status, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "add_position_history",
+        lambda **kwargs: history_rows.append(kwargs) or 901,
+    )
+    monkeypatch.setattr(order_status_stream, "sync_filled_order_trade_details", lambda **kwargs: trade_sync_calls.append(kwargs))
+    monkeypatch.setattr(order_status_stream.threading, "Thread", lambda target, args=(), daemon=None: type("_T", (), {"start": lambda self: None})())
+
+    stream._handle_close_fill({
+        "x": "TRADE",
+        "X": "FILLED",
+        "i": "58137689662",
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "l": "0.025",
+        "z": "0.025",
+        "L": "78034.2",
+        "ap": "78034.2",
+        "n": "0.192",
+        "N": "USDC",
+        "rp": "-0.395",
+    })
+
+    assert history_rows[0]["commission"] == 0.192
+    assert history_rows[0]["commission_asset"] == "USDC"
+    assert history_rows[0]["realized_pnl"] == -0.395
+    assert order_updates == [(
+        "Will",
+        "58137689662",
+        "FILLED",
+        {
+            "filled_qty": 0.025,
+            "avg_price": 78034.2,
+            "realized_pnl": -0.395,
+            "commission": 0.192,
+            "commission_asset": "USDC",
+        },
+    )]
+    assert len(trade_sync_calls) == 1
+
+
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
     from backend.routers import orders as orders_router
 
