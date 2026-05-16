@@ -39,16 +39,27 @@ class DailyLeaderboardEntry(BaseModel):
     commission: float
 
 
+class AllTimeLeaderboardEntry(BaseModel):
+    rank: int
+    username: str
+    pnl: float
+    trades: int
+    win_rate: float
+    commission: float
+
+
 class ProfileOverview(BaseModel):
     stats: ProfileStats
     daily_pnl: list[DailyPnl]
     daily_leaderboard: list[DailyLeaderboardEntry]
+    all_time_leaderboard: list[AllTimeLeaderboardEntry]
 
 
 def _build_profile_overview(user_id: int) -> ProfileOverview:
     rows = db_module.get_daily_pnl(user_id)
     commission_rows = db_module.get_total_commission_by_asset(user_id)
     leaderboard_rows = db_module.get_daily_profile_leaderboard()
+    all_time_leaderboard_rows = db_module.get_all_time_profile_leaderboard()
     account_summary = db_module.get_account_summary_from_db(user_id, None) or {}
     daily_pnl = [
         DailyPnl(
@@ -71,6 +82,17 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
             commission=round(float(row.get("commission") or 0), 4),
         )
         for index, row in enumerate(leaderboard_rows)
+    ]
+    all_time_leaderboard = [
+        AllTimeLeaderboardEntry(
+            rank=index + 1,
+            username=str(row.get("username") or "-"),
+            pnl=round(float(row.get("pnl") or 0), 4),
+            trades=int(row.get("trades") or 0),
+            win_rate=round(float(row.get("win_rate") or 0), 2),
+            commission=round(float(row.get("commission") or 0), 4),
+        )
+        for index, row in enumerate(all_time_leaderboard_rows)
     ]
 
     total_pnl = sum(item.pnl for item in daily_pnl)
@@ -100,6 +122,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
         ),
         daily_pnl=daily_pnl,
         daily_leaderboard=daily_leaderboard,
+        all_time_leaderboard=all_time_leaderboard,
     )
 
 

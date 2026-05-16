@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 from typing import Optional
 
@@ -7,6 +8,8 @@ from trade_relay import database as db
 
 
 logger = logging.getLogger(__name__)
+
+_UNASSIGNED_HISTORY_ORDER_WINDOW_SECONDS = 30 * 60
 
 
 def _safe_float(value) -> float:
@@ -22,6 +25,94 @@ def _derive_close_position_side(order_row: dict) -> str | None:
     return "LONG" if str(order_row.get("side") or "").upper() == "SELL" else "SHORT"
 
 
+def _safe_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _order_close_price(order_row: dict) -> float:
+    close_price = _safe_float(order_row.get("avg_price"))
+    if close_price > 0:
+        return close_price
+    return _safe_float(order_row.get("price"))
+
+
+def _is_unassigned_history_row_for_order(row: dict, order_row: dict) -> bool:
+    row_created_at = _safe_datetime(row.get("created_at"))
+    order_created_at = _safe_datetime(order_row.get("created_at"))
+    order_updated_at = _safe_datetime(order_row.get("updated_at"))
+    order_close_price = _order_close_price(order_row)
+    row_close_price = _safe_float(row.get("close_price"))
+
+    if row_created_at and order_created_at:
+        if abs((row_created_at - order_created_at).total_seconds()) <= _UNASSIGNED_HISTORY_ORDER_WINDOW_SECONDS:
+            return True
+    if row_created_at and order_updated_at:
+        if abs((row_created_at - order_updated_at).total_seconds()) <= _UNASSIGNED_HISTORY_ORDER_WINDOW_SECONDS:
+            return True
+    if order_close_price > 0 and row_close_price > 0:
+        tolerance = max(0.01, abs(order_close_price) * 1e-4)
+        if abs(row_close_price - order_close_price) <= tolerance:
+            return True
+    return False
+
+
+def _create_missing_position_history_from_close_order(
+    order_row: dict,
+    total_qty: float,
+    total_realized_pnl: float,
+    total_commission: float,
+    commission_asset: str | None,
+) -> int:
+    user_id = int(order_row.get("user_id") or 0)
+    username = str(order_row.get("username") or "").strip()
+    symbol = str(order_row.get("symbol") or "").upper().strip()
+    position_side = _derive_close_position_side(order_row)
+    close_price = _order_close_price(order_row)
+
+    if user_id <= 0 or not username or not symbol or position_side not in {"LONG", "SHORT"}:
+        return 0
+    if total_qty <= 0 or close_price <= 0:
+        return 0
+
+    if position_side == "LONG":
+        entry_price = close_price - (total_realized_pnl / total_qty)
+    else:
+        entry_price = close_price + (total_realized_pnl / total_qty)
+
+    db.add_position_history(
+        user_id=user_id,
+        username=username,
+        symbol=symbol,
+        side=position_side,
+        entry_price=entry_price,
+        close_price=close_price,
+        quantity=total_qty,
+        realized_pnl=total_realized_pnl,
+        commission=total_commission,
+        commission_asset=commission_asset,
+        position_id=int(order_row["position_id"]) if order_row.get("position_id") else None,
+    )
+    logger.info(
+        "[ORDER_FLOW] phase=position_history_backfilled_from_close_order order_id=%s exchange_order_id=%s user_id=%s symbol=%s side=%s qty=%s entry=%s close=%s",
+        order_row.get("id"),
+        order_row.get("exchange_order_id"),
+        user_id,
+        symbol,
+        position_side,
+        total_qty,
+        entry_price,
+        close_price,
+    )
+    return 1
+
+
 def _select_related_position_history_rows(order_row: dict, total_qty: float) -> list[dict]:
     user_id = int(order_row.get("user_id") or 0)
     if user_id <= 0:
@@ -34,16 +125,23 @@ def _select_related_position_history_rows(order_row: dict, total_qty: float) -> 
 
     requested_position_id = int(order_row["position_id"]) if order_row.get("position_id") else None
     history_rows = db.get_position_history(user_id=user_id, limit=200)
-    matching_rows = []
+    exact_rows = []
+    fallback_rows = []
     for row in history_rows:
         if str(row.get("symbol") or "").upper() != symbol:
             continue
         if str(row.get("side") or "").upper() != position_side:
             continue
         row_position_id = int(row["position_id"]) if row.get("position_id") else None
-        if requested_position_id is not None and row_position_id not in {requested_position_id, None}:
+        if requested_position_id is not None:
+            if row_position_id == requested_position_id:
+                exact_rows.append(row)
+            elif row_position_id is None and _is_unassigned_history_row_for_order(row, order_row):
+                fallback_rows.append(row)
             continue
-        matching_rows.append(row)
+        fallback_rows.append(row)
+
+    matching_rows = exact_rows or fallback_rows
 
     if not matching_rows:
         return []
@@ -87,7 +185,13 @@ def _sync_position_history_metrics(
 ) -> int:
     selected_rows = _select_related_position_history_rows(order_row, total_qty)
     if not selected_rows:
-        return 0
+        return _create_missing_position_history_from_close_order(
+            order_row,
+            total_qty,
+            total_realized_pnl,
+            total_commission,
+            commission_asset,
+        )
 
     current_realized = sum(_safe_float(row.get("realized_pnl")) for row in selected_rows)
     current_commission = sum(_safe_float(row.get("commission")) for row in selected_rows)

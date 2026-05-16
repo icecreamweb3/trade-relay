@@ -1135,6 +1135,17 @@ def get_account_summary_from_db(user_id: int, symbol: Optional[str]) -> Optional
                 (user_id, normalized),
             )
             row = cur.fetchone()
+            if row is None and normalized is None:
+                cur.execute(
+                    """
+                    SELECT * FROM account_summary
+                    WHERE user_id = %s
+                    ORDER BY synced_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
             _log_db_query_result(
                 "account_summary",
                 "get_account_summary_from_db",
@@ -2022,6 +2033,32 @@ def get_daily_profile_leaderboard(
                 LIMIT %s
                 """,
                 (leaderboard_date, limit),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_all_time_profile_leaderboard(limit: int = 20) -> list:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT username,
+                       SUM(COALESCE(pnl, 0)) AS pnl,
+                       SUM(COALESCE(trade_count, 0)) AS trades,
+                       CASE
+                           WHEN SUM(COALESCE(trade_count, 0)) = 0 THEN 0
+                           ELSE SUM(COALESCE(win_count, 0)) / SUM(COALESCE(trade_count, 0)) * 100
+                       END AS win_rate,
+                       SUM(COALESCE(commission, 0)) AS commission
+                FROM daily_profile
+                GROUP BY user_id, username
+                ORDER BY pnl DESC, win_rate DESC, trades DESC, username ASC
+                LIMIT %s
+                """,
+                (limit,),
             )
             return cur.fetchall()
     finally:

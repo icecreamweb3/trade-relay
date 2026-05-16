@@ -686,6 +686,72 @@ def test_sync_position_history_from_filled_close_order_backfills_asset_without_n
     assert history_updates == [(703, 4.0, 0.3, "USDC")]
 
 
+def test_sync_position_history_from_filled_close_order_creates_missing_history_row(monkeypatch):
+    from trade_relay.trading import close_trade_sync
+
+    created_rows = []
+
+    latest_order = {
+        "id": 63,
+        "user_id": 3,
+        "username": "Simba",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "trade_direction": "CLOSE",
+        "position_id": 9,
+        "filled_qty": 0.012,
+        "avg_price": 78556.2,
+        "realized_pnl": 2.41439999,
+        "commission": 0.37706976,
+        "commission_asset": "USDC",
+        "created_at": "2026-05-16 14:42:34",
+        "updated_at": "2026-05-16 17:58:51",
+        "exchange_order_id": "58103959698",
+    }
+
+    monkeypatch.setattr(close_trade_sync.db, "get_order_by_id", lambda order_id: latest_order if order_id == 63 else None)
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "get_position_history",
+        lambda user_id, limit=200: [
+            {
+                "id": 801,
+                "symbol": "BTCUSDC",
+                "side": "SHORT",
+                "quantity": 0.012,
+                "close_price": 77592.2,
+                "realized_pnl": 2.8056,
+                "commission": 0.37244256,
+                "commission_asset": "USDC",
+                "position_id": None,
+                "created_at": "2026-05-16 10:29:13",
+            },
+        ],
+    )
+    monkeypatch.setattr(close_trade_sync.db, "update_position_history_values", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "add_position_history",
+        lambda **kwargs: created_rows.append(kwargs) or 901,
+    )
+
+    updated_rows = close_trade_sync.sync_position_history_from_filled_close_order({"id": 63, "trade_direction": "CLOSE"})
+
+    assert updated_rows == 1
+    assert len(created_rows) == 1
+    assert created_rows[0]["user_id"] == 3
+    assert created_rows[0]["username"] == "Simba"
+    assert created_rows[0]["symbol"] == "BTCUSDC"
+    assert created_rows[0]["side"] == "SHORT"
+    assert created_rows[0]["quantity"] == 0.012
+    assert created_rows[0]["close_price"] == 78556.2
+    assert round(created_rows[0]["entry_price"], 4) == 78757.4
+    assert created_rows[0]["realized_pnl"] == 2.41439999
+    assert created_rows[0]["commission"] == 0.37706976
+    assert created_rows[0]["commission_asset"] == "USDC"
+    assert created_rows[0]["position_id"] == 9
+
+
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
     from backend.routers import orders as orders_router
 

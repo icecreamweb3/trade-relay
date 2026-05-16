@@ -22,6 +22,15 @@ interface DailyLeaderboardEntry {
   commission: number
 }
 
+interface AllTimeLeaderboardEntry {
+  rank: number
+  username: string
+  pnl: number
+  trades: number
+  win_rate: number
+  commission: number
+}
+
 function formatSignedAmount(value: number, digits = 2) {
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(digits)}`
@@ -48,11 +57,16 @@ function formatAccountBalance(value: number | null | undefined) {
   return `${value.toFixed(4)} USDT`
 }
 
+function getNetProfit(pnl: number, commission: number) {
+  return pnl - commission
+}
+
 export function ProfileScreen() {
   const { t } = useTranslation(locale)
   const [stats, setStats] = useState<Stats | null>(null)
   const [daily, setDaily] = useState<DailyPnl[]>([])
   const [leaderboard, setLeaderboard] = useState<DailyLeaderboardEntry[]>([])
+  const [allTimeLeaderboard, setAllTimeLeaderboard] = useState<AllTimeLeaderboardEntry[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -63,6 +77,7 @@ export function ProfileScreen() {
         setStats(overview.stats)
         setDaily(Array.isArray(overview.daily_pnl) ? overview.daily_pnl : [])
         setLeaderboard(Array.isArray(overview.daily_leaderboard) ? overview.daily_leaderboard : [])
+        setAllTimeLeaderboard(Array.isArray(overview.all_time_leaderboard) ? overview.all_time_leaderboard : [])
       } catch { /* ignore */ }
       setLoading(false)
     }
@@ -148,30 +163,78 @@ export function ProfileScreen() {
             {leaderboard.length === 0 ? (
               <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
             ) : (
-              <div className="overflow-hidden rounded border border-[#31343b] bg-[#202225]">
-                <div className="grid grid-cols-[56px_minmax(0,1fr)_100px_90px_90px_100px] gap-2 border-b border-[#31343b] px-3 py-2 text-[11px] uppercase tracking-wide text-[#6f7682]">
-                  <span>{t('profile.rank')}</span>
-                  <span>{t('profile.user')}</span>
-                  <span className="text-right">{t('profile.totalPnl')}</span>
-                  <span className="text-right">{t('profile.trades')}</span>
-                  <span className="text-right">{t('profile.winRate')}</span>
-                  <span className="text-right">{t('profile.commission')}</span>
-                </div>
-                {leaderboard.map((entry) => (
-                  <div
-                    key={`${entry.date}-${entry.username}-${entry.rank}`}
-                    className="grid grid-cols-[56px_minmax(0,1fr)_100px_90px_90px_100px] gap-2 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
-                  >
-                    <span className="font-mono text-[#8c93a1]">#{entry.rank}</span>
-                    <span className="truncate">{entry.username}</span>
-                    <span className={`text-right font-mono ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
-                      {formatSignedAmount(entry.pnl, 2)}
-                    </span>
-                    <span className="text-right font-mono text-[#c7ccd4]">{entry.trades}</span>
-                    <span className="text-right font-mono text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
-                    <span className="text-right font-mono text-[#c7ccd4]">{entry.commission.toFixed(2)}</span>
+              <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225]">
+                <div className="min-w-[900px]">
+                  <div className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#31343b] px-3 py-2 text-[11px] uppercase tracking-wide text-[#6f7682]">
+                    <span>{t('profile.rank')}</span>
+                    <span>{t('profile.user')}</span>
+                    <span className="text-right">{t('profile.totalPnl')}</span>
+                    <span className="text-right">{t('profile.netPnl')}</span>
+                    <span className="text-right">{t('profile.trades')}</span>
+                    <span className="text-right">{t('profile.winRate')}</span>
+                    <span className="text-right">{t('profile.commission')}</span>
                   </div>
-                ))}
+                  {leaderboard.map((entry) => (
+                    <div
+                      key={`${entry.date}-${entry.username}-${entry.rank}`}
+                      className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
+                    >
+                      <span className="font-mono text-[#8c93a1]">#{entry.rank}</span>
+                      <span className="truncate pr-2">{entry.username}</span>
+                      <span className={`text-right font-mono tabular-nums ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(entry.pnl, 2)}
+                      </span>
+                      <span className={`text-right font-mono tabular-nums ${getNetProfit(entry.pnl, entry.commission) >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(getNetProfit(entry.pnl, entry.commission), 2)}
+                      </span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.commission.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-[#252526] rounded border border-[#3e3e42] p-3">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-xs text-[#858585]">{t('profile.allTimeLeaderboard')}</div>
+              <div className="text-[11px] font-mono text-[#6f7682]">ALL</div>
+            </div>
+            {allTimeLeaderboard.length === 0 ? (
+              <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
+            ) : (
+              <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225]">
+                <div className="min-w-[900px]">
+                  <div className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#31343b] px-3 py-2 text-[11px] uppercase tracking-wide text-[#6f7682]">
+                    <span>{t('profile.rank')}</span>
+                    <span>{t('profile.user')}</span>
+                    <span className="text-right">{t('profile.totalPnl')}</span>
+                    <span className="text-right">{t('profile.netPnl')}</span>
+                    <span className="text-right">{t('profile.trades')}</span>
+                    <span className="text-right">{t('profile.winRate')}</span>
+                    <span className="text-right">{t('profile.commission')}</span>
+                  </div>
+                  {allTimeLeaderboard.map((entry) => (
+                    <div
+                      key={`${entry.username}-${entry.rank}`}
+                      className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
+                    >
+                      <span className="font-mono text-[#8c93a1]">#{entry.rank}</span>
+                      <span className="truncate pr-2">{entry.username}</span>
+                      <span className={`text-right font-mono tabular-nums ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(entry.pnl, 2)}
+                      </span>
+                      <span className={`text-right font-mono tabular-nums ${getNetProfit(entry.pnl, entry.commission) >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(getNetProfit(entry.pnl, entry.commission), 2)}
+                      </span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.commission.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
