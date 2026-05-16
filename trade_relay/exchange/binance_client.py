@@ -304,9 +304,25 @@ class BinanceClient:
         Returns:
             bool: 如果是时间戳错误返回 True，否则返回 False
         """
+        response = getattr(exception, 'response', None)
+        if response is not None:
+            try:
+                error_data = response.json()
+                if error_data.get('code') == -1021:
+                    return True
+            except Exception:
+                pass
+
         error_str = str(exception)
-        # 检查异常消息中是否包含 -1021 或 Timestamp 相关关键字
-        return '-1021' in error_str or 'Timestamp' in error_str or 'timestamp' in error_str.lower()
+        lowered = error_str.lower()
+        # 仅匹配 Binance 的时间戳错误码或典型错误文本，避免把普通请求参数里的
+        # timestamp 字段误判成时间同步问题。
+        return (
+            '-1021' in error_str
+            or 'timestamp for this request' in lowered
+            or 'outside of the recvwindow' in lowered
+            or 'ahead of the server' in lowered
+        )
     
     def _handle_timestamp_error(self, response, request_func, attempt: int = 0):
         """
