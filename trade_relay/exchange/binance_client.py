@@ -845,9 +845,13 @@ class BinanceClient:
         import requests as _requests
         for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
             try:
-                self.set_timestamp_offset(force=(attempt > 0))
+                # positionRisk is a signed direct HTTP call; force a fresh time sync
+                # before each attempt to reduce -1021 timestamp drift under proxies.
+                self.set_timestamp_offset(force=True)
                 url = f"{self.base_url}/fapi/v2/positionRisk"
-                params: dict[str, object] = {}
+                params: dict[str, object] = {
+                    "recvWindow": recv_window or self.DEFAULT_RECV_WINDOW,
+                }
                 if symbol:
                     params["symbol"] = symbol
                 _, query = self._generate_signed_request_body(params, debug=False)
