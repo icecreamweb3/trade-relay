@@ -136,7 +136,7 @@ function writeStoredLeverage(username: string, symbol: string, leverage: number)
 
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
-function TickerStrip() {
+function TickerStrip({ onFillMark }: { onFillMark: () => void }) {
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, klines } = useMarketStore()
 
@@ -155,13 +155,22 @@ function TickerStrip() {
         <span className="text-[13px] font-bold text-[#EAECEF] tracking-wide">{symbol}</span>
         <span className="text-[9px] text-[#848E9C] bg-[#1E2026] px-1.5 py-0.5 rounded uppercase tracking-wider">{t('order.perpetual')}</span>
       </div>
-      <div className={`text-[22px] font-bold leading-none mb-2 tabular-nums ${priceColor}`}>
-        {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
-        {change24h != null && (
-          <span className="text-[11px] font-normal ml-2 opacity-90">
-            {isUp ? '+' : ''}{change24h.toFixed(2)}%
-          </span>
-        )}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className={`text-[22px] font-bold leading-none tabular-nums ${priceColor}`}>
+          {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
+          {change24h != null && (
+            <span className="text-[11px] font-normal ml-2 opacity-90">
+              {isUp ? '+' : ''}{change24h.toFixed(2)}%
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onFillMark}
+          className="shrink-0 rounded bg-[#1E2026] px-2 py-1 text-[9px] font-medium text-[#F0B90B] transition-colors hover:text-[#D9A429]"
+        >
+          {t('order.fillMark')} ↓
+        </button>
       </div>
     </div>
   )
@@ -740,7 +749,7 @@ export function OrderFormWidget({
     <div className="relative h-full flex flex-col bg-[#0B0E11] overflow-hidden">
 
       {/* ── Ticker strip ── */}
-      <TickerStrip />
+      <TickerStrip onFillMark={fillMarkPrice} />
 
       {/* ── Market order confirmation modal ── */}
       {marketConfirm && (
@@ -893,10 +902,6 @@ export function OrderFormWidget({
               <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">
                 {orderType === 'CONDITIONAL' ? t('order.limitPrice') : t('order.price')}
               </label>
-              <button type="button" onClick={fillMarkPrice}
-                className="text-[9px] text-[#F0B90B] hover:text-[#D9A429] transition-colors">
-                {t('order.fillMark')} ↓
-              </button>
             </div>
             <div className="relative">
               <input type="number" value={price} onChange={e => setPrice(e.target.value)}
