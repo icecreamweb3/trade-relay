@@ -24,19 +24,15 @@ const LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 }
 let _fd        = null   // 当前日志文件描述符
 let _filePath  = null   // 当前日志文件路径
 let _written   = 0      // 已写入字节数
+let _logDir    = null   // 当前日志目录
+let _bootstrapFilePath = null
 
-function _resolveLogDir() {
+function _fallbackLogDir() {
   const explicitDir = String(process.env.TRADE_RELAY_LOG_DIR || '').trim()
   if (explicitDir) return explicitDir
 
-  const packagedDir = __dirname.includes('app.asar')
-  if (!packagedDir) return path.join(__dirname, '../logs')
-
-  const exeDir = path.dirname(process.execPath)
-  if (exeDir) return path.join(exeDir, 'logs')
-
   if (process.platform === 'win32') {
-    const base = process.env.APPDATA || process.env.LOCALAPPDATA
+    const base = process.env.LOCALAPPDATA || process.env.APPDATA
     if (base) return path.join(base, APP_NAME, 'logs')
   }
 
@@ -49,16 +45,90 @@ function _resolveLogDir() {
   return path.join(os.homedir(), '.local', 'state', 'trade-relay', 'logs')
 }
 
+function _logDirCandidates() {
+  const candidates = []
+  const explicitDir = String(process.env.TRADE_RELAY_LOG_DIR || '').trim()
+  if (explicitDir) candidates.push(explicitDir)
+
+  const packagedDir = __dirname.includes('app.asar')
+  if (!packagedDir) {
+    candidates.push(path.join(__dirname, '../logs'))
+  } else {
+    const exeDir = path.dirname(process.execPath)
+    if (exeDir) candidates.push(path.join(exeDir, 'logs'))
+    const cwd = process.cwd && process.cwd()
+    if (cwd) candidates.push(path.join(cwd, 'logs'))
+  }
+
+  candidates.push(_fallbackLogDir())
+
+  const seen = new Set()
+  return candidates
+    .filter(Boolean)
+    .map((candidate) => path.resolve(candidate))
+    .filter((candidate) => {
+      if (seen.has(candidate)) return false
+      seen.add(candidate)
+      return true
+    })
+}
+
+function _appendBootstrapLine(logDir, line) {
+  try {
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+    const bootstrapFile = path.join(logDir, 'electron_bootstrap.log')
+    fs.appendFileSync(bootstrapFile, `${_timestamp()} | ${line}\n`, 'utf8')
+    _bootstrapFilePath = bootstrapFile
+    _logDir = logDir
+    return true
+  } catch {
+    return false
+  }
+}
+
+function _bootstrapLogDir() {
+  if (_logDir && fs.existsSync(_logDir)) return
+  for (const logDir of _logDirCandidates()) {
+    if (_appendBootstrapLine(logDir, 'bootstrap:init')) {
+      return
+    }
+  }
+}
+
 /** 确保日志目录存在，创建初始日志文件 */
 function _init() {
   if (_fd !== null) return
-  const logDir = _resolveLogDir()
-  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
-
+  _bootstrapLogDir()
   const ts = _timestamp().replace(/[: ]/g, '-').replace(/\./g, '')
-  _filePath = path.join(logDir, `electron_${ts}.log`)
-  _fd = fs.openSync(_filePath, 'a')
-  _written = fs.fstatSync(_fd).size
+  const errors = []
+
+  const candidates = _logDir
+    ? [_logDir, ..._logDirCandidates().filter((candidate) => candidate !== _logDir)]
+    : _logDirCandidates()
+
+  for (const logDir of candidates) {
+    try {
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const filePath = path.join(logDir, `electron_${ts}.log`)
+      const fd = fs.openSync(filePath, 'a')
+      _fd = fd
+      _filePath = filePath
+      _logDir = logDir
+      _written = fs.fstatSync(fd).size
+      _appendBootstrapLine(logDir, `bootstrap:active file=${filePath}`)
+      console.log(`[TradeRelay] Electron logger initialised at ${filePath}`)
+      return
+    } catch (error) {
+      errors.push({ logDir, message: error && error.message ? error.message : String(error) })
+    }
+  }
+
+  if (_bootstrapFilePath) {
+    try {
+      fs.appendFileSync(_bootstrapFilePath, `${_timestamp()} | bootstrap:error ${JSON.stringify(errors)}\n`, 'utf8')
+    } catch {}
+  }
+  throw new Error(`Failed to initialize Electron logger: ${JSON.stringify(errors)}`)
 }
 
 /** 获取当前时间字符串（本地时间） */
@@ -110,7 +180,16 @@ function _rotate() {
 
 /** 核心写入函数 */
 function _write(levelName, message, extra) {
-  _init()
+  try {
+    _init()
+  } catch (error) {
+    const consoleFn = levelName === 'ERROR' ? console.error
+      : levelName === 'WARN'  ? console.warn
+      : levelName === 'DEBUG' ? console.debug
+      : console.log
+    consoleFn(`[TradeRelay] logger-init-failed ${error && error.message ? error.message : String(error)}`)
+    return
+  }
   const { func, file, line } = _caller()
   const extraStr = extra !== undefined
     ? ' ' + (typeof extra === 'string' ? extra : JSON.stringify(extra))
@@ -149,6 +228,10 @@ const logger = {
 
   /** 获取当前日志文件路径（供外部查询） */
   getLogFile: () => { _init(); return _filePath },
+  getBootstrapFile: () => {
+    _bootstrapLogDir()
+    return _bootstrapFilePath
+  },
 
   /** 关闭文件句柄（进程退出前调用） */
   close: () => {
@@ -158,5 +241,7 @@ const logger = {
     }
   },
 }
+
+_bootstrapLogDir()
 
 module.exports = { logger }
