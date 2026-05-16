@@ -54,6 +54,12 @@ function _logDirCandidates() {
   if (!packagedDir) {
     candidates.push(path.join(__dirname, '../logs'))
   } else {
+    const portableDir = String(process.env.PORTABLE_EXECUTABLE_DIR || '').trim()
+    if (portableDir) candidates.push(path.join(portableDir, 'logs'))
+
+    const portableFile = String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim()
+    if (portableFile) candidates.push(path.join(path.dirname(portableFile), 'logs'))
+
     const exeDir = path.dirname(process.execPath)
     if (exeDir) candidates.push(path.join(exeDir, 'logs'))
     const cwd = process.cwd && process.cwd()
