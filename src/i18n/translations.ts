@@ -180,7 +180,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'status.pending': '挂单中',
     'status.failed': '失败',
     'status.mock': '模拟',
-    'status.new': '新建',
+    'status.new': '待成交',
     'status.partiallyFilled': '部分成交',
     'status.canceled': '已取消',
     'status.rejected': '已拒绝',
