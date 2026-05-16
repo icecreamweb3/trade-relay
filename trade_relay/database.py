@@ -800,21 +800,27 @@ def upsert_account_summary(user_id: int, symbol: Optional[str], data: dict) -> N
     row["symbol"] = symbol.upper() if symbol else None
 
     cols = list(row.keys())
-    placeholders = ", ".join(["%s"] * len(cols))
-    updates = ", ".join(
-        f"{c} = VALUES({c})"
-        for c in cols
-        if c not in ("user_id", "symbol")
+    mutable_cols = [c for c in cols if c not in ("user_id", "symbol")]
+    assignments = ", ".join(f"{c} = %s" for c in mutable_cols)
+    update_sql = (
+        f"UPDATE account_summary SET {assignments}, synced_at = CURRENT_TIMESTAMP(3)"
+        " WHERE user_id = %s AND symbol <=> %s"
     )
-    sql = (
-        f"INSERT INTO account_summary ({', '.join(cols)}) VALUES ({placeholders})"
-        f" ON DUPLICATE KEY UPDATE {updates}, synced_at = CURRENT_TIMESTAMP(3)"
+    insert_sql = (
+        f"INSERT INTO account_summary ({', '.join(cols)}) VALUES "
+        f"({', '.join(['%s'] * len(cols))})"
     )
     _log_db_write("upsert", "account_summary", row)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, [row[c] for c in cols])
+            update_params = [row[c] for c in mutable_cols] + [user_id, row["symbol"]]
+            cur.execute(update_sql, update_params)
+            if cur.rowcount == 0:
+                try:
+                    cur.execute(insert_sql, [row[c] for c in cols])
+                except pymysql.err.IntegrityError:
+                    cur.execute(update_sql, update_params)
         conn.commit()
         _log_db_write_result("upsert", "account_summary", user_id=user_id, symbol=row["symbol"], affected_rows=1)
     finally:

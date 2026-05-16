@@ -8,12 +8,38 @@ const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
 const https = require('https')
-const envPath = [
-  path.join(__dirname, '../.env.production'),
-  path.join(__dirname, '../.env'),
-].find((candidate) => fs.existsSync(candidate))
+const { ProxyAgent } = require('proxy-agent')
+function resolveEnvPath() {
+  const candidates = [
+    path.join(path.dirname(process.execPath), '.env.production'),
+    path.join(path.dirname(process.execPath), '.env'),
+    path.join(process.cwd(), '.env.production'),
+    path.join(process.cwd(), '.env'),
+    path.join(process.resourcesPath || '', '.env.production'),
+    path.join(process.resourcesPath || '', '.env'),
+    path.join(__dirname, '../.env.production'),
+    path.join(__dirname, '../.env'),
+  ].filter(Boolean)
+
+  const seen = new Set()
+  for (const candidate of candidates) {
+    const normalized = path.resolve(candidate)
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    if (fs.existsSync(normalized)) return normalized
+  }
+  return null
+}
+
+const envPath = resolveEnvPath()
 require('dotenv').config(envPath ? { path: envPath } : {})
 const { logger } = require('./logger')
+
+if (envPath) {
+  logger.info('Loaded Electron env file: %s', envPath)
+} else {
+  logger.warning('No .env.production/.env file found for Electron runtime; using process env/defaults')
+}
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -39,6 +65,43 @@ const BINANCE_URL    = `https://www.binance.com/${BINANCE_LANG}/futures/${BINANC
 
 function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
+}
+
+const _proxyAgentCache = new Map()
+
+function shouldBypassProxy(targetUrl) {
+  const hostname = String(targetUrl.hostname || '').trim().toLowerCase()
+  if (!hostname) return true
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true
+
+  const noProxy = String(process.env.NO_PROXY || process.env.no_proxy || '').trim()
+  if (!noProxy) return false
+
+  const entries = noProxy.split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
+  return entries.some((entry) => {
+    if (entry === '*') return true
+    const normalized = entry.startsWith('.') ? entry.slice(1) : entry
+    return hostname === normalized || hostname.endsWith(`.${normalized}`)
+  })
+}
+
+function getProxyUrlForTarget(targetUrl) {
+  if (shouldBypassProxy(targetUrl)) return null
+  if (targetUrl.protocol === 'https:') {
+    return process.env.HTTPS_PROXY || process.env.ALL_PROXY || process.env.PROXY || process.env.BACKEND_PROXY_URL || null
+  }
+  return process.env.HTTP_PROXY || process.env.ALL_PROXY || process.env.PROXY || process.env.BACKEND_PROXY_URL || null
+}
+
+function getProxyAgent(targetUrl) {
+  const proxyUrl = getProxyUrlForTarget(targetUrl)
+  if (!proxyUrl) return undefined
+  const cacheKey = `${targetUrl.protocol}|${proxyUrl}`
+  if (!_proxyAgentCache.has(cacheKey)) {
+    _proxyAgentCache.set(cacheKey, new ProxyAgent(proxyUrl))
+    logger.info('Electron backend requests using proxy %s for %s', proxyUrl, targetUrl.origin)
+  }
+  return _proxyAgentCache.get(cacheKey)
 }
 
 // ── JWT token storage (in-memory + safeStorage) ──────────────────────────────
@@ -72,6 +135,7 @@ function httpRequest(method, path, body, token) {
 
     const targetUrl = new URL(path, `${BACKEND_BASE_URL}/`)
     const transport = targetUrl.protocol === 'https:' ? https : http
+    const agent = getProxyAgent(targetUrl)
 
     const req = transport.request(
       {
@@ -81,6 +145,7 @@ function httpRequest(method, path, body, token) {
         path: `${targetUrl.pathname}${targetUrl.search}`,
         method,
         headers,
+        agent,
       },
       (res) => {
         let chunks = ''
