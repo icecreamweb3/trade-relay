@@ -26,7 +26,7 @@ interface Fill {
   created_at?: string
 }
 
-const GRID_TEMPLATE = 'minmax(52px, 0.9fr) minmax(72px, 1fr) 52px 52px 58px 88px 84px 112px 120px 78px 96px'
+const GRID_TEMPLATE = 'minmax(52px, 0.9fr) minmax(72px, 1fr) 52px 52px 58px 88px 84px 124px 148px 78px 96px'
 
 function getTradeKind(fill: Fill, t: (key: string) => string): { label: string; className: string } {
   const orderCategory = String(fill.order_category || '').toUpperCase()
@@ -185,8 +185,8 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
           <span className="pl-[5px] text-left">{t('log.dir')}</span>
           <span className="-ml-[7px] text-center">{t('log.price')}</span>
           <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
-          <span className="ml-[30px] text-center">{t('pos.realizedPnl')}</span>
-          <span className="ml-[30px] text-center">{t('trade.commission')}</span>
+          <span className="text-center">{t('pos.realizedPnl')}</span>
+          <span className="text-center">{t('trade.commission')}</span>
           <span className="text-left">{t('recentTrades.kind')}</span>
           <span className="text-center">{t('log.time')}</span>
         </div>
@@ -226,8 +226,8 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                 </span>
                 <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
                 <span className="-ml-[10px] text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
-                <span className={`ml-[30px] text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
-                <span className="ml-[30px] text-center text-[#aaa]">{commissionText}</span>
+                <span className={`text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
+                <span className="text-center text-[#aaa]">{commissionText}</span>
                 <span className="truncate pr-1">
                   <span className={`inline-flex min-w-[64px] items-center justify-center rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
                     {tradeKind.label}
