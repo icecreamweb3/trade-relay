@@ -1,4 +1,8 @@
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trade_relay.trading import binance_client as trading_binance_client
 
@@ -324,3 +328,111 @@ def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch)
 
     assert result == []
     assert status_updates == [(77, "FILLED", {"filled_qty": 0.002, "avg_price": 80650.5})]
+
+
+def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None: [{
+            "id": 7,
+            "symbol": "BTCUSDC",
+            "position_side": "LONG",
+            "quantity": 0.012,
+            "avg_entry_price": 78000.0,
+            "unrealized_pnl": 12.5,
+            "leverage": 20,
+            "margin_type": "cross",
+        }],
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: [
+            {
+                "position_id": 7,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "trade_direction": "CLOSE",
+                "order_type": "TAKE_PROFIT_MARKET",
+                "price": 79500.0,
+                "stop_price": None,
+                "status": "NEW",
+            },
+            {
+                "position_id": 7,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "trade_direction": "CLOSE",
+                "order_type": "STOP_MARKET",
+                "price": None,
+                "stop_price": 77200.0,
+                "status": "NEW",
+            },
+        ],
+    )
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+
+    positions = positions_router._db_positions(user_id=5)
+
+    assert len(positions) == 1
+    assert positions[0].tp_price == 79500.0
+    assert positions[0].sl_price == 77200.0
+
+
+def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None: [{
+            "id": 15,
+            "symbol": "BTCUSDC",
+            "position_side": "SHORT",
+            "quantity": 0.025,
+            "avg_entry_price": 78900.0,
+            "unrealized_pnl": 3.2,
+            "leverage": 20,
+            "margin_type": "cross",
+        }],
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: [
+            {
+                "position_id": None,
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "trade_direction": "CLOSE",
+                "order_type": "TAKE_PROFIT_MARKET",
+                "price": 78000.0,
+                "stop_price": None,
+                "status": "NEW",
+            },
+            {
+                "position_id": None,
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "trade_direction": "CLOSE",
+                "order_type": "STOP_MARKET",
+                "price": None,
+                "stop_price": 79450.0,
+                "status": "NEW",
+            },
+        ],
+    )
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+
+    positions = positions_router._db_positions(user_id=5)
+
+    assert len(positions) == 1
+    assert positions[0].tp_price == 78000.0
+    assert positions[0].sl_price == 79450.0

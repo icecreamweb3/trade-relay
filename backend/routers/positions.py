@@ -13,7 +13,7 @@ from typing import Optional
 
 from trade_relay import database as db_module
 from trade_relay import config as cfg_module
-from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, notify_user_stream_event, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
+from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
 from trade_relay.trading.tpsl_service import place_tp_sl_orders, validate_tpsl_prices
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
@@ -58,11 +58,6 @@ def _schedule_initial_position_sync(username: str, user_id: int | None, api_key:
             sync_initial_positions_for_user(username, api_key, api_secret, testnet)
             if user_id is not None:
                 _positions_cache.pop(user_id, None)
-            notify_user_stream_event(
-                username,
-                {"type": "order_update", "event": "REST_SYNC"},
-                force=True,
-            )
         except Exception:
             _log.exception("Deferred initial position sync failed for user=%s", username)
         finally:
@@ -91,18 +86,80 @@ class PositionOut(BaseModel):
     sl_price: Optional[float] = None
 
 
+def _derive_conditional_position_side(side: str, trade_direction: str | None) -> str:
+    side_upper = str(side or "").upper()
+    direction_upper = str(trade_direction or "").upper()
+    if direction_upper == "OPEN":
+        return "LONG" if side_upper == "BUY" else "SHORT"
+    if direction_upper == "CLOSE":
+        return "SHORT" if side_upper == "BUY" else "LONG"
+    return "SHORT" if side_upper == "BUY" else "LONG"
+
+
+def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | None, float | None]], dict[tuple[str, str], tuple[float | None, float | None]]]:
+    by_position_id: dict[int, tuple[float | None, float | None]] = {}
+    by_symbol_side: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    if user_id is None:
+        return by_position_id, by_symbol_side
+
+    rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+    for row in rows:
+        order_type = str(row.get("order_type") or "").upper()
+        if order_type not in {"TAKE_PROFIT_MARKET", "STOP_MARKET"}:
+            continue
+
+        symbol = str(row.get("symbol") or "").upper()
+        position_side = _derive_conditional_position_side(
+            str(row.get("side") or ""),
+            str(row.get("trade_direction") or ""),
+        )
+        if not symbol or position_side not in {"LONG", "SHORT"}:
+            continue
+
+        tp_price: float | None = None
+        sl_price: float | None = None
+        if order_type == "TAKE_PROFIT_MARKET":
+            tp_price = float(row["price"]) if row.get("price") is not None else None
+        else:
+            sl_price = float(row["stop_price"]) if row.get("stop_price") is not None else None
+
+        position_id = row.get("position_id")
+        if position_id:
+            current_tp, current_sl = by_position_id.get(int(position_id), (None, None))
+            by_position_id[int(position_id)] = (
+                current_tp if current_tp is not None else tp_price,
+                current_sl if current_sl is not None else sl_price,
+            )
+
+        current_tp, current_sl = by_symbol_side.get((symbol, position_side), (None, None))
+        by_symbol_side[(symbol, position_side)] = (
+            current_tp if current_tp is not None else tp_price,
+            current_sl if current_sl is not None else sl_price,
+        )
+
+    return by_position_id, by_symbol_side
+
+
 def _db_positions(user_id: int | None) -> list[PositionOut]:
     rows = db_module.get_positions(user_id=user_id)
+    persisted_by_position_id, persisted_by_symbol_side = _load_persisted_tpsl(user_id)
     positions: list[PositionOut] = []
     for index, row in enumerate(rows, start=1):
         pos_id = int(row.get("id") or index)
+        symbol = str(row.get("symbol", "") or "").upper()
+        side = str(row.get("position_side", "") or "").upper()
+        tp, sl = persisted_by_position_id.get(pos_id) or persisted_by_symbol_side.get((symbol, side)) or (None, None)
         with _tpsl_store_lock:
-            tp, sl = _tpsl_store.get(pos_id, (None, None))
+            memory_tp, memory_sl = _tpsl_store.get(pos_id, (None, None))
+        if memory_tp is not None:
+            tp = memory_tp
+        if memory_sl is not None:
+            sl = memory_sl
         positions.append(
             PositionOut(
                 id=pos_id,
-                symbol=str(row.get("symbol", "") or ""),
-                side=str(row.get("position_side", "") or "").upper(),
+                symbol=symbol,
+                side=side,
                 quantity=float(row["quantity"]),
                 entry_price=float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None,
                 liquidation_price=None,
