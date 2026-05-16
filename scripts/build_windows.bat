@@ -55,27 +55,35 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [4/5] Installing Node.js dependencies for Electron build...
-if not exist "node_modules\.bin\electron-builder.cmd" (
-    echo       electron-builder was not found in node_modules.
-    echo       Installing dependencies with visible logs. Electron download may take a few minutes...
-    if exist "package-lock.json" (
-        call npm ci --include=dev --no-fund --no-audit --progress=false --loglevel=info
-        if errorlevel 1 (
-            echo ERROR: npm ci failed.
-            pause
-            exit /b 1
-        )
-    ) else (
-        call npm install --include=dev --no-fund --no-audit --progress=false --loglevel=info
-        if errorlevel 1 (
-            echo ERROR: npm install failed.
-            pause
-            exit /b 1
-        )
+echo [4/5] Syncing Node.js dependencies for Electron build...
+echo       Reinstalling root dependencies to ensure new runtime modules are packaged.
+echo       This keeps node_modules aligned with package-lock.json on reused Windows build machines.
+if exist "package-lock.json" (
+    call npm ci --include=dev --no-fund --no-audit --progress=false --loglevel=info
+    if errorlevel 1 (
+        echo ERROR: npm ci failed.
+        pause
+        exit /b 1
     )
 ) else (
-    echo       Electron build dependencies already exist.
+    call npm install --include=dev --no-fund --no-audit --progress=false --loglevel=info
+    if errorlevel 1 (
+        echo ERROR: npm install failed.
+        pause
+        exit /b 1
+    )
+)
+
+if not exist "node_modules\proxy-agent" (
+    echo ERROR: proxy-agent was not installed into node_modules.
+    pause
+    exit /b 1
+)
+
+if not exist "node_modules\.bin\electron-builder.cmd" (
+    echo ERROR: electron-builder was not installed into node_modules.
+    pause
+    exit /b 1
 )
 
 echo [5/5] Building Windows Electron package...
