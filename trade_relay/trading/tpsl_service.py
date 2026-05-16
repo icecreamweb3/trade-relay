@@ -9,6 +9,46 @@ from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
 
 
+def _replace_existing_conditional_orders(
+    *,
+    client: BinanceClient,
+    user_id: int,
+    symbol: str,
+    close_side: str,
+    position_id: Optional[int],
+    order_type: str,
+) -> list[str]:
+    errors: list[str] = []
+    active_rows = db.query_orders(user_id=user_id, status="NEW", limit=500)
+    matching_rows: list[dict] = []
+
+    for row in active_rows:
+        if str(row.get("order_type") or "").upper() != order_type:
+            continue
+        if str(row.get("trade_direction") or "").upper() != "CLOSE":
+            continue
+        if str(row.get("symbol") or "").upper() != symbol.upper():
+            continue
+        if str(row.get("side") or "").upper() != close_side:
+            continue
+
+        row_position_id = row.get("position_id")
+        if position_id is not None and row_position_id is not None and int(row_position_id) != int(position_id):
+            continue
+        matching_rows.append(row)
+
+    for row in matching_rows:
+        exchange_order_id = str(row.get("exchange_order_id") or "").strip()
+        try:
+            if exchange_order_id:
+                client.cancel_algo_order(int(exchange_order_id), None, symbol)
+            db.update_order_status(int(row["id"]), "CANCELED")
+        except Exception as exc:
+            errors.append(f"{order_type} replace: {exc}")
+
+    return errors
+
+
 def validate_tpsl_prices(
     *,
     position_side: str,
@@ -68,6 +108,16 @@ def place_tp_sl_orders(
     close_side = "SELL" if str(position_side).upper() == "LONG" else "BUY"
 
     if tp_price is not None and tp_price > 0:
+        errors.extend(_replace_existing_conditional_orders(
+            client=client,
+            user_id=user_id,
+            symbol=symbol,
+            close_side=close_side,
+            position_id=position_id,
+            order_type="TAKE_PROFIT_MARKET",
+        ))
+        if errors:
+            return errors
         try:
             tp_resp = client.place_take_profit_order(
                 symbol=symbol,
@@ -114,6 +164,16 @@ def place_tp_sl_orders(
             )
 
     if sl_price is not None and sl_price > 0:
+        errors.extend(_replace_existing_conditional_orders(
+            client=client,
+            user_id=user_id,
+            symbol=symbol,
+            close_side=close_side,
+            position_id=position_id,
+            order_type="STOP_MARKET",
+        ))
+        if errors:
+            return errors
         try:
             sl_resp = client.place_stop_loss_order(
                 symbol=symbol,

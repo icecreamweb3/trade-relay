@@ -225,6 +225,75 @@ def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
     }]
 
 
+def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    cancel_calls = []
+    created_orders = []
+    status_updates = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def cancel_algo_order(self, algo_id=None, client_algo_id=None, symbol=None, max_retries=None):
+            cancel_calls.append({
+                "algo_id": algo_id,
+                "client_algo_id": client_algo_id,
+                "symbol": symbol,
+            })
+            return {"success": True}
+
+        def place_take_profit_order(self, symbol, side, price, quantity, position_side):
+            return {"algoId": 2001, "clientAlgoId": "tp-1", "status": "NEW"}
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {"algoId": 2002, "clientAlgoId": "sl-2", "status": "NEW"}
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(
+        tpsl_service.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "id": 11,
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "position_id": 99,
+            "exchange_order_id": "123456789",
+            "status": "NEW",
+        }],
+    )
+    monkeypatch.setattr(tpsl_service.db, "update_order_status", lambda order_id, status, **kwargs: status_updates.append((order_id, status, kwargs)) or True)
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=1,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.002,
+        entry_price=78000.0,
+        tp_price=78500.0,
+        sl_price=77600.0,
+        position_id=99,
+    )
+
+    assert errors == []
+    assert cancel_calls == [{"algo_id": 123456789, "client_algo_id": None, "symbol": "BTCUSDC"}]
+    assert status_updates == [(11, "CANCELED", {})]
+    assert len(created_orders) == 2
+    assert created_orders[0]["order_type"] == "TAKE_PROFIT_MARKET"
+    assert created_orders[1]["order_type"] == "STOP_MARKET"
+
+
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
     from backend.routers import orders as orders_router
 
