@@ -136,7 +136,9 @@ async def submit_order(
         tp_price=tp_price,
         sl_price=sl_price,
         status=result.status if result.success else "FAILED",
-        binance_order_id=result.order_id,
+        binance_order_id=None if order_category == "Conditional" else result.order_id,
+        algo_id=result.order_id if order_category == "Conditional" else None,
+        algo_client_id=result.algo_client_id if order_category == "Conditional" else None,
         client_order_id=result.client_order_id,
         error_message=result.error,
         trade_direction=position_direction.upper() if position_direction else None,
@@ -146,15 +148,16 @@ async def submit_order(
         order_category=order_category,
     )
     _log.info(
-        "[ORDER_FLOW] phase=db_recorded username=%s order_db_id=%s exchange_order_id=%s status=%s success=%s",
+        "[ORDER_FLOW] phase=db_recorded username=%s order_db_id=%s exchange_order_id=%s algo_id=%s status=%s success=%s",
         username,
         order_db_id,
-        result.order_id,
+        None if order_category == "Conditional" else result.order_id,
+        result.order_id if order_category == "Conditional" else None,
         result.status if hasattr(result, 'status') else None,
         result.success,
     )
 
-    if result.success and not mock and result.order_id and api_key and api_secret:
+    if result.success and not mock and result.order_id and api_key and api_secret and order_category == "Basic":
         # Start the per-user user-data stream and do one immediate REST sync to
         # close the race where an order fills before the websocket is fully up.
         ensure_user_order_status_stream(username, api_key, api_secret, testnet)

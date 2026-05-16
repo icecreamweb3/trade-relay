@@ -60,6 +60,8 @@ class OrderOut(BaseModel):
     realized_pnl: Optional[float] = None
     commission: Optional[float] = None
     commission_asset: Optional[str] = None
+    algo_id: Optional[str] = None
+    algo_client_id: Optional[str] = None
     exchange_order_id: Optional[str]
     error_message: Optional[str]
     created_at: str
@@ -96,6 +98,8 @@ def _row_to_out(r: dict) -> OrderOut:
         realized_pnl=float(r["realized_pnl"]) if r.get("realized_pnl") is not None else None,
         commission=float(r["commission"]) if r.get("commission") is not None else None,
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
+        algo_id=str(r["algo_id"]) if r.get("algo_id") is not None else None,
+        algo_client_id=str(r["algo_client_id"]) if r.get("algo_client_id") is not None else None,
         exchange_order_id=r.get("exchange_order_id"),
         error_message=r.get("error_message"),
         created_at=str(r["created_at"]),
@@ -119,6 +123,8 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         realized_pnl=float(r["realized_pnl"]) if r.get("realized_pnl") is not None else None,
         commission=float(r["commission"]) if r.get("commission") is not None else None,
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
+        algo_id=None,
+        algo_client_id=None,
         exchange_order_id=None,
         error_message=None,
         created_at=str(r["created_at"]),
@@ -278,6 +284,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
 
 class ConditionalOrderOut(BaseModel):
     algo_id: int
+    algo_client_id: Optional[str] = None
     symbol: str
     side: str
     position_side: str
@@ -427,15 +434,15 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
     db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
     conditional_rows = [row for row in db_rows if str(row.get("order_type") or "") in _TPSL_TYPES]
-    rows_by_exchange_id = {
-        str(row.get("exchange_order_id")): row
+    rows_by_algo_id = {
+        str(row.get("algo_id") or row.get("exchange_order_id")): row
         for row in conditional_rows
-        if row.get("exchange_order_id")
+        if row.get("algo_id") or row.get("exchange_order_id")
     }
     rows_by_client_id = {
-        str(row.get("client_order_id")): row
+        str(row.get("algo_client_id") or row.get("client_order_id")): row
         for row in conditional_rows
-        if row.get("client_order_id")
+        if row.get("algo_client_id") or row.get("client_order_id")
     }
 
     # 1. Try Binance Algo Order API (may not be available for all accounts)
@@ -449,7 +456,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             try:
                 algo_id = int(o.get("algoId") or 0)
                 client_algo_id = str(o.get("clientAlgoId") or o.get("clientOrderId") or "") or None
-                local_row = rows_by_exchange_id.get(str(algo_id)) if algo_id else None
+                local_row = rows_by_algo_id.get(str(algo_id)) if algo_id else None
                 if local_row is None and client_algo_id:
                     local_row = rows_by_client_id.get(client_algo_id)
                 trade_direction = str(local_row.get("trade_direction") or "").upper() if local_row else None
@@ -457,10 +464,10 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 trigger_price = float(o.get("triggerPrice") or (local_row.get("stop_price") if local_row and str(local_row.get("order_type") or "") == "STOP_MARKET" else local_row.get("price") if local_row else 0) or 0)
                 if local_row:
                     backfill_fields = {}
-                    if algo_id and not local_row.get("exchange_order_id"):
-                        backfill_fields["exchange_order_id"] = str(algo_id)
-                    if client_algo_id and not local_row.get("client_order_id"):
-                        backfill_fields["client_order_id"] = client_algo_id
+                    if algo_id and not local_row.get("algo_id"):
+                        backfill_fields["algo_id"] = str(algo_id)
+                    if client_algo_id and not local_row.get("algo_client_id"):
+                        backfill_fields["algo_client_id"] = client_algo_id
                     if trigger_price > 0:
                         if order_type == "STOP_MARKET" and local_row.get("stop_price") is None:
                             backfill_fields["stop_price"] = trigger_price
@@ -471,6 +478,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 seen_algo_ids.add(algo_id)
                 result.append(ConditionalOrderOut(
                     algo_id=algo_id,
+                    algo_client_id=str(local_row.get("algo_client_id") or client_algo_id or "") if local_row or client_algo_id else None,
                     symbol=str(o.get("symbol") or ""),
                     side=str(o.get("side") or ""),
                     position_side=str(o.get("positionSide") or _derive_conditional_position_side(o.get("side") or "", trade_direction)),
@@ -480,15 +488,15 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     status=str(o.get("algoStatus") or o.get("status") or ""),
                     created_at=str(o.get("createTime") or o.get("bookTime") or o.get("time") or (local_row.get("created_at") if local_row else "") or ""),
                     trade_direction=trade_direction,
-                    exchange_order_id=str(local_row.get("exchange_order_id") or algo_id or "") if local_row or algo_id else None,
-                    client_order_id=str(local_row.get("client_order_id") or client_algo_id or "") if local_row or client_algo_id else None,
+                    exchange_order_id=str(local_row.get("exchange_order_id") or "") if local_row and local_row.get("exchange_order_id") else None,
+                    client_order_id=str(local_row.get("client_order_id") or "") if local_row and local_row.get("client_order_id") else None,
                 ))
             except Exception:
                 continue
 
     # 2. Merge DB-stored conditional orders when Algo Order openOrders API is unavailable.
     for row in conditional_rows:
-        exchange_id = row.get("exchange_order_id")
+        exchange_id = row.get("algo_id") or row.get("exchange_order_id")
         try:
             algo_id = int(exchange_id) if exchange_id else 0
         except (ValueError, TypeError):
@@ -514,12 +522,12 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 order_type = str(algo_detail.get("orderType") or order_type or "")
 
         algo_detail = None
-        if client and (algo_id or row.get("client_order_id")):
+        if client and (algo_id or row.get("algo_client_id") or row.get("client_order_id")):
             try:
                 algo_detail = await asyncio.to_thread(
                     client.get_algo_order,
                     algo_id=algo_id or None,
-                    client_algo_id=None if algo_id else str(row.get("client_order_id") or "") or None,
+                    client_algo_id=None if algo_id else str(row.get("algo_client_id") or row.get("client_order_id") or "") or None,
                 )
             except Exception:
                 algo_detail = None
@@ -527,6 +535,14 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
         if isinstance(algo_detail, dict):
             algo_status = str(algo_detail.get("algoStatus") or algo_detail.get("status") or "")
             db_status = _map_algo_status_to_db_status(algo_status)
+            actual_order_id = str(algo_detail.get("actualOrderId") or algo_detail.get("orderId") or "").strip() or None
+            client_algo_id = str(algo_detail.get("clientAlgoId") or "").strip() or None
+            if actual_order_id and actual_order_id != str(row.get("exchange_order_id") or ""):
+                db_module.update_order_metadata(int(row["id"]), exchange_order_id=actual_order_id)
+                row = {**row, "exchange_order_id": actual_order_id}
+            if client_algo_id and client_algo_id != str(row.get("algo_client_id") or ""):
+                db_module.update_order_metadata(int(row["id"]), algo_client_id=client_algo_id)
+                row = {**row, "algo_client_id": client_algo_id}
             if db_status and db_status != "NEW":
                 filled_qty = float(algo_detail.get("quantity") or row.get("quantity") or 0) if db_status == "FILLED" else 0.0
                 avg_price = float(algo_detail.get("actualPrice") or 0) if db_status == "FILLED" and float(algo_detail.get("actualPrice") or 0) > 0 else 0.0
@@ -539,7 +555,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 if db_status == "FILLED":
                     if str(row.get("trade_direction") or "").upper() == "CLOSE":
                         _record_close_fill_history_from_conditional(row, filled_qty, avg_price)
-                    sync_filled_order_trade_details(username=username, client=client, order_row={**row, "status": db_status})
+                    sync_filled_order_trade_details(username=username, client=client, order_row={**row, "status": db_status, "exchange_order_id": actual_order_id or row.get("exchange_order_id")})
                 continue
             if trigger <= 0:
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
@@ -554,6 +570,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
         position_side = _derive_conditional_position_side(side, trade_direction)
         result.append(ConditionalOrderOut(
             algo_id=algo_id,
+            algo_client_id=str(row.get("algo_client_id") or "") or None,
             symbol=str(row.get("symbol") or ""),
             side=side,
             position_side=position_side,
@@ -588,7 +605,7 @@ async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: di
     order_row = next(
         (
             row for row in db_module.query_orders(user_id=user_id, status="NEW", limit=500)
-            if str(row.get("exchange_order_id") or "") == str(body.algo_id)
+            if str(row.get("algo_id") or row.get("exchange_order_id") or "") == str(body.algo_id)
         ),
         None,
     )

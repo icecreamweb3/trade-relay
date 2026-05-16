@@ -16,6 +16,7 @@ class BinanceOrderResult:
         success: bool,
         order_id: Optional[str] = None,
         client_order_id: Optional[str] = None,
+        algo_client_id: Optional[str] = None,
         status: str = "FAILED",
         error: Optional[str] = None,
         mock: bool = False,
@@ -23,6 +24,7 @@ class BinanceOrderResult:
         self.success = success
         self.order_id = order_id
         self.client_order_id = client_order_id
+        self.algo_client_id = algo_client_id
         self.status = status  # 'FILLED', 'NEW', 'FAILED', 'MOCK'
         self.error = error
         self.mock = mock
@@ -148,7 +150,8 @@ async def place_order(
             )
 
         order_id = str(response.get("orderId") or response.get("algoId") or response.get("clientAlgoId") or "")
-        client_order_id = str(response.get("clientOrderId") or response.get("clientAlgoId") or "") or None
+        client_order_id = str(response.get("clientOrderId") or "") or None
+        algo_client_id = str(response.get("clientAlgoId") or "") or None
         status = response.get("status") or response.get("algoStatus") or "NEW"
         logger.info(
             'binance response | success | orderId=%s status=%s symbol=%s side=%s positionSide=%s',
@@ -159,6 +162,7 @@ async def place_order(
             success=True,
             order_id=order_id,
             client_order_id=client_order_id,
+            algo_client_id=algo_client_id,
             status=status,
         )
 

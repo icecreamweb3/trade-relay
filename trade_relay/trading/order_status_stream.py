@@ -326,7 +326,7 @@ class UserOrderStatusStream:
         # Collect (db_row, new_status, executed_qty, avg_price) for fills detected this round
         fills: list[tuple[dict, str, float, float | None]] = []
         for row in active_rows:
-            exchange_order_id = str(row.get("exchange_order_id") or "")
+            exchange_order_id = self._resolve_monitored_exchange_order_id(row) or ""
             symbol = str(row.get("symbol") or "")
             db_status = str(row.get("status") or "")
             if not exchange_order_id or not symbol:
@@ -354,7 +354,7 @@ class UserOrderStatusStream:
                 )
                 notify_needed = True
                 if new_status in ("FILLED", "PARTIALLY_FILLED") and executed_qty > 0:
-                    fills.append((row, new_status, executed_qty, avg_price))
+                    fills.append(({**row, "exchange_order_id": exchange_order_id}, new_status, executed_qty, avg_price))
             except Exception:
                 logger.exception("Poll: error querying exchange_order_id=%s user=%s", exchange_order_id, self.username)
 
@@ -390,6 +390,63 @@ class UserOrderStatusStream:
 
         if notify_needed:
             self._notify_listeners({"type": "order_update", "event": "POLL"}, force=True)
+
+    def _resolve_monitored_exchange_order_id(self, row: dict) -> str | None:
+        exchange_order_id = str(row.get("exchange_order_id") or "").strip()
+        if exchange_order_id:
+            return exchange_order_id
+
+        if str(row.get("order_category") or "").upper() != "CONDITIONAL":
+            return None
+
+        algo_id = str(row.get("algo_id") or "").strip()
+        algo_client_id = str(row.get("algo_client_id") or row.get("client_order_id") or "").strip()
+        if not algo_id and not algo_client_id:
+            return None
+
+        try:
+            algo_detail = self.client.get_algo_order(
+                algo_id=int(algo_id) if algo_id else None,
+                client_algo_id=None if algo_id else algo_client_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to resolve actual order id for conditional order user=%s algo_id=%s algo_client_id=%s",
+                self.username,
+                algo_id,
+                algo_client_id,
+            )
+            return None
+
+        if not isinstance(algo_detail, dict):
+            return None
+
+        backfill_fields: dict[str, str] = {}
+        actual_order_id = str(algo_detail.get("actualOrderId") or algo_detail.get("orderId") or "").strip()
+        algo_id_from_detail = str(algo_detail.get("algoId") or "").strip()
+        client_algo_id = str(algo_detail.get("clientAlgoId") or "").strip()
+
+        if algo_id_from_detail and not algo_id:
+            backfill_fields["algo_id"] = algo_id_from_detail
+        if client_algo_id and not algo_client_id:
+            backfill_fields["algo_client_id"] = client_algo_id
+        if actual_order_id:
+            backfill_fields["exchange_order_id"] = actual_order_id
+
+        if backfill_fields and row.get("id"):
+            db.update_order_metadata(int(row["id"]), **backfill_fields)
+
+        if actual_order_id:
+            logger.info(
+                "Resolved actual order id for conditional order user=%s db_order_id=%s algo_id=%s actual_order_id=%s",
+                self.username,
+                row.get("id"),
+                algo_id or algo_id_from_detail,
+                actual_order_id,
+            )
+            return actual_order_id
+
+        return None
 
     def _sync_position_from_rest(self, symbol: str) -> None:
         """Fetch live position data from Binance REST for a given symbol and upsert into DB."""

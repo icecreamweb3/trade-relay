@@ -38,10 +38,10 @@ def _replace_existing_conditional_orders(
         matching_rows.append(row)
 
     for row in matching_rows:
-        exchange_order_id = str(row.get("exchange_order_id") or "").strip()
+        algo_id = str(row.get("algo_id") or row.get("exchange_order_id") or "").strip()
         try:
-            if exchange_order_id:
-                client.cancel_algo_order(int(exchange_order_id), None, symbol)
+            if algo_id:
+                client.cancel_algo_order(int(algo_id), None, symbol)
             db.update_order_status(int(row["id"]), "CANCELED")
         except Exception as exc:
             errors.append(f"{order_type} replace: {exc}")
@@ -138,8 +138,10 @@ def place_tp_sl_orders(
                 quantity=quantity,
                 price=tp_price,
                 status=tp_status,
-                binance_order_id=tp_exchange_id or None,
-                client_order_id=tp_client_id or None,
+                binance_order_id=None,
+                algo_id=tp_exchange_id or None,
+                algo_client_id=tp_client_id or None,
+                client_order_id=None,
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,
@@ -195,8 +197,10 @@ def place_tp_sl_orders(
                 price=None,
                 stop_price=sl_price,
                 status=sl_status,
-                binance_order_id=sl_exchange_id or None,
-                client_order_id=sl_client_id or None,
+                binance_order_id=None,
+                algo_id=sl_exchange_id or None,
+                algo_client_id=sl_client_id or None,
+                client_order_id=None,
                 trade_direction="CLOSE",
                 position_id=position_id,
                 reduce_only=True,

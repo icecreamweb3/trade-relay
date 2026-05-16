@@ -87,6 +87,7 @@ interface ApiOrder {
 
 export interface ApiConditionalOrder {
   algo_id: number
+  algo_client_id?: string | null
   symbol: string
   side: string
   position_side: string

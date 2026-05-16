@@ -25,6 +25,8 @@ CREATE TABLE orders (
     tp_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止盈价',
     sl_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止损价',
     status            VARCHAR(32)     NOT NULL DEFAULT 'NEW',
+    algo_id           VARCHAR(64)     DEFAULT NULL COMMENT '条件单算法订单ID',
+    algo_client_id    VARCHAR(64)     DEFAULT NULL COMMENT '条件单客户端算法订单ID',
     exchange_order_id VARCHAR(64)     DEFAULT NULL COMMENT '交易所订单ID',
     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
@@ -165,6 +167,8 @@ ALTER TABLE users
     ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
 
 ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status,
+    ADD COLUMN IF NOT EXISTS algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id,
     ADD COLUMN IF NOT EXISTS trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset,
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction,
@@ -178,6 +182,20 @@ ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';
 
 UPDATE orders SET order_category = 'Conditional' WHERE order_category = 'Condition';
+
+UPDATE orders
+SET algo_id = exchange_order_id
+WHERE order_category = 'Conditional'
+    AND (algo_id IS NULL OR TRIM(COALESCE(algo_id, '')) = '')
+    AND exchange_order_id IS NOT NULL
+    AND TRIM(COALESCE(exchange_order_id, '')) <> '';
+
+UPDATE orders
+SET algo_client_id = client_order_id
+WHERE order_category = 'Conditional'
+    AND (algo_client_id IS NULL OR TRIM(COALESCE(algo_client_id, '')) = '')
+    AND client_order_id IS NOT NULL
+    AND TRIM(COALESCE(client_order_id, '')) <> '';
 
 ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';

@@ -80,7 +80,8 @@ def test_place_order_accepts_algo_id_for_stop_market(monkeypatch):
 
     assert result.success is True
     assert result.order_id == "987654321"
-    assert result.client_order_id == "client-algo-123"
+    assert result.client_order_id is None
+    assert result.algo_client_id == "client-algo-123"
     assert result.status == "NEW"
 
 
@@ -94,7 +95,7 @@ def test_submit_order_persists_stop_price_and_client_order_id(monkeypatch):
         return trading_binance_client.BinanceOrderResult(
             success=True,
             order_id="987654321",
-            client_order_id="client-algo-123",
+            algo_client_id="client-algo-123",
             status="NEW",
         )
 
@@ -131,8 +132,10 @@ def test_submit_order_persists_stop_price_and_client_order_id(monkeypatch):
 
     assert result.success is True
     assert captured["stop_price"] == 80683.7
-    assert captured["client_order_id"] == "client-algo-123"
-    assert captured["binance_order_id"] == "987654321"
+    assert captured["client_order_id"] is None
+    assert captured["algo_client_id"] == "client-algo-123"
+    assert captured["binance_order_id"] is None
+    assert captured["algo_id"] == "987654321"
 
 
 def test_submit_order_persists_requested_tp_sl_prices(monkeypatch):
@@ -222,6 +225,111 @@ def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
         "tp_price": 81000.0,
         "sl_price": 79000.0,
         "position_id": 99,
+    }]
+
+
+def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_close(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    metadata_updates = []
+    status_updates = []
+    history_creations = []
+    trade_sync_calls = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_active_orders_for_user",
+        lambda username: [{
+            "id": 91,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "order_category": "Conditional",
+            "status": "NEW",
+            "algo_id": "4000001326609744",
+            "exchange_order_id": None,
+            "quantity": 0.012,
+        }],
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_metadata",
+        lambda order_id, **kwargs: metadata_updates.append((order_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda username, exchange_order_id, status, **kwargs: status_updates.append((username, exchange_order_id, status, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        stream,
+        "_create_position_history_from_poll",
+        lambda **kwargs: history_creations.append(kwargs),
+    )
+    monkeypatch.setattr(
+        order_status_stream,
+        "sync_filled_order_trade_details",
+        lambda **kwargs: trade_sync_calls.append(kwargs),
+    )
+    monkeypatch.setattr(stream, "_sync_position_from_rest", lambda symbol: None)
+    monkeypatch.setattr(stream, "_notify_listeners", lambda event, force=False: None)
+
+    class _StubClient:
+        def get_algo_order(self, algo_id=None, client_algo_id=None):
+            assert algo_id == 4000001326609744
+            return {
+                "algoId": 4000001326609744,
+                "actualOrderId": 4000001327195551,
+                "algoStatus": "TRIGGERED",
+            }
+
+        def get_order_status(self, symbol, order_id):
+            assert symbol == "BTCUSDC"
+            assert order_id == "4000001327195551"
+            return {
+                "status": "FILLED",
+                "executedQty": "0.012",
+                "avgPrice": "78391.7",
+            }
+
+    stream.client = _StubClient()
+
+    stream._poll_open_orders_once()
+
+    assert metadata_updates == [(91, {"exchange_order_id": "4000001327195551"})]
+    assert status_updates == [(
+        "Will",
+        "4000001327195551",
+        "FILLED",
+        {"filled_qty": 0.012, "avg_price": 78391.7},
+    )]
+    assert history_creations == [{
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "fill_qty": 0.012,
+        "fill_price": 78391.7,
+    }]
+    assert trade_sync_calls == [{
+        "username": "Will",
+        "client": stream.client,
+        "order_row": {
+            "id": 91,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "order_category": "Conditional",
+            "status": "NEW",
+            "algo_id": "4000001326609744",
+            "exchange_order_id": "4000001327195551",
+            "quantity": 0.012,
+        },
     }]
 
 
@@ -590,7 +698,9 @@ def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
         "price": None,
         "stop_price": None,
         "status": "NEW",
-        "exchange_order_id": "987654321",
+        "algo_id": "987654321",
+        "algo_client_id": None,
+        "exchange_order_id": None,
         "client_order_id": None,
         "trade_direction": "OPEN",
         "created_at": "2026-05-15 16:14:59",
@@ -626,9 +736,9 @@ def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
 
     assert len(result) == 1
     assert result[0].trade_direction == "OPEN"
-    assert result[0].client_order_id == "client-algo-123"
+    assert result[0].algo_client_id == "client-algo-123"
     assert result[0].trigger_price == 80683.7
-    assert backfill_calls == [(42, {"client_order_id": "client-algo-123", "stop_price": 80683.7})]
+    assert backfill_calls == [(42, {"algo_client_id": "client-algo-123", "stop_price": 80683.7})]
 
 
 def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch):
@@ -645,8 +755,10 @@ def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch)
         "price": None,
         "stop_price": 80683.7,
         "status": "NEW",
-        "exchange_order_id": "987654321",
-        "client_order_id": "client-algo-123",
+        "algo_id": "987654321",
+        "algo_client_id": "client-algo-123",
+        "exchange_order_id": None,
+        "client_order_id": None,
         "trade_direction": "OPEN",
         "created_at": "2026-05-15 16:14:59",
     }
@@ -665,6 +777,7 @@ def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch)
             return {
                 "algoId": 987654321,
                 "clientAlgoId": "client-algo-123",
+                "actualOrderId": 123456789,
                 "orderType": "STOP_MARKET",
                 "algoStatus": "FINISHED",
                 "actualPrice": "80650.5",
@@ -676,6 +789,7 @@ def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch)
     monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
     monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row])
+    monkeypatch.setattr(orders_router.db_module, "update_order_metadata", lambda order_id, **kwargs: True)
     monkeypatch.setattr(orders_router.db_module, "update_order_status", lambda order_id, status, **kwargs: status_updates.append((order_id, status, kwargs)) or True)
     monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
 
@@ -701,12 +815,15 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
         "price": 78587.0,
         "stop_price": None,
         "status": "NEW",
-        "exchange_order_id": "4000001326609744",
-        "client_order_id": "0l8MYbmR4kqGrHoXtxSryG",
+        "algo_id": "4000001326609744",
+        "algo_client_id": "0l8MYbmR4kqGrHoXtxSryG",
+        "exchange_order_id": None,
+        "client_order_id": None,
         "created_at": "2026-05-16 14:40:00",
     }
     status_updates = []
     history_calls = []
+    metadata_calls = []
 
     class StubClient:
         def __init__(self, api_key, secret_key, testnet):
@@ -721,6 +838,7 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
             return {
                 "algoId": 4000001326609744,
                 "clientAlgoId": "0l8MYbmR4kqGrHoXtxSryG",
+                "actualOrderId": 4000001327195551,
                 "orderType": "TAKE_PROFIT_MARKET",
                 "algoStatus": "FINISHED",
                 "actualPrice": "78556.2",
@@ -732,6 +850,7 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
     monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
     monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row] if kwargs.get("status") == "NEW" else [])
+    monkeypatch.setattr(orders_router.db_module, "update_order_metadata", lambda order_id, **kwargs: metadata_calls.append((order_id, kwargs)) or True)
     monkeypatch.setattr(orders_router.db_module, "update_order_status", lambda order_id, status, **kwargs: status_updates.append((order_id, status, kwargs)) or True)
     monkeypatch.setattr(orders_router.db_module, "get_positions", lambda user_id=None: [{
         "id": 9,
@@ -745,6 +864,7 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
     result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
 
     assert result == []
+    assert metadata_calls == [(88, {"exchange_order_id": "4000001327195551"})]
     assert status_updates == [(88, "FILLED", {"filled_qty": 0.012, "avg_price": 78556.2})]
     assert history_calls == [{
         "user_id": 1,
@@ -758,6 +878,60 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
         "commission": 0.0,
         "position_id": 9,
     }]
+
+
+def test_create_order_stores_conditional_algo_id_separately(monkeypatch):
+    from trade_relay import database as db_module
+
+    writes = []
+
+    class _StubCursor:
+        lastrowid = 999
+
+        def execute(self, sql, params):
+            writes.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    order_id = db_module.create_order(
+        user_id=1,
+        username="Will",
+        symbol="BTCUSDC",
+        side="SELL",
+        order_type="STOP_MARKET",
+        quantity=0.01,
+        price=None,
+        stop_price=78000.0,
+        status="NEW",
+        binance_order_id="4000001327195551",
+        algo_client_id="client-algo-1",
+        client_order_id=None,
+        trade_direction="CLOSE",
+        order_category="Conditional",
+    )
+
+    assert order_id == 999
+    insert_sql, insert_params = writes[-1]
+    assert "algo_id, algo_client_id, exchange_order_id, client_order_id" in insert_sql
+    assert insert_params[12] == "4000001327195551"
+    assert insert_params[13] == "client-algo-1"
+    assert insert_params[14] is None
 
 
 def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):

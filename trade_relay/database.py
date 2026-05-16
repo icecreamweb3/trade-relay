@@ -599,6 +599,8 @@ def init_db() -> None:
                     tp_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止盈价',
                     sl_price          DECIMAL(20,8)   DEFAULT NULL COMMENT '计划止损价',
                     status            VARCHAR(32)     NOT NULL DEFAULT 'NEW',
+                    algo_id           VARCHAR(64)     DEFAULT NULL COMMENT '条件单算法订单ID',
+                    algo_client_id    VARCHAR(64)     DEFAULT NULL COMMENT '条件单客户端算法订单ID',
                     exchange_order_id VARCHAR(64)     DEFAULT NULL COMMENT '交易所订单ID',
                     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
                     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
@@ -633,6 +635,8 @@ def init_db() -> None:
                 ("tp_price",        "ALTER TABLE orders ADD COLUMN tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price"),
                 ("sl_price",        "ALTER TABLE orders ADD COLUMN sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price"),
                 ("realized_pnl",    "ALTER TABLE orders ADD COLUMN realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price"),
+                ("algo_id",         "ALTER TABLE orders ADD COLUMN algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status"),
+                ("algo_client_id",  "ALTER TABLE orders ADD COLUMN algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -652,6 +656,26 @@ def init_db() -> None:
                 pass
             try:
                 cur.execute("ALTER TABLE orders MODIFY COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类'")
+            except Exception:
+                pass
+            try:
+                cur.execute(
+                    "UPDATE orders SET algo_id = exchange_order_id "
+                    "WHERE order_category = 'Conditional' "
+                    "AND (algo_id IS NULL OR TRIM(COALESCE(algo_id, '')) = '') "
+                    "AND exchange_order_id IS NOT NULL "
+                    "AND TRIM(COALESCE(exchange_order_id, '')) <> ''"
+                )
+            except Exception:
+                pass
+            try:
+                cur.execute(
+                    "UPDATE orders SET algo_client_id = client_order_id "
+                    "WHERE order_category = 'Conditional' "
+                    "AND (algo_client_id IS NULL OR TRIM(COALESCE(algo_client_id, '')) = '') "
+                    "AND client_order_id IS NOT NULL "
+                    "AND TRIM(COALESCE(client_order_id, '')) <> ''"
+                )
             except Exception:
                 pass
 
@@ -1094,6 +1118,8 @@ def create_order(
     price: Optional[float],
     status: str,
     binance_order_id: Optional[str] = None,   # 兼容旧调用方，存入 exchange_order_id
+    algo_id: Optional[str] = None,
+    algo_client_id: Optional[str] = None,
     error_message: Optional[str] = None,
     exchange: str = "binance",
     stop_price: Optional[float] = None,
@@ -1111,6 +1137,17 @@ def create_order(
     try:
         with conn.cursor() as cur:
             normalized_order_category = _normalize_order_category(order_type, order_category)
+            normalized_algo_id = str(algo_id).strip() if algo_id is not None and str(algo_id).strip() else None
+            normalized_algo_client_id = str(algo_client_id).strip() if algo_client_id is not None and str(algo_client_id).strip() else None
+            normalized_exchange_order_id = str(binance_order_id).strip() if binance_order_id is not None and str(binance_order_id).strip() else None
+            normalized_client_order_id = str(client_order_id).strip() if client_order_id is not None and str(client_order_id).strip() else None
+            if normalized_order_category == "Conditional":
+                if normalized_algo_id is None and normalized_exchange_order_id is not None:
+                    normalized_algo_id = normalized_exchange_order_id
+                    normalized_exchange_order_id = None
+                if normalized_algo_client_id is None and normalized_client_order_id is not None:
+                    normalized_algo_client_id = normalized_client_order_id
+                    normalized_client_order_id = None
             _log_db_write(
                 "insert",
                 "orders",
@@ -1127,8 +1164,10 @@ def create_order(
                     "tp_price": tp_price,
                     "sl_price": sl_price,
                     "status": status,
-                    "exchange_order_id": binance_order_id,
-                    "client_order_id": client_order_id,
+                    "algo_id": normalized_algo_id,
+                    "algo_client_id": normalized_algo_client_id,
+                    "exchange_order_id": normalized_exchange_order_id,
+                    "client_order_id": normalized_client_order_id,
                     "realized_pnl": realized_pnl,
                     "trade_direction": trade_direction,
                     "reduce_only": int(reduce_only),
@@ -1142,13 +1181,13 @@ def create_order(
                 """INSERT INTO orders
                    (user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
-                    exchange_order_id, client_order_id,
+                    algo_id, algo_client_id, exchange_order_id, client_order_id,
                     trade_direction, reduce_only, post_only, position_id, realized_pnl, order_category, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
-                    binance_order_id, client_order_id,
+                    normalized_algo_id, normalized_algo_client_id, normalized_exchange_order_id, normalized_client_order_id,
                     trade_direction, int(reduce_only), int(post_only), position_id, realized_pnl, normalized_order_category, error_message,
                 ),
             )
@@ -1158,7 +1197,9 @@ def create_order(
                 "orders",
                 db_id=cur.lastrowid,
                 user_id=user_id,
-                exchange_order_id=binance_order_id,
+                algo_id=normalized_algo_id,
+                algo_client_id=normalized_algo_client_id,
+                exchange_order_id=normalized_exchange_order_id,
                 order_type=order_type,
                 status=status,
                 order_category=normalized_order_category,
@@ -1229,6 +1270,8 @@ def update_order_metadata(order_id: int, **fields_to_update) -> bool:
     allowed_fields = {
         "price",
         "stop_price",
+        "algo_id",
+        "algo_client_id",
         "exchange_order_id",
         "client_order_id",
         "trade_direction",
@@ -1514,7 +1557,7 @@ def get_active_orders(user_id: Optional[int] = None) -> list:
 
 
 def get_active_orders_for_sync() -> list:
-    """Return all active orders for backend startup/status sync across all categories."""
+    """Return active basic orders for backend startup/status sync."""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     conn = get_connection()
     try:
@@ -1522,6 +1565,7 @@ def get_active_orders_for_sync() -> list:
             cur.execute(
                 f"""SELECT * FROM orders
                       WHERE status IN ({placeholders})
+                        AND order_category = 'Basic'
                       ORDER BY created_at DESC""",
                 list(ACTIVE_STATUSES),
             )
@@ -1531,13 +1575,12 @@ def get_active_orders_for_sync() -> list:
 
 
 def get_active_orders_for_user(username: str) -> list:
-    """返回指定用户的 Basic 当前委托（未完结订单），按 username 过滤。"""
+    """返回指定用户的当前委托（含可继续监听真实订单ID的条件单）。"""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     params: list = list(ACTIVE_STATUSES)
     params.append(username)
     sql = f"""SELECT * FROM orders
               WHERE status IN ({placeholders})
-                AND order_category = 'Basic'
                 AND username = %s
               ORDER BY created_at DESC"""
     conn = get_connection()
@@ -1627,9 +1670,9 @@ def query_orders(
         params.append(f"%{username}%")
 
     if order_id:
-        sql += " AND (CAST(id AS CHAR) LIKE %s OR exchange_order_id LIKE %s)"
+        sql += " AND (CAST(id AS CHAR) LIKE %s OR exchange_order_id LIKE %s OR algo_id LIKE %s OR algo_client_id LIKE %s OR client_order_id LIKE %s)"
         like_value = f"%{order_id}%"
-        params.extend([like_value, like_value])
+        params.extend([like_value, like_value, like_value, like_value, like_value])
 
     if start_time:
         sql += " AND created_at >= %s"
@@ -2066,6 +2109,20 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
             cur.execute(
                 "SELECT * FROM orders WHERE username = %s AND exchange_order_id = %s LIMIT 1",
                 (username, exchange_order_id),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_order_by_algo_id(username: str, algo_id: str) -> Optional[dict]:
+    """按 username + algo_id 查询单条条件订单，失败返回 None。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM orders WHERE username = %s AND algo_id = %s LIMIT 1",
+                (username, algo_id),
             )
             return cur.fetchone()
     finally:
