@@ -51,6 +51,7 @@
       "output": "dist-electron"
     },
     "files": [
+      ".env.production",
       "dist/**/*",
       "electron/**/*"
     ],

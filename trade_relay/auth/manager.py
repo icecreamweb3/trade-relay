@@ -1,7 +1,4 @@
-"""
-Authentication manager: password hashing, login, user management.
-Default admin is created on first run with credentials: admin / Admin@123
-"""
+"""Authentication manager: password hashing, login, user management."""
 from typing import Optional
 import bcrypt
 from trade_relay import database as db
@@ -183,28 +180,3 @@ def change_own_password(
     return True, "Password updated"
 
 
-# ──────────────────────────────────────────────
-# Bootstrap
-# ──────────────────────────────────────────────
-
-import os as _os
-
-_DEFAULT_ADMIN_USERNAME = "admin"
-_DEFAULT_ADMIN_PASSWORD = "Admin@123"
-
-
-def ensure_admin_exists() -> None:
-    """Create the default admin account if no admin exists.
-
-    Credentials are read from env vars TRADE_RELAY_ADMIN_USERNAME /
-    TRADE_RELAY_ADMIN_PASSWORD (set them in .env.production), falling back to
-    the built-in defaults.
-    """
-    username = _os.environ.get("TRADE_RELAY_ADMIN_USERNAME", "").strip() or _DEFAULT_ADMIN_USERNAME
-    password = _os.environ.get("TRADE_RELAY_ADMIN_PASSWORD", "").strip() or _DEFAULT_ADMIN_PASSWORD
-    existing = db.get_user_by_username(username)
-    if existing is None:
-        password_hash = hash_password(password)
-        db.create_user(username, password_hash, "admin")
-        db.log_operation(None, "system", "BOOTSTRAP",
-                         f"Default admin account created: {DEFAULT_ADMIN_USERNAME}")

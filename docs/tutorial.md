@@ -176,15 +176,47 @@ ALL_PROXY=socks5://127.0.0.1:10808
 # HTTPS_PROXY=http://127.0.0.1:10809
 ```
 
-### 5.2 默认管理员账号
+### 5.2 手动初始化管理员账号
 
-后端首次启动时自动创建管理员账号：
+当前版本不会在启动时自动创建管理员账号。首次部署时，请先手动向 `users` 表插入一条管理员记录。
 
-| 用户名 | 密码 |
-|--------|------|
-| `admin` | `Admin@123` |
+**步骤 1：生成密码哈希**
 
-> **强烈建议**登录后立即在「个人配置」页修改密码，或通过环境变量 `TRADE_RELAY_ADMIN_PASSWORD` 指定初始密码。
+```bash
+cd /path/to/trade-relay
+source .venv/bin/activate
+python scripts/hash_password.py
+```
+
+脚本会提示输入两次密码，并输出一段 bcrypt 哈希。你也可以直接传参：
+
+```bash
+python scripts/hash_password.py 'your-strong-password'
+```
+
+**步骤 2：插入管理员账号**
+
+将上一步得到的哈希填入下面 SQL：
+
+```sql
+INSERT INTO users (username, password_hash, role, is_active)
+VALUES ('admin', '$2b$12$replace_with_bcrypt_hash', 'admin', 1);
+```
+
+如果你使用的是项目自带表结构，也可以额外写入空的 API 凭证列：
+
+```sql
+INSERT INTO users (username, password_hash, role, is_active, binance_api_key, binance_api_secret)
+VALUES ('admin', '$2b$12$replace_with_bcrypt_hash', 'admin', 1, NULL, NULL);
+```
+
+执行后，可用这条 SQL 确认管理员账号已存在：
+
+```sql
+SELECT id, username, role, is_active FROM users WHERE username = 'admin';
+```
+
+建议只在首次部署时手动插入一次管理员账号，后续普通用户通过系统内的「用户管理」页面创建。
 
 ### 5.3 用户 Binance API 配置
 
@@ -251,7 +283,7 @@ curl http://localhost:8000/health
 
 ### 7.1 登录
 
-启动后自动显示登录界面。使用管理员账号 `admin / Admin@123` 第一次登录。Token 会通过 Electron `safeStorage` 加密存储，下次启动自动恢复登录状态。
+启动后自动显示登录界面。请使用预先手动初始化的数据账号登录。Token 会通过 Electron `safeStorage` 加密存储，下次启动自动恢复登录状态。
 
 ### 7.2 交易面板
 
@@ -320,7 +352,7 @@ Authorization: Bearer <token>
 
 **登录请求体：**
 ```json
-{ "username": "admin", "password": "Admin@123" }
+{ "username": "your-username", "password": "your-password" }
 ```
 
 **登录响应：**

@@ -42,7 +42,7 @@ Electron 承载 React 前端。前端通过 IPC 和本地 FastAPI 后端通信�
 保留纯 Python 业务逻辑：
 
 - `database.py`：MySQL 数据访问与迁移
-- `auth/`：用户认证与管理员初始化
+- `auth/`：用户认证、密码处理与权限控制
 - `exchange/`：Binance 交互与同步
 - `trading/`：下单、状态流同步、订单持久化
 

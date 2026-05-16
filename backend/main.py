@@ -18,9 +18,8 @@ _log = get_logger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     _log.info("Trade Relay backend starting up")
-    # Initialize DB schema and ensure default admin exists
+    # Initialize DB schema and restore runtime services.
     from trade_relay import database as db_module
-    from trade_relay.auth.manager import ensure_admin_exists
     from trade_relay.trading.order_status_stream import (
         restore_active_order_status_streams,
         stop_all_order_status_streams,
@@ -28,7 +27,6 @@ async def lifespan(app: FastAPI):
     )
     from trade_relay.exchange.account_sync import start_account_sync, stop_account_sync
     db_module.init_db()
-    ensure_admin_exists()
     restore_active_order_status_streams()
     sync_active_orders_on_startup()
     start_account_sync()
