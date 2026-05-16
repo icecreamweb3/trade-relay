@@ -162,6 +162,8 @@ function _getCachedKlines(symbol, interval, limit) {
 
 // Intercept WebSocket to capture Binance streaming data
 const OriginalWebSocket = window.WebSocket
+let _ticker24hWs = null
+let _ticker24hSymbol = null
 
 // Track the last-sent chart interval so we only push a change event when it
 // actually changes.
@@ -206,6 +208,91 @@ function _tvResolutionToBinance(res) {
     'M': '1M', '1M': '1M',
   }
   return stringMap[r] ?? null
+}
+
+function _emitTicker24h(data) {
+  if (!data?.s) return
+  const payload = {
+    type: 'ticker24h',
+    symbol: data.s,
+    lastPrice: parseFloat(data.c),
+    priceChange: parseFloat(data.p),
+    priceChangePercent: parseFloat(data.P),
+    openPrice: parseFloat(data.o),
+    highPrice: parseFloat(data.h),
+    lowPrice: parseFloat(data.l),
+    volume: parseFloat(data.v),
+    quoteVolume: parseFloat(data.q),
+    openTime: data.O,
+    closeTime: data.C,
+    eventTime: data.E,
+  }
+  ipcRenderer.send('market-data', payload)
+}
+
+function _logTicker24h(level, message, extra) {
+  try {
+    ipcRenderer.send('log-to-main', level, `[ticker24h] ${message}`, extra || {})
+  } catch {}
+  try {
+    const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'log'
+    console[method](`[OmniTrader][ticker24h] ${message}`, extra || {})
+  } catch {}
+}
+
+function _ensureTicker24hStream(symbol) {
+  const normalized = String(symbol || '').trim().toLowerCase()
+  if (!normalized) return
+  if (_ticker24hSymbol === normalized && _ticker24hWs && _ticker24hWs.readyState <= 1) return
+
+  try {
+    _ticker24hWs?.close()
+  } catch {}
+
+  _ticker24hSymbol = normalized
+  _logTicker24h('info', 'subscribe', { symbol: normalized })
+  const ws = new OriginalWebSocket(`wss://fstream.binance.com/ws/${normalized}@ticker`)
+  _ticker24hWs = ws
+  let firstMessageLogged = false
+
+  ws.addEventListener('open', () => {
+    _logTicker24h('info', 'open', { symbol: normalized })
+  })
+
+  ws.addEventListener('message', (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (data?.e === '24hrTicker' && String(data.s || '').trim().toLowerCase() === _ticker24hSymbol) {
+        if (!firstMessageLogged) {
+          firstMessageLogged = true
+          _logTicker24h('info', 'first-message', {
+            symbol: data.s,
+            lastPrice: data.c,
+            priceChange: data.p,
+            priceChangePercent: data.P,
+          })
+        }
+        _emitTicker24h(data)
+      }
+    } catch (error) {
+      _logTicker24h('warn', 'message-parse-failed', { symbol: normalized, error: String(error) })
+    }
+  })
+
+  ws.addEventListener('close', (event) => {
+    _logTicker24h('warn', 'close', { symbol: normalized, code: event.code, reason: event.reason || '' })
+    if (_ticker24hWs !== ws) return
+    _ticker24hWs = null
+    const retrySymbol = _ticker24hSymbol
+    setTimeout(() => {
+      if (_ticker24hSymbol === retrySymbol) _ensureTicker24hStream(retrySymbol)
+    }, 3000)
+  })
+
+  ws.addEventListener('error', () => {
+    _logTicker24h('error', 'error', { symbol: normalized })
+    try { ws.close() } catch {}
+  })
 }
 
 class InterceptedWebSocket extends OriginalWebSocket {
@@ -269,6 +356,8 @@ class InterceptedWebSocket extends OriginalWebSocket {
   }
 
   _handleBinanceMessage(data) {
+    if (data?.s) _ensureTicker24hStream(data.s)
+
     // Kline/Candlestick stream: <symbol>@kline_<interval>
     if (data.e === 'kline' && data.k) {
       const kline = data.k
@@ -349,6 +438,10 @@ class InterceptedWebSocket extends OriginalWebSocket {
         timestamp: data.T,
       }
       ipcRenderer.send('market-data', payload)
+    }
+
+    if (data.e === '24hrTicker') {
+      _emitTicker24h(data)
     }
 
     // Force liquidation order (useful for OI context)
@@ -1438,6 +1531,7 @@ window.__omnitrader = {
       // Reset the kline-key tracker so waitForChartSymbol can confirm bar data
       // for the new symbol has been fetched before drawing any shapes.
       _lastChartKlineKey = null
+      _ensureTicker24hStream(newPair)
       history.pushState({}, '', newPath)
       window.dispatchEvent(new PopStateEvent('popstate', { state: {} }))
       console.log('[OmniTrader] switchSymbol:', cur, '→', newPath)

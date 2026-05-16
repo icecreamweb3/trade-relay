@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -332,6 +333,62 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
             "quantity": 0.012,
         },
     }]
+
+
+def test_public_ticker_stream_transforms_binance_payload(monkeypatch):
+    from trade_relay.exchange import public_ticker_stream
+
+    monkeypatch.setattr(public_ticker_stream, 'get_proxy_config', lambda: (False, None, None))
+
+    stream = public_ticker_stream.PublicTicker24hStream('BTCUSDC')
+    captured: list[dict] = []
+
+    stream.add_listener(captured.append)
+    stream._on_message(None, json.dumps({
+        'e': '24hrTicker',
+        'E': 1710000000000,
+        's': 'BTCUSDC',
+        'p': '120.5',
+        'P': '1.25',
+        'o': '9640.0',
+        'c': '9760.5',
+        'h': '9800.0',
+        'l': '9500.0',
+        'v': '12.34',
+        'q': '120345.67',
+        'O': 1709913600000,
+        'C': 1710000000000,
+    }))
+
+    assert captured == [{
+        'type': 'ticker24h',
+        'symbol': 'BTCUSDC',
+        'lastPrice': 9760.5,
+        'priceChange': 120.5,
+        'priceChangePercent': 1.25,
+        'openPrice': 9640.0,
+        'highPrice': 9800.0,
+        'lowPrice': 9500.0,
+        'volume': 12.34,
+        'quoteVolume': 120345.67,
+        'openTime': 1709913600000,
+        'closeTime': 1710000000000,
+        'eventTime': 1710000000000,
+    }]
+
+
+def test_public_ticker_stream_replays_last_payload_to_new_listener(monkeypatch):
+    from trade_relay.exchange import public_ticker_stream
+
+    monkeypatch.setattr(public_ticker_stream, 'get_proxy_config', lambda: (False, None, None))
+
+    stream = public_ticker_stream.PublicTicker24hStream('BTCUSDC')
+    stream.last_payload = {'type': 'ticker24h', 'symbol': 'BTCUSDC', 'lastPrice': 1.0}
+    captured: list[dict] = []
+
+    stream.add_listener(captured.append)
+
+    assert captured == [{'type': 'ticker24h', 'symbol': 'BTCUSDC', 'lastPrice': 1.0}]
 
 
 def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):

@@ -26,11 +26,40 @@ export interface TradeData {
   symbol: string; price: number; quantity: number; isBuyerMaker: boolean; timestamp: number
 }
 
-export type MarketEvent = KlineData | MarkPriceData | TradeData
+export interface Ticker24hData {
+  type: 'ticker24h'
+  symbol: string
+  lastPrice: number
+  priceChange: number
+  priceChangePercent: number
+  openPrice: number
+  highPrice: number
+  lowPrice: number
+  volume: number
+  quoteVolume: number
+  openTime: number
+  closeTime: number
+  eventTime: number
+}
+
+export type MarketEvent = KlineData | MarkPriceData | TradeData | Ticker24hData
+
+function deriveDayChange(currentPrice: number | null, dayOpenPrice: number | null) {
+  if (currentPrice == null || dayOpenPrice == null || !Number.isFinite(currentPrice) || !Number.isFinite(dayOpenPrice) || dayOpenPrice === 0) {
+    return { dayPriceChange: null, dayPriceChangePercent: null }
+  }
+
+  const dayPriceChange = currentPrice - dayOpenPrice
+  const dayPriceChangePercent = dayPriceChange / dayOpenPrice * 100
+  return { dayPriceChange, dayPriceChangePercent }
+}
 
 interface MarketStore {
   symbol: string
   currentPrice: number | null
+  dayOpenPrice: number | null
+  dayPriceChange: number | null
+  dayPriceChangePercent: number | null
   markPrice: number | null
   fundingRate: number | null
   nextFundingTime: number | null
@@ -52,6 +81,9 @@ interface MarketStore {
 export const useMarketStore = create<MarketStore>((set) => ({
   symbol: 'BTCUSDC',
   currentPrice: null,
+  dayOpenPrice: null,
+  dayPriceChange: null,
+  dayPriceChangePercent: null,
   markPrice: null,
   fundingRate: null,
   nextFundingTime: null,
@@ -68,6 +100,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
     return {
       symbol: nextSymbol,
       currentPrice: null,
+      dayOpenPrice: null,
+      dayPriceChange: null,
+      dayPriceChangePercent: null,
       markPrice: null,
       fundingRate: null,
       nextFundingTime: null,
@@ -81,7 +116,11 @@ export const useMarketStore = create<MarketStore>((set) => ({
   setCurrentPrice: (symbol, price) => set((state) => {
     const nextSymbol = normalizeSymbol(symbol)
     if (!Number.isFinite(price) || !nextSymbol || nextSymbol !== state.symbol) return {}
-    return { currentPrice: price, isConnected: true }
+    return {
+      currentPrice: price,
+      ...deriveDayChange(price, state.dayOpenPrice),
+      isConnected: true,
+    }
   }),
   setChartInterval: (interval) => set({ chartInterval: interval }),
   setChartExpanded: (v) => set({ isChartExpanded: v }),
@@ -111,6 +150,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
           klines,
           latestKline: kline,
           currentPrice: kline.close,
+          ...deriveDayChange(kline.close, state.dayOpenPrice),
           isConnected: true,
         }
       })
@@ -126,9 +166,22 @@ export const useMarketStore = create<MarketStore>((set) => ({
         ...(eventSymbol !== state.symbol ? {} : {
         recentTrades: [trade, ...state.recentTrades].slice(0, 50),
         currentPrice: trade.price,
+        ...deriveDayChange(trade.price, state.dayOpenPrice),
         isConnected: true,
         }),
       }))
+    } else if (event.type === 'ticker24h') {
+      const ticker = event as Ticker24hData
+      set((state) => {
+        if (eventSymbol !== state.symbol) return {}
+        const nextCurrentPrice = state.currentPrice ?? ticker.lastPrice
+        return {
+          currentPrice: nextCurrentPrice,
+          dayOpenPrice: ticker.openPrice,
+          ...deriveDayChange(nextCurrentPrice, ticker.openPrice),
+          isConnected: true,
+        }
+      })
     }
   },
 }))

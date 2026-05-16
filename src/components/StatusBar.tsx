@@ -21,14 +21,21 @@ function formatBuildTime(value: string) {
 
 export function StatusBar() {
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, markPrice, fundingRate, isConnected, klines } = useMarketStore()
+  const {
+    symbol,
+    currentPrice,
+    dayPriceChange,
+    dayPriceChangePercent,
+    markPrice,
+    fundingRate,
+    isConnected,
+  } = useMarketStore()
   const buildTime = formatBuildTime(__BUILD_TIME__)
-
-  const lastKline = klines[klines.length - 1]
-  const prevKline = klines[klines.length - 2]
-  const priceChange = lastKline && prevKline ? lastKline.close - prevKline.close : 0
-  const priceChangePct = prevKline ? (priceChange / prevKline.close) * 100 : 0
+  const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
+  const priceChange = dayPriceChange ?? 0
+  const priceChangePct = dayPriceChangePercent ?? 0
   const isUp = priceChange >= 0
+  const priceTone = !hasDayTicker ? 'text-white' : isUp ? 'text-green-300' : 'text-red-300'
 
   return (
     <div className="h-6 bg-[#007acc] flex items-center px-3 gap-4 text-xs text-white select-none shrink-0">
@@ -40,9 +47,9 @@ export function StatusBar() {
       <span className="font-semibold">{symbol}</span>
       {currentPrice !== null && (
         <>
-          <span className="font-mono font-bold">{currentPrice.toFixed(2)}</span>
-          <span className={isUp ? 'text-green-300' : 'text-red-300'}>
-            {isUp ? '+' : ''}{priceChange.toFixed(2)} ({priceChangePct.toFixed(2)}%)
+          <span className={`font-mono font-bold ${priceTone}`}>{currentPrice.toFixed(2)}</span>
+          <span className={priceTone}>
+            {hasDayTicker ? `${isUp ? '+' : ''}${priceChange.toFixed(2)} (${priceChangePct.toFixed(2)}%)` : '--'}
           </span>
         </>
       )}

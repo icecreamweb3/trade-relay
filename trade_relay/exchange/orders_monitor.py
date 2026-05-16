@@ -13,69 +13,11 @@ import time
 import threading
 import websocket
 import ssl
-import platform
 import copy
 from typing import Dict, Optional, Callable
 from datetime import datetime
 from loguru import logger
-
-
-def get_default_proxy_port() -> int:
-    """
-    根据操作系统获取默认代理端口
-    
-    Returns:
-        int: 默认代理端口
-        - macOS: 1087
-        - Linux/Ubuntu: 10809
-        - 其他系统: 10809 (默认)
-    """
-    system = platform.system().lower()
-    if system == 'darwin':  # macOS
-        return 1087
-    elif system == 'linux':  # Linux/Ubuntu
-        return 10809
-    else:
-        # 其他系统默认使用Linux端口
-        return 10809
-
-
-def get_proxy_config() -> tuple:
-    """
-    获取代理配置
-    
-    Returns:
-        tuple: (use_proxy: bool, proxy_host: str, proxy_port: int)
-        - 如果 PROXY 环境变量存在且有效，返回 (True, host, port)
-        - 否则返回 (False, None, None)
-    """
-    import os
-    from trade_relay.env_loader import load_env
-    load_env()
-    
-    # 从环境变量读取 PROXY 配置
-    proxy = os.getenv('PROXY', '').strip()
-    
-    if not proxy:
-        return False, None, None
-    
-    # 解析代理配置，格式如：http://127.0.0.1:10809
-    try:
-        # 移除协议前缀
-        if '://' in proxy:
-            proxy = proxy.split('://', 1)[1]
-        
-        # 分离主机和端口
-        if ':' in proxy:
-            host, port_str = proxy.rsplit(':', 1)
-            port = int(port_str)
-            return True, host, port
-        else:
-            # 只有主机没有端口，使用默认端口
-            return True, proxy, get_default_proxy_port()
-    except Exception as e:
-        logger.warning(f"⚠️ 解析PROXY配置失败: {e}, 将不使用代理")
-        return False, None, None
+from trade_relay.exchange.ws_proxy import get_proxy_config
 
 
 class OrdersMonitor:

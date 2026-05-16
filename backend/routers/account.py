@@ -4,20 +4,22 @@ Account router: current-user account summary for the order form Account section.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+import asyncio
 import re
 import time
 from threading import Lock
 
 import requests
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
 from backend.logger import get_logger
-from backend.routers.auth import get_current_user
+from backend.routers.auth import decode_token, get_current_user
 from trade_relay import config as cfg_module
 from trade_relay import database as db_module
 from trade_relay.exchange.binance_client import BinanceClient
+from trade_relay.exchange.public_ticker_stream import register_public_ticker_listener, unregister_public_ticker_listener
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 _log = get_logger(__name__)
@@ -130,6 +132,47 @@ class AccountSummaryOut(BaseModel):
     wallet_balance: float | None = None
     has_api_credentials: bool = False
     message: str | None = None
+
+
+@router.websocket("/ticker24h/ws")
+async def ticker24h_ws(
+    websocket: WebSocket,
+    symbol: str = Query(..., min_length=1),
+    token: str | None = Query(default=None),
+):
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
+        return
+
+    user = decode_token(token)
+    if user is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token")
+        return
+
+    normalized_symbol = symbol.upper()
+    await websocket.accept()
+
+    queue: asyncio.Queue[dict] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def listener(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    register_public_ticker_listener(normalized_symbol, listener)
+
+    try:
+        await websocket.send_json({"type": "connected", "symbol": normalized_symbol})
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping", "symbol": normalized_symbol})
+                continue
+            await websocket.send_json(event)
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        unregister_public_ticker_listener(normalized_symbol, listener)
 
 
 class LeverageUpdateIn(BaseModel):

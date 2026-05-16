@@ -79,11 +79,17 @@ export function useMarketData() {
     setChartExpanded,
     symbol,
     chartInterval,
+    currentPrice,
+    dayOpenPrice,
+    dayPriceChange,
+    dayPriceChangePercent,
   } = useMarketStore()
 
   // Stable ref so WS callbacks always call the latest action without re-running effects
   const processRef = useRef(processMarketEvent)
   useEffect(() => { processRef.current = processMarketEvent })
+  const baselineLoggedSymbolRef = useRef<string | null>(null)
+  const derivedLoggedSymbolRef = useRef<string | null>(null)
 
   const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
     const nextSymbol = event?.symbol?.toUpperCase()
@@ -169,6 +175,89 @@ export function useMarketData() {
       // depth20 frames are intentionally discarded (OrderBook has its own WS)
     }, `kline+trade(${symbol})`)
 
-    return cleanup
+    return () => {
+      cleanup()
+    }
   }, [symbol, chartInterval])
+
+  // ── 24h ticker REST hydration ────────────────────────────────────────────
+  // Use REST to get the 24h open price once on symbol change. Real-time 24h
+  // change values are then derived from live currentPrice updates locally.
+  useEffect(() => {
+    let alive = true
+    baselineLoggedSymbolRef.current = null
+    derivedLoggedSymbolRef.current = null
+
+    const loadTicker24h = async () => {
+      try {
+        const response = await fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol.toUpperCase()}`)
+        if (!response.ok) return
+        const data = await response.json() as Record<string, unknown>
+        if (!alive || String(data.symbol || '').toUpperCase() !== symbol.toUpperCase()) return
+
+        const openPrice = parseFloat(String(data.openPrice ?? '0'))
+        const lastPrice = parseFloat(String(data.lastPrice ?? '0'))
+        if (baselineLoggedSymbolRef.current !== symbol.toUpperCase()) {
+          baselineLoggedSymbolRef.current = symbol.toUpperCase()
+          window.electronAPI?.logToMain?.('info', '24h auto-calc baseline loaded', {
+            symbol: symbol.toUpperCase(),
+            source: 'rest-24hr',
+            openPrice,
+            lastPrice,
+          })
+        }
+
+        processRef.current({
+          type: 'ticker24h',
+          symbol: String(data.symbol || symbol),
+          lastPrice,
+          priceChange: parseFloat(String(data.priceChange ?? '0')),
+          priceChangePercent: parseFloat(String(data.priceChangePercent ?? '0')),
+          openPrice,
+          highPrice: parseFloat(String(data.highPrice ?? '0')),
+          lowPrice: parseFloat(String(data.lowPrice ?? '0')),
+          volume: parseFloat(String(data.volume ?? '0')),
+          quoteVolume: parseFloat(String(data.quoteVolume ?? '0')),
+          openTime: Number(data.openTime ?? 0),
+          closeTime: Number(data.closeTime ?? 0),
+          eventTime: Date.now(),
+        })
+      } catch {
+        // Ignore fallback fetch failures; live price updates may still arrive.
+      }
+    }
+
+    void loadTicker24h()
+
+    return () => {
+      alive = false
+    }
+  }, [symbol])
+
+  useEffect(() => {
+    if (
+      !symbol ||
+      dayOpenPrice == null ||
+      currentPrice == null ||
+      dayPriceChange == null ||
+      dayPriceChangePercent == null
+    ) {
+      return
+    }
+
+    const normalizedSymbol = symbol.toUpperCase()
+    if (derivedLoggedSymbolRef.current === normalizedSymbol) {
+      return
+    }
+
+    derivedLoggedSymbolRef.current = normalizedSymbol
+    window.electronAPI?.logToMain?.('info', '24h auto-calc derived from live price', {
+      symbol: normalizedSymbol,
+      source: 'local-derived',
+      openPrice: dayOpenPrice,
+      currentPrice,
+      dayPriceChange,
+      dayPriceChangePercent,
+    })
+  }, [symbol, dayOpenPrice, currentPrice, dayPriceChange, dayPriceChangePercent])
 }

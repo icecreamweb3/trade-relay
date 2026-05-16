@@ -138,39 +138,42 @@ function writeStoredLeverage(username: string, symbol: string, leverage: number)
 
 function TickerStrip({ onFillMark }: { onFillMark: () => void }) {
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, klines } = useMarketStore()
+  const { symbol, currentPrice, dayPriceChange, dayPriceChangePercent } = useMarketStore()
 
-  const change24h = useMemo(() => {
-    if (klines.length < 2 || currentPrice == null) return null
-    const open24 = klines[0].close
-    return ((currentPrice - open24) / open24) * 100
-  }, [klines, currentPrice])
-
-  const isUp = change24h == null ? null : change24h >= 0
+  const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
+  const isUp = hasDayTicker ? (dayPriceChange ?? 0) >= 0 : null
   const priceColor = isUp == null ? 'text-[#EAECEF]' : isUp ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+  const changeAmountText = hasDayTicker ? fmtSigned(dayPriceChange, currentPrice != null && currentPrice > 1000 ? 2 : 4) : '--'
+  const changePercentText = hasDayTicker ? `${isUp ? '+' : ''}${(dayPriceChangePercent ?? 0).toFixed(2)}%` : '--'
 
   return (
     <div className="px-3 py-2.5 border-b border-[#2B2F36] bg-[#0B0E11] shrink-0 select-none">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[13px] font-bold text-[#EAECEF] tracking-wide">{symbol}</span>
-        <span className="text-[9px] text-[#848E9C] bg-[#1E2026] px-1.5 py-0.5 rounded uppercase tracking-wider">{t('order.perpetual')}</span>
-      </div>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className={`text-[22px] font-bold leading-none tabular-nums ${priceColor}`}>
-          {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
-          {change24h != null && (
-            <span className="text-[11px] font-normal ml-2 opacity-90">
-              {isUp ? '+' : ''}{change24h.toFixed(2)}%
-            </span>
-          )}
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-bold text-[#EAECEF] tracking-wide">{symbol}</span>
+          <span className="text-[9px] text-[#848E9C] bg-[#1E2026] px-1.5 py-0.5 rounded uppercase tracking-wider">{t('order.perpetual')}</span>
         </div>
-        <button
-          type="button"
-          onClick={onFillMark}
-          className="shrink-0 rounded bg-[#1E2026] px-2 py-1 text-[9px] font-medium text-[#F0B90B] transition-colors hover:text-[#D9A429]"
-        >
-          {t('order.fillMark')} ↓
-        </button>
+        <span className="text-[10px] uppercase tracking-[0.12em] text-[#848E9C]">24H</span>
+      </div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <div className={`text-[22px] font-bold leading-none tabular-nums ${priceColor}`}>
+              {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
+            </div>
+            <button
+              type="button"
+              onClick={onFillMark}
+              className="shrink-0 rounded bg-[#1E2026] px-2 py-1 text-[10px] font-medium text-[#F0B90B] transition-colors hover:text-[#D9A429]"
+            >
+              Mark
+            </button>
+          </div>
+        </div>
+        <div className="flex min-w-[132px] flex-col items-end text-right">
+          <span className={`text-[16px] font-semibold tabular-nums ${priceColor}`}>{changePercentText}</span>
+          <span className={`text-[14px] font-medium tabular-nums ${priceColor}`}>{changeAmountText}</span>
+        </div>
       </div>
     </div>
   )
