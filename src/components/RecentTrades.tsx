@@ -176,8 +176,11 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
 
       <div className="flex-1 min-h-0 overflow-auto">
         {/* Column labels */}
-        <div className="sticky top-0 z-10 grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider whitespace-nowrap shrink-0 border-b border-[#2a2a2a] bg-[#161616]"
-          style={{ gridTemplateColumns: GRID_TEMPLATE }}>
+        <div className="sticky top-0 z-10 w-max min-w-full border-b border-[#2a2a2a] bg-[#161616]">
+          <div
+            className="grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider whitespace-nowrap shrink-0"
+            style={{ gridTemplateColumns: GRID_TEMPLATE }}
+          >
           <span>{t('log.user')}</span>
           <span className="-ml-[5px] text-left">{t('log.symbol')}</span>
           <span className="-ml-[7px] text-left">{t('log.side')}</span>
@@ -187,8 +190,9 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
           <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
           <span className="text-center">{t('pos.realizedPnl')}</span>
           <span className="text-center">{t('trade.commission')}</span>
-          <span className="text-left">{t('recentTrades.kind')}</span>
+          <span className="min-w-0 overflow-hidden text-left">{t('recentTrades.kind')}</span>
           <span className="text-center">{t('log.time')}</span>
+          </div>
         </div>
 
         {/* Rows */}
@@ -214,7 +218,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
             return (
               <div
                 key={i}
-                className="grid gap-x-[2px] px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
+                className="grid w-max min-w-full gap-x-[2px] px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
                 style={{ gridTemplateColumns: GRID_TEMPLATE }}
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
@@ -228,8 +232,8 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                 <span className="-ml-[10px] text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
                 <span className={`text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
                 <span className="text-center text-[#aaa]">{commissionText}</span>
-                <span className="truncate pr-1">
-                  <span className={`inline-flex min-w-[64px] items-center justify-center rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
+                <span className="min-w-0 overflow-hidden pr-1">
+                  <span className={`inline-flex w-full max-w-full min-w-0 items-center justify-center overflow-hidden text-ellipsis whitespace-nowrap rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
                     {tradeKind.label}
                   </span>
                 </span>
