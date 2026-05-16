@@ -405,6 +405,7 @@ def init_db() -> None:
                     binance_api_key   TEXT         DEFAULT NULL COMMENT 'Binance API Key (encrypted)',
                     binance_api_secret TEXT        DEFAULT NULL COMMENT 'Binance API Secret (encrypted)',
                     created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (id),
                     UNIQUE KEY uk_username (username)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -414,6 +415,7 @@ def init_db() -> None:
             for col, definition in [
                 ("binance_api_key",    "TEXT DEFAULT NULL COMMENT 'Binance API Key (encrypted)'"),
                 ("binance_api_secret", "TEXT DEFAULT NULL COMMENT 'Binance API Secret (encrypted)'"),
+                ("updated_at",         "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
             ]:
                 try:
                     cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")

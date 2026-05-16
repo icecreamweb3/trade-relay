@@ -7,6 +7,7 @@ CREATE TABLE users (
     binance_api_key    TEXT         DEFAULT NULL COMMENT 'Binance API Key (encrypted)',
     binance_api_secret TEXT         DEFAULT NULL COMMENT 'Binance API Secret (encrypted)',
     created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -156,6 +157,9 @@ CREATE TABLE account_summary (
 -- ============================================================
 -- 存量库升级脚本（初次部署后第一次执行，重复执行无影响）
 -- ============================================================
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
 
 ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset,
