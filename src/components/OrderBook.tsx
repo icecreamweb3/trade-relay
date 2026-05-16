@@ -10,7 +10,7 @@ import { Locale, useTranslation } from '../i18n/translations'
 const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
-interface Level { price: number; qty: number; sum: number }
+interface Level { price: number; qty: number; quoteQty: number; sum: number }
 type RawLevel = [string, string]
 
 interface DepthEvent {
@@ -106,8 +106,9 @@ function buildLevels(raw: RawLevel[], side: 'ask' | 'bid', priceStep: number): L
 
   let cum = 0
   return levels.map((level) => {
-    cum += level.qty
-    return { price: level.price, qty: level.qty, sum: cum }
+    const quoteQty = level.price * level.qty
+    cum += quoteQty
+    return { price: level.price, qty: level.qty, quoteQty, sum: cum }
   })
 }
 
@@ -400,8 +401,8 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
       <div className="grid grid-cols-3 px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider shrink-0 border-b border-[#2a2a2a]">
         <span>{t('orderbook.price')}({quoteAsset})</span>
-        <span className="text-right">{t('orderbook.size')}({baseAsset})</span>
-        <span className="text-right">{t('orderbook.sum')}({baseAsset})</span>
+        <span className="text-right">{t('orderbook.size')}({quoteAsset})</span>
+        <span className="text-right">{t('orderbook.sum')}({quoteAsset})</span>
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col justify-end">
@@ -419,7 +420,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
                 style={{ width: `${barWidth}%` }}
               />
               <span className="text-[#f6465d] font-mono tabular-nums z-10">{fmt(level.price, priceDp)}</span>
-              <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmtCompact(level.qty, 3)}</span>
+              <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmtCompact(level.quoteQty, 2)}</span>
               <span className="text-right text-[#666] font-mono tabular-nums z-10">{fmtCompact(level.sum, 2)}</span>
             </button>
           )
@@ -452,7 +453,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
                 style={{ width: `${barWidth}%` }}
               />
               <span className="text-[#0ecb81] font-mono tabular-nums z-10">{fmt(level.price, priceDp)}</span>
-              <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmtCompact(level.qty, 3)}</span>
+              <span className="text-right text-[#aaa] font-mono tabular-nums z-10">{fmtCompact(level.quoteQty, 2)}</span>
               <span className="text-right text-[#666] font-mono tabular-nums z-10">{fmtCompact(level.sum, 2)}</span>
             </button>
           )
