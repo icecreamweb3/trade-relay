@@ -182,6 +182,7 @@ interface ApiDailyLeaderboardEntry {
   username: string
   date: string
   pnl: number
+  account_balance: number | null
   trades: number
   win_rate: number
   commission: number
@@ -201,6 +202,7 @@ interface ApiProfileOverview {
   daily_pnl: ApiDailyPnl[]
   daily_leaderboard: ApiDailyLeaderboardEntry[]
   all_time_leaderboard: ApiAllTimeLeaderboardEntry[]
+  all_time_days: number | null
 }
 
 const inflightGetRequests = new Map<string, Promise<unknown>>()
@@ -451,8 +453,9 @@ export const api = {
     return request<ApiDailyPnl[]>('GET', '/api/profile/daily-pnl', { params })
   },
 
-  async getProfileOverview(): Promise<ApiProfileOverview> {
-    return request<ApiProfileOverview>('GET', '/api/profile/overview')
+  async getProfileOverview(allTimeDays?: number | null): Promise<ApiProfileOverview> {
+    const params = allTimeDays ? { all_time_days: allTimeDays } : undefined
+    return request<ApiProfileOverview>('GET', '/api/profile/overview', { params })
   },
 
   // ── Ticker messages ───────────────────────────────────────────────────────

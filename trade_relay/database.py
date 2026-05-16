@@ -2021,15 +2021,24 @@ def get_daily_profile_leaderboard(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT username,
-                       profile_date AS date,
-                       pnl,
-                       trade_count AS trades,
-                       win_rate,
-                       commission
-                FROM daily_profile
-                WHERE profile_date = %s
-                ORDER BY pnl DESC, win_rate DESC, trade_count DESC, username ASC
+                SELECT dp.username,
+                       dp.profile_date AS date,
+                       dp.pnl,
+                       dp.trade_count AS trades,
+                       dp.win_rate,
+                       dp.commission,
+                       latest_account.wallet_balance AS account_balance
+                FROM daily_profile dp
+                LEFT JOIN account_summary latest_account
+                  ON latest_account.id = (
+                      SELECT account_candidate.id
+                      FROM account_summary account_candidate
+                      WHERE account_candidate.user_id = dp.user_id
+                      ORDER BY account_candidate.synced_at DESC, account_candidate.id DESC
+                      LIMIT 1
+                  )
+                WHERE dp.profile_date = %s
+                ORDER BY dp.pnl DESC, dp.win_rate DESC, dp.trade_count DESC, dp.username ASC
                 LIMIT %s
                 """,
                 (leaderboard_date, limit),
@@ -2040,6 +2049,21 @@ def get_daily_profile_leaderboard(
 
 
 def get_all_time_profile_leaderboard(limit: int = 20) -> list:
+    return get_all_time_profile_leaderboard_for_days(limit=limit, days=None)
+
+
+def get_all_time_profile_leaderboard_for_days(
+    *,
+    limit: int = 20,
+    days: Optional[int] = None,
+) -> list:
+    params: list[object] = []
+    where_sql = ""
+    if days is not None and days > 0:
+        start_date = _utc_now_naive().date() - timedelta(days=days - 1)
+        where_sql = "WHERE profile_date >= %s"
+        params.append(start_date)
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -2054,11 +2078,14 @@ def get_all_time_profile_leaderboard(limit: int = 20) -> list:
                        END AS win_rate,
                        SUM(COALESCE(commission, 0)) AS commission
                 FROM daily_profile
+                """
+                + where_sql
+                + """
                 GROUP BY user_id, username
                 ORDER BY pnl DESC, win_rate DESC, trades DESC, username ASC
                 LIMIT %s
                 """,
-                (limit,),
+                [*params, limit],
             )
             return cur.fetchall()
     finally:

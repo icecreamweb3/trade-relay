@@ -4,7 +4,7 @@ Profile router: trading stats and daily PnL for the current user.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from trade_relay import database as db_module
@@ -34,6 +34,7 @@ class DailyLeaderboardEntry(BaseModel):
     username: str
     date: str
     pnl: float
+    account_balance: float | None
     trades: int
     win_rate: float
     commission: float
@@ -53,13 +54,14 @@ class ProfileOverview(BaseModel):
     daily_pnl: list[DailyPnl]
     daily_leaderboard: list[DailyLeaderboardEntry]
     all_time_leaderboard: list[AllTimeLeaderboardEntry]
+    all_time_days: int | None
 
 
-def _build_profile_overview(user_id: int) -> ProfileOverview:
+def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> ProfileOverview:
     rows = db_module.get_daily_pnl(user_id)
     commission_rows = db_module.get_total_commission_by_asset(user_id)
     leaderboard_rows = db_module.get_daily_profile_leaderboard()
-    all_time_leaderboard_rows = db_module.get_all_time_profile_leaderboard()
+    all_time_leaderboard_rows = db_module.get_all_time_profile_leaderboard_for_days(days=all_time_days)
     account_summary = db_module.get_account_summary_from_db(user_id, None) or {}
     daily_pnl = [
         DailyPnl(
@@ -77,6 +79,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
             username=str(row.get("username") or "-"),
             date=str(row.get("date")),
             pnl=round(float(row.get("pnl") or 0), 4),
+            account_balance=round(float(row.get("account_balance")), 4) if row.get("account_balance") is not None else None,
             trades=int(row.get("trades") or 0),
             win_rate=round(float(row.get("win_rate") or 0), 2),
             commission=round(float(row.get("commission") or 0), 4),
@@ -123,13 +126,18 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
         daily_pnl=daily_pnl,
         daily_leaderboard=daily_leaderboard,
         all_time_leaderboard=all_time_leaderboard,
+        all_time_days=all_time_days,
     )
 
 
 @router.get("/overview", response_model=ProfileOverview)
-def get_overview(user: dict = Depends(get_current_user)):
+def get_overview(
+    all_time_days: int | None = Query(default=None),
+    user: dict = Depends(get_current_user),
+):
     user_id = int(user["sub"])
-    return _build_profile_overview(user_id)
+    normalized_days = all_time_days if all_time_days in {7, 30} else None
+    return _build_profile_overview(user_id, all_time_days=normalized_days)
 
 
 @router.get("/stats", response_model=ProfileStats)

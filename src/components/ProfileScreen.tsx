@@ -17,6 +17,7 @@ interface DailyLeaderboardEntry {
   username: string
   date: string
   pnl: number
+  account_balance: number | null
   trades: number
   win_rate: number
   commission: number
@@ -30,6 +31,8 @@ interface AllTimeLeaderboardEntry {
   win_rate: number
   commission: number
 }
+
+type AllTimeRange = 7 | 30 | null
 
 function formatSignedAmount(value: number, digits = 2) {
   const sign = value > 0 ? '+' : ''
@@ -67,13 +70,14 @@ export function ProfileScreen() {
   const [daily, setDaily] = useState<DailyPnl[]>([])
   const [leaderboard, setLeaderboard] = useState<DailyLeaderboardEntry[]>([])
   const [allTimeLeaderboard, setAllTimeLeaderboard] = useState<AllTimeLeaderboardEntry[]>([])
+  const [allTimeRange, setAllTimeRange] = useState<AllTimeRange>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
       setLoading(true)
       try {
-        const overview = await api.getProfileOverview()
+        const overview = await api.getProfileOverview(allTimeRange)
         setStats(overview.stats)
         setDaily(Array.isArray(overview.daily_pnl) ? overview.daily_pnl : [])
         setLeaderboard(Array.isArray(overview.daily_leaderboard) ? overview.daily_leaderboard : [])
@@ -82,7 +86,7 @@ export function ProfileScreen() {
       setLoading(false)
     }
     load()
-  }, [])
+  }, [allTimeRange])
 
   const maxPnl = Math.max(...daily.map(d => Math.abs(d.pnl)), 1)
   const hasSingleDay = daily.length === 1
@@ -164,10 +168,11 @@ export function ProfileScreen() {
               <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225]">
-                <div className="min-w-[900px]">
-                  <div className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#31343b] px-3 py-2 text-[11px] uppercase tracking-wide text-[#6f7682]">
+                <div className="min-w-[1030px]">
+                  <div className="grid grid-cols-[64px_minmax(160px,1.1fr)_136px_120px_120px_104px_104px_132px] gap-3 border-b border-[#31343b] px-3 py-2 text-[11px] uppercase tracking-wide text-[#6f7682]">
                     <span>{t('profile.rank')}</span>
                     <span>{t('profile.user')}</span>
+                    <span className="text-right">{t('profile.accountBalance')}</span>
                     <span className="text-right">{t('profile.totalPnl')}</span>
                     <span className="text-right">{t('profile.netPnl')}</span>
                     <span className="text-right">{t('profile.trades')}</span>
@@ -177,10 +182,11 @@ export function ProfileScreen() {
                   {leaderboard.map((entry) => (
                     <div
                       key={`${entry.date}-${entry.username}-${entry.rank}`}
-                      className="grid grid-cols-[64px_minmax(160px,1.2fr)_120px_120px_104px_104px_132px] gap-3 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
+                      className="grid grid-cols-[64px_minmax(160px,1.1fr)_136px_120px_120px_104px_104px_132px] gap-3 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
                     >
                       <span className="font-mono text-[#8c93a1]">#{entry.rank}</span>
                       <span className="truncate pr-2">{entry.username}</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{formatAccountBalance(entry.account_balance)}</span>
                       <span className={`text-right font-mono tabular-nums ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
                         {formatSignedAmount(entry.pnl, 2)}
                       </span>
@@ -200,7 +206,23 @@ export function ProfileScreen() {
           <div className="bg-[#252526] rounded border border-[#3e3e42] p-3">
             <div className="mb-3 flex items-center justify-between">
               <div className="text-xs text-[#858585]">{t('profile.allTimeLeaderboard')}</div>
-              <div className="text-[11px] font-mono text-[#6f7682]">ALL</div>
+              <div className="flex items-center gap-2 text-[11px] font-mono text-[#6f7682]">
+                <LeaderboardRangeButton
+                  label={t('profile.range7d')}
+                  active={allTimeRange === 7}
+                  onClick={() => setAllTimeRange(7)}
+                />
+                <LeaderboardRangeButton
+                  label={t('profile.range30d')}
+                  active={allTimeRange === 30}
+                  onClick={() => setAllTimeRange(30)}
+                />
+                <LeaderboardRangeButton
+                  label={t('profile.rangeAll')}
+                  active={allTimeRange === null}
+                  onClick={() => setAllTimeRange(null)}
+                />
+              </div>
             </div>
             {allTimeLeaderboard.length === 0 ? (
               <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
@@ -241,6 +263,30 @@ export function ProfileScreen() {
         </div>
       )}
     </div>
+  )
+}
+
+function LeaderboardRangeButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded border px-2 py-1 text-[11px] transition-colors ${
+        active
+          ? 'border-[#5a6573] bg-[#30343b] text-[#e6e9ef]'
+          : 'border-[#3e434c] bg-transparent text-[#8a92a0] hover:border-[#4b5562] hover:text-[#c7ccd4]'
+      }`}
+    >
+      {label}
+    </button>
   )
 }
 
