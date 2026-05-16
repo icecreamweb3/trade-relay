@@ -162,6 +162,7 @@ interface ApiProfileStats {
   win_rate: number
   total_trades: number
   total_commission: number
+  account_balance: number | null
   total_commission_by_asset: Array<{
     asset: string
     total: number

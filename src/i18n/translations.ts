@@ -272,6 +272,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     // Profile
     'profile.title': '收益分析',
     'profile.totalPnl': '总盈亏',
+    'profile.accountBalance': '账户余额',
     'profile.winRate': '胜率',
     'profile.trades': '总交易次数',
     'profile.commission': '总手续费',
@@ -565,6 +566,7 @@ export const translations: Record<Locale, Record<string, string>> = {
 
     'profile.title': 'P&L Analysis',
     'profile.totalPnl': 'Total P&L',
+    'profile.accountBalance': 'Account Balance',
     'profile.winRate': 'Win Rate',
     'profile.trades': 'Total Trades',
     'profile.commission': 'Total Commission',

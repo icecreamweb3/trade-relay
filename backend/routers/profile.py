@@ -18,6 +18,7 @@ class ProfileStats(BaseModel):
     win_rate: float
     total_trades: int
     total_commission: float
+    account_balance: float | None
     total_commission_by_asset: list[dict[str, float | str]]
 
 class DailyPnl(BaseModel):
@@ -48,6 +49,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
     rows = db_module.get_daily_pnl(user_id)
     commission_rows = db_module.get_total_commission_by_asset(user_id)
     leaderboard_rows = db_module.get_daily_profile_leaderboard()
+    account_summary = db_module.get_account_summary_from_db(user_id, None) or {}
     daily_pnl = [
         DailyPnl(
             date=str(r["date"]),
@@ -84,6 +86,8 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
     ]
     total_commission = round(sum(float(item["total"]) for item in total_commission_by_asset), 8)
     win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
+    account_balance_raw = account_summary.get("wallet_balance")
+    account_balance = round(float(account_balance_raw), 4) if account_balance_raw is not None else None
 
     return ProfileOverview(
         stats=ProfileStats(
@@ -91,6 +95,7 @@ def _build_profile_overview(user_id: int) -> ProfileOverview:
             win_rate=round(win_rate, 2),
             total_trades=total_trades,
             total_commission=round(total_commission, 4),
+            account_balance=account_balance,
             total_commission_by_asset=total_commission_by_asset,
         ),
         daily_pnl=daily_pnl,

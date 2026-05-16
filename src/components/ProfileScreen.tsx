@@ -6,7 +6,7 @@ const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).ele
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 interface Stats {
-  total_pnl: number; win_rate: number; total_trades: number; total_commission: number
+  total_pnl: number; win_rate: number; total_trades: number; total_commission: number; account_balance: number | null
   total_commission_by_asset: Array<{ asset: string; total: number }>
 }
 
@@ -43,6 +43,11 @@ function formatCommissionByAsset(items: Array<{ asset: string; total: number }>)
     .join(' · ')
 }
 
+function formatAccountBalance(value: number | null | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return `${value.toFixed(4)} USDT`
+}
+
 export function ProfileScreen() {
   const { t } = useTranslation(locale)
   const [stats, setStats] = useState<Stats | null>(null)
@@ -56,8 +61,8 @@ export function ProfileScreen() {
       try {
         const overview = await api.getProfileOverview()
         setStats(overview.stats)
-        setDaily(overview.daily_pnl)
-        setLeaderboard(overview.daily_leaderboard)
+        setDaily(Array.isArray(overview.daily_pnl) ? overview.daily_pnl : [])
+        setLeaderboard(Array.isArray(overview.daily_leaderboard) ? overview.daily_leaderboard : [])
       } catch { /* ignore */ }
       setLoading(false)
     }
@@ -81,7 +86,8 @@ export function ProfileScreen() {
         <div className="flex-1 overflow-auto p-4 space-y-4">
           {/* Stats row */}
           {stats && (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <StatCard label={t('profile.accountBalance')} value={formatAccountBalance(stats.account_balance)} />
               <StatCard label={t('profile.totalPnl')} value={`${formatSignedAmount(stats.total_pnl, 2)} USDT`}
                 color={stats.total_pnl >= 0 ? 'text-buy' : 'text-sell'} />
               <StatCard label={t('profile.winRate')} value={`${stats.win_rate.toFixed(1)}%`} />
