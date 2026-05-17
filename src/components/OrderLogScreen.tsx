@@ -13,6 +13,10 @@ interface Order {
   trade_direction?: string | null
   quantity: number; price: number; status: string; username?: string
   avg_price?: number | null
+  realized_pnl?: number | null
+  commission?: number | null
+  commission_asset?: string | null
+  algo_id?: string | null
   exchange_order_id?: string; created_at?: string; error_message?: string
 }
 
@@ -172,11 +176,11 @@ export function OrderLogScreen() {
         <table className="trade-table w-full">
           <thead><tr>
             <th>{t('log.index')}</th><th>{t('log.time')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
-            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.status')}</th><th className="min-w-[260px]">{t('log.id')}</th>
+            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
-              <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
+              <tr><td colSpan={18} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
@@ -192,9 +196,22 @@ export function OrderLogScreen() {
                 <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                 <td className="font-mono">{o.avg_price != null ? o.avg_price.toFixed(2) : '—'}</td>
                 <td className="font-mono">{formatNotional(o)}</td>
+                <td className={`font-mono ${Number(o.realized_pnl ?? 0) > 0 ? 'text-buy' : Number(o.realized_pnl ?? 0) < 0 ? 'text-sell' : 'text-[#858585]'}`}>
+                  {formatSignedNumber(o.realized_pnl, 4)}
+                </td>
+                <td className="font-mono text-[#858585]">{formatNumber(o.commission, 4)}</td>
+                <td className="font-mono text-[#858585]">{o.commission_asset ?? '—'}</td>
                 <td><StatusBadge status={o.status} t={t} /></td>
-                <td className="min-w-[260px] text-[#858585] font-mono whitespace-nowrap" title={o.exchange_order_id}>
-                  {o.exchange_order_id ?? o.error_message ?? '-'}
+                <td className="min-w-[160px] text-[#858585] font-mono whitespace-nowrap" title={o.algo_id ?? '--'}>
+                  {o.algo_id ?? '--'}
+                </td>
+                <td className="min-w-[160px] text-[#858585] font-mono whitespace-nowrap" title={o.exchange_order_id ?? '--'}>
+                  {o.exchange_order_id ?? '--'}
+                </td>
+                <td className="min-w-[320px] text-[#858585]">
+                  <div className="max-w-[420px] truncate" title={o.error_message ?? '--'}>
+                    {formatErrorMessage(o.error_message)}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -285,6 +302,23 @@ function formatOrderStatus(status: string, t: (key: string) => string) {
     case 'ERROR': return t('status.error')
     default: return t('status.pending')
   }
+}
+
+function formatErrorMessage(value?: string) {
+  if (!value) return '--'
+  const trimmed = value.trim()
+  if (!trimmed) return '--'
+  const maxLength = 96
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1)}…` : trimmed
+}
+
+function formatNumber(value?: number | null, decimals = 4) {
+  return value != null ? value.toFixed(decimals) : '—'
+}
+
+function formatSignedNumber(value?: number | null, decimals = 4) {
+  if (value == null) return '—'
+  return `${value > 0 ? '+' : ''}${value.toFixed(decimals)}`
 }
 
 function toBackendDateTime(value: string) {
