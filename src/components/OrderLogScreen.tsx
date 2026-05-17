@@ -4,9 +4,7 @@ import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -44,6 +42,7 @@ const INITIAL_FILTERS: OrderFilters = {
 const STATUS_OPTIONS = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED', 'ERROR', 'MOCK', 'PENDING'] as const
 
 export function OrderLogScreen() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)

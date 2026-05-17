@@ -4,9 +4,7 @@ import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface User {
   id: number
@@ -22,6 +20,7 @@ interface User {
 type FormMode = 'create' | 'edit'
 
 export function AdminScreen() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)

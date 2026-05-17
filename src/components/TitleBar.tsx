@@ -3,9 +3,7 @@ import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Se
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
 
@@ -16,6 +14,7 @@ interface TitleBarProps {
 }
 
 export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarProps) {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { symbol, isConnected, isChartExpanded, setChartExpanded } = useMarketStore()
   const { user, logout } = useAuthStore()

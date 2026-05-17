@@ -3,15 +3,14 @@ import { X, Activity } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { perf } from '../utils/perf'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface LoginModalProps {
   onClose: () => void
 }
 
 export function LoginModal({ onClose }: LoginModalProps) {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { login, isLoading, error, clearError } = useAuthStore()
 

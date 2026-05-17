@@ -6,9 +6,7 @@ import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { formatUtcTimestampToLocalString, parseUtcTimestamp } from '../utils/datetime'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface Fill {
   username?: string
@@ -81,6 +79,7 @@ function fmtSignedNum(n: number | null | undefined, dp = 2): string {
 }
 
 export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: boolean; refreshTrigger?: number }) {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const [fills, setFills] = useState<Fill[]>([])

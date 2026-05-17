@@ -1,11 +1,9 @@
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 const appVersion = __APP_VERSION__
 
-function formatBuildTime(value: string) {
+function formatBuildTime(value: string, locale: Locale) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN', {
@@ -20,6 +18,7 @@ function formatBuildTime(value: string) {
 }
 
 export function StatusBar() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const {
     symbol,
@@ -30,7 +29,7 @@ export function StatusBar() {
     fundingRate,
     isConnected,
   } = useMarketStore()
-  const buildTime = formatBuildTime(__BUILD_TIME__)
+  const buildTime = formatBuildTime(__BUILD_TIME__, locale)
   const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
   const priceChange = dayPriceChange ?? 0
   const priceChangePct = dayPriceChangePercent ?? 0

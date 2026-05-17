@@ -1,11 +1,10 @@
 import { useEffect } from 'react'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 export function GlobalToast() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const toast = useToastStore((state) => state.toast)
   const dismissToast = useToastStore((state) => state.dismissToast)
   const { t } = useTranslation(locale)

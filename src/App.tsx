@@ -16,15 +16,15 @@ import { AdminScreen } from './components/AdminScreen'
 import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
 import { GlobalToast } from './components/GlobalToast'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const appLocale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from './store/uiPreferencesStore'
 
 type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
 type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
 
 function MainApp() {
   useMarketData()
+
+  const appLocale = useUiPreferencesStore((state) => state.locale)
 
   const { t } = useTranslation(appLocale)
   const { isAuthenticated } = useAuthStore()
@@ -237,8 +237,9 @@ function MainApp() {
 
 export default function App() {
   const { checkAuth } = useAuthStore()
+  const locale = useUiPreferencesStore((state) => state.locale)
   const [initializing, setInitializing] = useState(true)
-  const { t } = useTranslation(appLocale)
+  const { t } = useTranslation(locale)
 
   useEffect(() => {
     checkAuth().finally(() => setInitializing(false))

@@ -7,9 +7,7 @@ import { useToastStore, type ToastKind } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { formatUtcTimestampToLocalString } from '../utils/datetime'
 import { perfSignalDone } from '../utils/perf'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -56,6 +54,7 @@ export function PositionsPanel({
   isActive?: boolean
   sizeUnit?: 'QUOTE' | 'BASE'
 }) {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -869,6 +868,7 @@ function TpSlModal({
   onSaved: (posId: number, tp: number | null, sl: number | null) => void
   showToast: (type: ToastKind, msg: string) => void
 }) {
+  const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const leverage = readStoredLeverage(username, position.symbol) ?? position.leverage

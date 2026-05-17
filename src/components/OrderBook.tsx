@@ -6,9 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getBackendBaseUrl } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface Level { price: number; qty: number; quoteQty: number; sum: number }
 type RawLevel = [string, string]
@@ -143,6 +141,8 @@ function sortBook(book: Map<string, string>, side: 'ask' | 'bid'): RawLevel[] {
 }
 
 export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) => void }) {
+  const locale = useUiPreferencesStore((state) => state.locale)
+  const orderBookDepthMode = useUiPreferencesStore((state) => state.orderBookDepthMode)
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, setCurrentPrice } = useMarketStore()
   const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
@@ -339,9 +339,10 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
   const asks = [...buildLevels(rawAsks, 'ask', spreadStep)].reverse()
   const bids = buildLevels(rawBids, 'bid', spreadStep)
+  const getDepthValue = (level: Level) => orderBookDepthMode === 'level' ? level.quoteQty : level.sum
   const maxSum = Math.max(
-    asks[asks.length - 1]?.sum ?? 0,
-    bids[0]?.sum ?? 0,
+    ...asks.map(getDepthValue),
+    ...bids.map(getDepthValue),
     0.001,
   )
 
@@ -407,7 +408,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
       <div className="flex-1 overflow-hidden flex flex-col justify-end">
         {asks.map((level, index) => {
-          const barWidth = (level.sum / maxSum) * 100
+          const barWidth = (getDepthValue(level) / maxSum) * 100
           return (
             <button
               key={`ask-${level.price}-${index}`}
@@ -440,7 +441,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
       <div className="flex-1 overflow-hidden flex flex-col">
         {bids.map((level, index) => {
-          const barWidth = (level.sum / maxSum) * 100
+          const barWidth = (getDepthValue(level) / maxSum) * 100
           return (
             <button
               key={`bid-${level.price}-${index}`}

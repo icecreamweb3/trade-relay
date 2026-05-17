@@ -1,11 +1,10 @@
 // Left panel placeholder — actual Binance chart is rendered by Electron BrowserView
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 export function BinancePanel() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, isConnected } = useMarketStore()
 

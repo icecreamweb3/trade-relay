@@ -5,9 +5,7 @@ import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { perfSignalDone } from '../utils/perf'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 type Side = 'BUY' | 'SELL'
 type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'POST_ONLY'
@@ -180,6 +178,7 @@ function writeStoredAdvancedOrderType(username: string, symbol: string, type: Ad
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
 function TickerStrip({ onFillMark }: { onFillMark: () => void }) {
+  const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, dayPriceChange, dayPriceChangePercent } = useMarketStore()
 
@@ -239,6 +238,7 @@ export function OrderFormWidget({
   onSizeUnitChange: (nextUnit: 'QUOTE' | 'BASE') => void
   refreshTrigger?: number
 }) {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
   const { user } = useAuthStore()
@@ -636,6 +636,74 @@ export function OrderFormWidget({
 
   const liveLongQty = positionLongQty ?? accountSummary?.long_position_qty ?? null
   const liveShortQty = positionShortQty ?? accountSummary?.short_position_qty ?? null
+
+  const liveLongEntryPrice = useMemo(() => {
+    if (!liveSymbolPositions || liveSymbolPositions.length === 0) return null
+    let totalQty = 0
+    let totalCost = 0
+    for (const position of liveSymbolPositions) {
+      if (position.side !== 'LONG' || position.entry_price == null || position.quantity <= 0) continue
+      totalQty += position.quantity
+      totalCost += position.quantity * position.entry_price
+    }
+    if (totalQty <= 0) return null
+    return totalCost / totalQty
+  }, [liveSymbolPositions])
+
+  const liveShortEntryPrice = useMemo(() => {
+    if (!liveSymbolPositions || liveSymbolPositions.length === 0) return null
+    let totalQty = 0
+    let totalCost = 0
+    for (const position of liveSymbolPositions) {
+      if (position.side !== 'SHORT' || position.entry_price == null || position.quantity <= 0) continue
+      totalQty += position.quantity
+      totalCost += position.quantity * position.entry_price
+    }
+    if (totalQty <= 0) return null
+    return totalCost / totalQty
+  }, [liveSymbolPositions])
+
+  const closeEstimatePrice = useMemo(() => {
+    if (posDir !== 'CLOSE') return null
+    if (orderType === 'MARKET') return currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? null
+    const typedPrice = parseFloat(price)
+    return Number.isFinite(typedPrice) && typedPrice > 0 ? typedPrice : null
+  }, [posDir, orderType, currentPrice, markPrice, accountSummary?.rest_mark_price, price])
+
+  const closeEstimateBaseQty = useMemo(() => {
+    if (posDir !== 'CLOSE' || !closeEstimatePrice) return null
+    const qtyNum = parseFloat(qty)
+    if (!qtyNum || qtyNum <= 0) return null
+    return sizeUnit === 'QUOTE' ? qtyNum / closeEstimatePrice : qtyNum
+  }, [posDir, closeEstimatePrice, qty, sizeUnit])
+
+  const closeEstimate = useMemo(() => {
+    if (posDir !== 'CLOSE' || !closeEstimatePrice || !closeEstimateBaseQty) return null
+
+    const longClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveLongQty ?? 0, 0))
+    const shortClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveShortQty ?? 0, 0))
+
+    const longPnl = longClosableQty > 0 && liveLongEntryPrice != null
+      ? longClosableQty * (closeEstimatePrice - liveLongEntryPrice)
+      : null
+    const shortPnl = shortClosableQty > 0 && liveShortEntryPrice != null
+      ? shortClosableQty * (liveShortEntryPrice - closeEstimatePrice)
+      : null
+
+    return {
+      price: closeEstimatePrice,
+      longPnl,
+      shortPnl,
+    }
+  }, [
+    posDir,
+    closeEstimatePrice,
+    closeEstimateBaseQty,
+    liveLongQty,
+    liveShortQty,
+    liveLongEntryPrice,
+    liveShortEntryPrice,
+  ])
 
   const fillPct = (pct: number) => {
     if (posDir === 'CLOSE') {
@@ -1107,6 +1175,35 @@ export function OrderFormWidget({
           <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#161A1E] border border-[#2B2F36] rounded">
             <span className="text-[10px] text-[#848E9C]">{t('order.estimatedMargin')} ({leverage}×)</span>
             <span className="text-[11px] text-[#EAECEF] font-mono tabular-nums">{fmt(estimatedCost, 2)} {quoteAsset}</span>
+          </div>
+        )}
+
+        {posDir === 'CLOSE' && closeEstimate && (
+          <div className="rounded border border-[#2B2F36] bg-[#161A1E] px-2.5 py-2 text-[10px]">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-[#848E9C]">{t('order.estimatedClosePnl')}</span>
+              <span className="font-mono tabular-nums text-[#EAECEF]">{fmt(closeEstimate.price, 2)} {quoteAsset}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#848E9C]">{t('order.closeLong')}</span>
+              <span className={`font-mono tabular-nums ${
+                closeEstimate.longPnl == null ? 'text-[#848E9C]' : closeEstimate.longPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+              }`}>
+                {closeEstimate.longPnl == null
+                  ? '—'
+                  : `${closeEstimate.longPnl >= 0 ? t('order.takeProfit') : t('order.stopLoss')} ${fmtSigned(closeEstimate.longPnl, 2)} ${quoteAsset}`}
+              </span>
+            </div>
+            <div className="mt-0.5 flex items-center justify-between gap-2">
+              <span className="text-[#848E9C]">{t('order.closeShort')}</span>
+              <span className={`font-mono tabular-nums ${
+                closeEstimate.shortPnl == null ? 'text-[#848E9C]' : closeEstimate.shortPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+              }`}>
+                {closeEstimate.shortPnl == null
+                  ? '—'
+                  : `${closeEstimate.shortPnl >= 0 ? t('order.takeProfit') : t('order.stopLoss')} ${fmtSigned(closeEstimate.shortPnl, 2)} ${quoteAsset}`}
+              </span>
+            </div>
           </div>
         )}
 

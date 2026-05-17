@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { Locale, useTranslation } from '../i18n/translations'
-
-const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).electronAPI?.uiLang
-const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface Stats {
   total_pnl: number; win_rate: number; total_trades: number; total_commission: number; account_balance: number | null
@@ -65,6 +63,7 @@ function getNetProfit(pnl: number, commission: number) {
 }
 
 export function ProfileScreen() {
+  const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [stats, setStats] = useState<Stats | null>(null)
   const [daily, setDaily] = useState<DailyPnl[]>([])
