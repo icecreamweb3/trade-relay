@@ -172,7 +172,7 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
                 side=side,
                 quantity=float(row["quantity"]),
                 entry_price=float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None,
-                liquidation_price=None,
+                liquidation_price=float(row["liquidation_price"]) if row.get("liquidation_price") is not None else None,
                 unrealized_pnl=float(row["unrealized_pnl"]) if row.get("unrealized_pnl") is not None else None,
                 leverage=int(row.get("leverage") or 0),
                 margin_type=str(row.get("margin_type", "") or "").upper(),

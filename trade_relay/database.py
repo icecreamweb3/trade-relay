@@ -639,6 +639,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
             quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
             avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
+            liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
             unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
             realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
             leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
@@ -659,9 +660,12 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
 
     cur.execute("SHOW COLUMNS FROM positions")
     existing_columns = {row["Field"] for row in cur.fetchall()}
+    if "liquidation_price" not in existing_columns:
+        cur.execute("ALTER TABLE positions ADD COLUMN liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价' AFTER avg_entry_price")
+        existing_columns.add("liquidation_price")
     required_columns = {
         "id", "user_id", "username", "exchange", "symbol", "position_side",
-        "quantity", "avg_entry_price", "unrealized_pnl", "realized_pnl",
+        "quantity", "avg_entry_price", "liquidation_price", "unrealized_pnl", "realized_pnl",
         "leverage", "margin_type", "updated_at",
     }
     if required_columns.issubset(existing_columns):
@@ -732,9 +736,9 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         cur.execute(
             """INSERT INTO positions
                (id, user_id, username, exchange, symbol, position_side,
-                quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                 leverage, margin_type, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 legacy_position_id,
                 owner_info["user_id"],
@@ -744,6 +748,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
                 position_side,
                 row.get("quantity") or 0,
                 row.get("avg_entry_price") if "avg_entry_price" in row else row.get("entry_price"),
+                row.get("liquidation_price"),
                 row.get("unrealized_pnl"),
                 row.get("realized_pnl") or 0,
                 row.get("leverage") or 1,
@@ -2152,6 +2157,7 @@ def upsert_position(
     symbol: str,
     quantity: float,
     avg_entry_price: Optional[float] = None,
+    liquidation_price: Optional[float] = None,
     unrealized_pnl: Optional[float] = None,
     realized_pnl: float = 0.0,
     leverage: int = 1,
@@ -2171,6 +2177,7 @@ def upsert_position(
             "position_side": position_side,
             "quantity": quantity,
             "avg_entry_price": avg_entry_price,
+            "liquidation_price": liquidation_price,
             "unrealized_pnl": unrealized_pnl,
             "realized_pnl": realized_pnl,
             "leverage": leverage,
@@ -2183,12 +2190,13 @@ def upsert_position(
             cur.execute(
                 """INSERT INTO positions
                    (user_id, username, exchange, symbol, position_side,
-                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                    quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
                        quantity        = VALUES(quantity),
                        avg_entry_price = VALUES(avg_entry_price),
+                       liquidation_price = VALUES(liquidation_price),
                        unrealized_pnl  = VALUES(unrealized_pnl),
                        realized_pnl    = VALUES(realized_pnl),
                        leverage        = VALUES(leverage),
@@ -2196,7 +2204,7 @@ def upsert_position(
                        updated_at      = CURRENT_TIMESTAMP""",
                 (
                     user_id, username, exchange, symbol, position_side,
-                    quantity, avg_entry_price, unrealized_pnl, realized_pnl,
+                    quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type,
                 ),
             )

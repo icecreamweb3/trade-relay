@@ -973,6 +973,7 @@ class UserOrderStatusStream:
             raw_side = str(position.get("ps") or position.get("positionSide") or "BOTH").upper()
             amount = _safe_float(position.get("pa") or position.get("positionAmt"))
             entry_price = _safe_float(position.get("ep") or position.get("entryPrice"))
+            liquidation_price = _safe_float(position.get("lp") or position.get("liquidationPrice"))
             unrealized_pnl = _safe_float(position.get("up") or position.get("unrealizedProfit"))
             realized_pnl = _safe_float(position.get("cr") or position.get("realizedPnl")) or 0.0
             margin_type = str(position.get("mt") or position.get("marginType") or "CROSS").upper()
@@ -1029,6 +1030,7 @@ class UserOrderStatusStream:
                 symbol=symbol,
                 quantity=abs(amount),
                 avg_entry_price=entry_price,
+                liquidation_price=liquidation_price if liquidation_price is not None else _safe_float(existing.get("liquidation_price")),
                 unrealized_pnl=unrealized_pnl,
                 realized_pnl=realized_pnl,
                 leverage=leverage,
@@ -1263,6 +1265,7 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
                 "ps": r.get("positionSide", "BOTH"),
                 "pa": r.get("positionAmt"),
                 "ep": r.get("entryPrice"),
+                "lp": r.get("liquidationPrice"),
                 "up": r.get("unRealizedProfit") or r.get("unrealizedProfit") or "0",
                 "cr": "0",
                 "mt": r.get("marginType", "cross").upper(),
@@ -1324,6 +1327,7 @@ def sync_all_initial_positions() -> None:
                     "ps": r.get("positionSide", "BOTH"),
                     "pa": r.get("positionAmt"),
                     "ep": r.get("entryPrice"),
+                    "lp": r.get("liquidationPrice"),
                     "up": r.get("unrealizedProfit"),
                     "cr": "0",
                     "mt": r.get("marginType", "cross").upper(),

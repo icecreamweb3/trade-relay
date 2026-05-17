@@ -57,6 +57,7 @@ CREATE TABLE positions (
     position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
     quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
     avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
+    liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
     unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
     realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
     leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
