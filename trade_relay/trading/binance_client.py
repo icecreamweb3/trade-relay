@@ -39,6 +39,7 @@ async def place_order(
     quantity: float,
     price: Optional[float] = None,
     stop_price: Optional[float] = None,
+    post_only: bool = False,
     leverage: int = 10,
     testnet: bool = False,
     position_direction: str = 'OPEN',
@@ -75,8 +76,8 @@ async def place_order(
             if price is None:
                 return BinanceOrderResult(success=False, error="Price required for LIMIT order")
             logger.info(
-                'binance request | LIMIT order | symbol=%s side=%s positionSide=%s qty=%s price=%s testnet=%s',
-                symbol, side, position_side, quantity, price, testnet,
+                'binance request | LIMIT order | symbol=%s side=%s positionSide=%s qty=%s price=%s testnet=%s post_only=%s',
+                symbol, side, position_side, quantity, price, testnet, post_only,
             )
             response = await asyncio.to_thread(
                 client.place_limit_order,
@@ -85,6 +86,7 @@ async def place_order(
                 quantity,
                 price,
                 position_side,
+                post_only,
             )
         elif order_type == "MARKET":
             logger.info(

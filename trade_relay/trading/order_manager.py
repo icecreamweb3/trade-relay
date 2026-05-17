@@ -33,6 +33,7 @@ async def submit_order(
     stop_price: Optional[float] = None,
     tp_price: Optional[float] = None,
     sl_price: Optional[float] = None,
+    post_only: bool = False,
     leverage: int = 10,
     position_direction: str = 'OPEN',
 ) -> OrderResult:
@@ -49,6 +50,8 @@ async def submit_order(
         return OrderResult(False, t("field_required", t("side")))
     if order_type not in ("MARKET", "LIMIT", "STOP", "STOP_MARKET"):
         return OrderResult(False, t("field_required", t("order_type")))
+    if post_only and order_type != "LIMIT":
+        return OrderResult(False, "Post Only is only supported for LIMIT orders")
     # Truncate to step size 0.001 (BTC contract minimum)
     import math
     quantity = math.floor(quantity * 1000) / 1000
@@ -104,6 +107,7 @@ async def submit_order(
             quantity=quantity,
             price=price,
             stop_price=stop_price,
+            post_only=post_only,
             leverage=leverage,
             testnet=testnet,
             position_direction=position_direction,
@@ -144,7 +148,7 @@ async def submit_order(
         trade_direction=position_direction.upper() if position_direction else None,
         position_id=position_id,
         reduce_only=(position_direction or "").upper() == "CLOSE",
-        post_only=False,
+        post_only=post_only,
         order_category=order_category,
     )
     _log.info(

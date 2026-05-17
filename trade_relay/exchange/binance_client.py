@@ -1300,7 +1300,7 @@ class BinanceClient:
         logger.error("place_conditional_order: max timestamp retries exceeded symbol=%s", symbol)
         return None
 
-    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, expire_seconds: int = None) -> Optional[dict]:
+    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None) -> Optional[dict]:
         """Place a limit order
         
         Args:
@@ -1309,6 +1309,7 @@ class BinanceClient:
             quantity: Order quantity
             price: Limit price
             position_side: Position side (LONG/SHORT) for hedge mode
+            post_only: Whether to submit as maker-only (GTX)
             expire_seconds: Order expiration time in seconds (default: None, means GTC - Good Till Cancel)
         """
         # 实现时间戳错误重试机制
@@ -1358,12 +1359,12 @@ class BinanceClient:
                         'type': 'LIMIT',
                         'quantity': quantity_str,  # Use formatted string with 3 decimal places
                         'price': price_str,  # Use formatted price string
-                        'timeInForce': 'GTC'  # Good Till Cancel (default)
+                        'timeInForce': 'GTX' if post_only else 'GTC'
                     }
                     
                     # 如果指定了过期时间，尝试使用 GTD (Good Till Date)
                     # 注意：币安期货API使用 goodTillDate 参数（不是 expireTime）
-                    if expire_seconds is not None and expire_seconds > 0:
+                    if not post_only and expire_seconds is not None and expire_seconds > 0:
                         try:
                             # 计算过期时间（UTC时间）
                             expire_time = datetime.now() + timedelta(seconds=expire_seconds)
@@ -1424,7 +1425,7 @@ class BinanceClient:
                         'type': ORDER_TYPE_LIMIT,
                         'quantity': quantity_str,  # Use formatted string with 3 decimal places
                         'price': price_str,
-                        'timeInForce': TIME_IN_FORCE_GTC
+                        'timeInForce': 'GTX' if post_only else TIME_IN_FORCE_GTC
                     }
                     
                     # ⚡ 重要：即使检测到单向持仓模式，也要添加 positionSide（双向持仓账户必需）
@@ -1438,7 +1439,7 @@ class BinanceClient:
                     
                     # 如果指定了过期时间，尝试添加过期时间参数
                     # 注意：Binance SDK 使用 goodTillDate 参数（不是 expireTime）
-                    if expire_seconds is not None and expire_seconds > 0:
+                    if not post_only and expire_seconds is not None and expire_seconds > 0:
                         try:
                             from datetime import datetime, timedelta
                             expire_time = datetime.now() + timedelta(seconds=expire_seconds)

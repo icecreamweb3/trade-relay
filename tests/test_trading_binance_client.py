@@ -391,6 +391,105 @@ def test_public_ticker_stream_replays_last_payload_to_new_listener(monkeypatch):
     assert captured == [{'type': 'ticker24h', 'symbol': 'BTCUSDC', 'lastPrice': 1.0}]
 
 
+def test_submit_order_persists_post_only_flag(monkeypatch):
+    from trade_relay.auth.manager import Session
+    from trade_relay.trading import order_manager
+
+    captured: dict = {}
+
+    async def fake_place_order(**kwargs):
+        captured['place_order'] = kwargs
+        return trading_binance_client.BinanceOrderResult(
+            success=True,
+            order_id="12345",
+            client_order_id="client-12345",
+            status="NEW",
+        )
+
+    def fake_create_order(**kwargs):
+        captured['create_order'] = kwargs
+        return 44
+
+    monkeypatch.setattr(order_manager.cfg, "is_mock_mode", lambda username: False)
+    monkeypatch.setattr(order_manager.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(order_manager.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(order_manager.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(order_manager, "place_order", fake_place_order)
+    monkeypatch.setattr(order_manager.db, "create_order", fake_create_order)
+    monkeypatch.setattr(order_manager.db, "log_operation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "ensure_user_order_status_stream", lambda *args, **kwargs: None)
+    monkeypatch.setattr(order_manager, "sync_order_status_once", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        order_manager.submit_order(
+            Session(1, "Will", "user"),
+            "BTCUSDC",
+            "BUY",
+            "LIMIT",
+            0.002,
+            80000.0,
+            None,
+            None,
+            None,
+            True,
+            20,
+            "OPEN",
+        )
+    )
+
+    assert result.success is True
+    assert captured['place_order']['post_only'] is True
+    assert captured['create_order']['post_only'] is True
+
+
+def test_binance_place_order_forwards_post_only_to_limit_client(monkeypatch):
+    from trade_relay.trading import binance_client as trading_binance
+
+    captured: dict = {}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_limit_order(self, symbol, side, quantity, price, position_side, post_only, expire_seconds=None):
+            captured.update({
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'price': price,
+                'position_side': position_side,
+                'post_only': post_only,
+                'expire_seconds': expire_seconds,
+            })
+            return {'orderId': '999', 'status': 'NEW'}
+
+    monkeypatch.setattr(trading_binance, 'FuturesBinanceClient', StubClient)
+
+    result = asyncio.run(
+        trading_binance.place_order(
+            api_key='key',
+            api_secret='secret',
+            symbol='BTCUSDC',
+            side='BUY',
+            order_type='LIMIT',
+            quantity=0.01,
+            price=80000.0,
+            post_only=True,
+            leverage=20,
+            testnet=False,
+            position_direction='OPEN',
+        )
+    )
+
+    assert result.success is True
+    assert captured['post_only'] is True
+
+
 def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
     from trade_relay.trading import tpsl_service
 

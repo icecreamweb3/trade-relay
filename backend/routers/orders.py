@@ -39,6 +39,7 @@ class OrderRequest(BaseModel):
     stop_price: Optional[float] = None   # trigger price for conditional orders
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
+    post_only: bool = False
     leverage: int = 10
     position_direction: str = 'OPEN'  # OPEN | CLOSE
 
@@ -168,6 +169,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.stop_price,
         body.tp_price,
         body.sl_price,
+        body.post_only,
         body.leverage,
         body.position_direction,
     )

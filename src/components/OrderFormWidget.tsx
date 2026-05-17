@@ -10,7 +10,7 @@ const UI_LANG = (window as unknown as { electronAPI?: { uiLang?: string } }).ele
 const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 type Side = 'BUY' | 'SELL'
-type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL'
+type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'POST_ONLY'
 type CondSubType = 'LIMIT' | 'MARKET'
 type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
@@ -115,6 +115,10 @@ function getLeverageStorageKey(username: string, symbol: string) {
   return `trade-relay:leverage:${username}:${symbol.toUpperCase()}`
 }
 
+function getConditionalSubTypeStorageKey(username: string, symbol: string) {
+  return `trade-relay:conditional-sub-type:${username}:${symbol.toUpperCase()}`
+}
+
 function readStoredLeverage(username: string, symbol: string): number | null {
   try {
     const raw = window.localStorage.getItem(getLeverageStorageKey(username, symbol))
@@ -131,6 +135,23 @@ function writeStoredLeverage(username: string, symbol: string, leverage: number)
     window.localStorage.setItem(getLeverageStorageKey(username, symbol), String(leverage))
   } catch {
     // Ignore storage errors so leverage changes still work without persistence.
+  }
+}
+
+function readStoredConditionalSubType(username: string, symbol: string): CondSubType | null {
+  try {
+    const raw = window.localStorage.getItem(getConditionalSubTypeStorageKey(username, symbol))
+    return raw === 'LIMIT' || raw === 'MARKET' ? raw : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredConditionalSubType(username: string, symbol: string, subType: CondSubType) {
+  try {
+    window.localStorage.setItem(getConditionalSubTypeStorageKey(username, symbol), subType)
+  } catch {
+    // Ignore storage errors so order-type changes still work without persistence.
   }
 }
 
@@ -207,6 +228,7 @@ export function OrderFormWidget({
   const [posDir, setPosDir] = useState<PositionDir>('OPEN')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
   const [condSubType, setCondSubType] = useState<CondSubType>('MARKET')
+  const [advancedOrderTypeOpen, setAdvancedOrderTypeOpen] = useState(false)
   const [qty, setQty] = useState('')
   const [price, setPrice] = useState('')
   const [stopPrice, setStopPrice] = useState('')
@@ -417,6 +439,18 @@ export function OrderFormWidget({
 
   const baseTicker = baseAsset
 
+  const orderTypeLabel = (type: OrderType) => {
+    if (type === 'LIMIT') return t('order.limit')
+    if (type === 'MARKET') return t('order.market')
+    if (type === 'POST_ONLY') return t('order.postOnly')
+    return t('type.conditional')
+  }
+
+  const selectOrderType = (type: OrderType) => {
+    setOrderType(type)
+    setAdvancedOrderTypeOpen(false)
+  }
+
   const fillMarkPrice = () => {
     const ref = markPrice ?? currentPrice
     if (ref != null) setPrice(ref.toFixed(2))
@@ -433,6 +467,16 @@ export function OrderFormWidget({
   }, [user?.username, symbol])
 
   useEffect(() => {
+    if (!user?.username) {
+      setCondSubType('MARKET')
+      return
+    }
+
+    const storedCondSubType = readStoredConditionalSubType(user.username, symbol)
+    setCondSubType(storedCondSubType ?? 'MARKET')
+  }, [user?.username, symbol])
+
+  useEffect(() => {
     if (accountSummary?.configured_leverage && accountSummary.configured_leverage !== leverage) {
       if (user?.username) {
         writeStoredLeverage(user.username, symbol, accountSummary.configured_leverage)
@@ -445,6 +489,11 @@ export function OrderFormWidget({
     if (!user?.username) return
     writeStoredLeverage(user.username, symbol, leverage)
   }, [leverage, symbol, user?.username])
+
+  useEffect(() => {
+    if (!user?.username) return
+    writeStoredConditionalSubType(user.username, symbol, condSubType)
+  }, [condSubType, symbol, user?.username])
 
   useEffect(() => {
     const message = accountSummary?.message ?? null
@@ -691,7 +740,11 @@ export function OrderFormWidget({
     let backendOrderType: string = orderType
     if (orderType === 'CONDITIONAL') {
       backendOrderType = condSubType === 'LIMIT' ? 'STOP' : 'STOP_MARKET'
+    } else if (orderType === 'POST_ONLY') {
+      backendOrderType = 'LIMIT'
     }
+
+    const isPostOnly = orderType === 'POST_ONLY'
 
     const body: Parameters<typeof api.submitOrder>[0] = {
       symbol, side: submitSide,
@@ -700,8 +753,9 @@ export function OrderFormWidget({
       leverage,
       margin_type: marginType,
       position_direction: posDir,
+      post_only: isPostOnly,
     }
-    if ((orderType === 'LIMIT' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
+    if ((orderType === 'LIMIT' || orderType === 'POST_ONLY' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
       body.price = parseFloat(price)
     if (orderType === 'CONDITIONAL' && stopPrice) body.stop_price = parseFloat(stopPrice)
     if (showTpSl && tp) body.tp_price = parseFloat(tp)
@@ -853,33 +907,65 @@ export function OrderFormWidget({
 
       {/* ── Order type tabs ── */}
       <div className="flex gap-0 px-3 pt-2 shrink-0 items-center">
-        {(['LIMIT', 'MARKET', 'CONDITIONAL'] as OrderType[]).map(tp => (
-          <button key={tp} onClick={() => {
-            setOrderType(tp)
-            if (tp === 'CONDITIONAL') setCondSubType('MARKET')
-          }}
+        {(['LIMIT', 'MARKET'] as OrderType[]).map(tp => (
+          <button key={tp} onClick={() => selectOrderType(tp)}
             className={`py-1 px-2.5 text-[11px] rounded transition-colors mr-1 ${
               orderType === tp
                 ? 'text-[#EAECEF] border-b border-[#F0B90B]'
                 : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
             }`}>
-            {tp === 'LIMIT'
-              ? useTranslation(locale).t('order.limit')
-              : tp === 'MARKET'
-                ? useTranslation(locale).t('order.market')
-                : useTranslation(locale).t('type.conditional')}
+            {orderTypeLabel(tp)}
           </button>
         ))}
-        {/* Sub-type dropdown: only shown for Conditional */}
-        {orderType === 'CONDITIONAL' && (
-          <select
-            value={condSubType}
-            onChange={e => setCondSubType(e.target.value as CondSubType)}
-            className="ml-1 bg-[#1E2026] border border-[#2B2F36] text-[#EAECEF] text-[10px] rounded px-1.5 py-0.5 outline-none cursor-pointer">
-            <option value="LIMIT">{useTranslation(locale).t('order.limit')}</option>
-            <option value="MARKET">{useTranslation(locale).t('order.market')}</option>
-          </select>
-        )}
+        <div
+          className="relative mr-1"
+          onMouseEnter={() => setAdvancedOrderTypeOpen(true)}
+          onMouseLeave={() => setAdvancedOrderTypeOpen(false)}
+        >
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => selectOrderType('CONDITIONAL')}
+              className={`py-1 pl-2.5 pr-1.5 text-[11px] rounded-l transition-colors ${
+                orderType === 'CONDITIONAL' || orderType === 'POST_ONLY'
+                  ? 'text-[#EAECEF] border-b border-[#F0B90B]'
+                  : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
+              }`}
+            >
+              {t('type.conditional')}
+            </button>
+            <button
+              type="button"
+              aria-label="Open advanced order types"
+              className={`py-1 pl-0.5 pr-2 text-[11px] rounded-r transition-colors ${
+                orderType === 'CONDITIONAL' || orderType === 'POST_ONLY'
+                  ? 'text-[#EAECEF] border border-transparent'
+                  : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
+              }`}
+            >
+              <span className="block text-[9px]">{advancedOrderTypeOpen ? '▲' : '▼'}</span>
+            </button>
+          </div>
+          {advancedOrderTypeOpen && (
+            <div className="absolute left-0 top-full z-20 mt-1 min-w-[132px] overflow-hidden rounded border border-[#2B2F36] bg-[#1E2026] shadow-lg">
+              {(['CONDITIONAL', 'POST_ONLY'] as OrderType[]).map((tp) => (
+                <button
+                  key={tp}
+                  type="button"
+                  onClick={() => selectOrderType(tp)}
+                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[11px] transition-colors ${
+                    orderType === tp
+                      ? 'bg-[#2B3139] text-[#EAECEF]'
+                      : 'text-[#C7CCD3] hover:bg-[#2B3139] hover:text-[#EAECEF]'
+                  }`}
+                >
+                  <span>{orderTypeLabel(tp)}</span>
+                  <span className={`ml-3 w-3 text-right ${orderType === tp ? 'text-[#EAECEF]' : 'text-transparent'}`}>✓</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Form ── */}
@@ -898,19 +984,40 @@ export function OrderFormWidget({
           </div>
         )}
 
-        {/* Limit / conditional-limit price */}
-        {(orderType === 'LIMIT' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && (
+        {/* Price */}
+        {(orderType === 'LIMIT' || orderType === 'POST_ONLY' || orderType === 'CONDITIONAL') && (
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">
-                {orderType === 'CONDITIONAL' ? t('order.limitPrice') : t('order.price')}
-              </label>
+              <label className="text-[10px] text-[#848E9C] uppercase tracking-wider">{t('order.price')}</label>
             </div>
-            <div className="relative">
-              <input type="number" value={price} onChange={e => setPrice(e.target.value)}
-                placeholder="0.00" min="0" step="any"
-                className="w-full bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded px-2.5 py-1.5 outline-none selectable pr-14" />
-              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#848E9C]">{quoteAsset}</span>
+            <div className="flex gap-2">
+              <div className="relative flex-1 min-w-0">
+                <input
+                  type={orderType === 'CONDITIONAL' && condSubType === 'MARKET' ? 'text' : 'number'}
+                  value={orderType === 'CONDITIONAL' && condSubType === 'MARKET' ? '' : price}
+                  onChange={e => setPrice(e.target.value)}
+                  placeholder={orderType === 'CONDITIONAL' && condSubType === 'MARKET' ? t('order.marketPrice') : '0.00'}
+                  min="0"
+                  step="any"
+                  disabled={orderType === 'CONDITIONAL' && condSubType === 'MARKET'}
+                  className={`w-full rounded px-2.5 py-1.5 text-[13px] outline-none pr-14 ${
+                    orderType === 'CONDITIONAL' && condSubType === 'MARKET'
+                      ? 'bg-[#2B2F36] border border-[#2B2F36] text-[#848E9C] cursor-not-allowed'
+                      : 'bg-[#1E2026] border border-[#2B2F36] focus:border-[#F0B90B] text-[#EAECEF] selectable'
+                  }`}
+                />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#848E9C]">{quoteAsset}</span>
+              </div>
+              {orderType === 'CONDITIONAL' && (
+                <select
+                  value={condSubType}
+                  onChange={e => setCondSubType(e.target.value as CondSubType)}
+                  className="w-[92px] shrink-0 bg-[#0B0E11] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded px-2 py-1.5 outline-none cursor-pointer"
+                >
+                  <option value="LIMIT">{t('order.limit')}</option>
+                  <option value="MARKET">{t('order.market')}</option>
+                </select>
+              )}
             </div>
           </div>
         )}

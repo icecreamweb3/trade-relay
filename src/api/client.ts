@@ -308,6 +308,7 @@ export const api = {
   async submitOrder(order: {
     symbol: string; side: string; order_type: string; quantity: number
     price?: number; stop_price?: number; tp_price?: number; sl_price?: number
+    post_only?: boolean
     leverage?: number
     margin_type: string; position_direction: string
   }): Promise<ApiResult> {
