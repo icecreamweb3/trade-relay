@@ -93,6 +93,13 @@ function MainApp() {
   }, [isAuthenticated])
 
   useEffect(() => {
+    setTabs((current) => current.map((tab) => ({
+      ...tab,
+      title: getScreenTitle(tab.screen),
+    })))
+  }, [appLocale])
+
+  useEffect(() => {
     window.electronAPI?.setBinanceViewVisible?.(isTradeScreenActive)
     if (isTradeScreenActive) {
       notifyElectron()

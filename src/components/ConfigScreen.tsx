@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import { useToastStore } from '../store/toastStore'
-import { Locale, useTranslation } from '../i18n/translations'
+import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 type SettingsCategory = 'language' | 'password' | 'orderbook'
@@ -19,16 +19,20 @@ export function ConfigScreen() {
   const [saving, setSaving] = useState(false)
   const showToast = useToastStore((state) => state.showToast)
 
+  const translateForLocale = (targetLocale: Locale, key: string) => {
+    return translations[targetLocale]?.[key] ?? translations.en[key] ?? key
+  }
+
   const handleLocaleChange = (nextLocale: Locale) => {
     if (nextLocale === locale) return
     setLocale(nextLocale)
-    showToast('success', t('config.languageUpdated'))
+    showToast('success', translateForLocale(nextLocale, 'config.languageUpdated'))
   }
 
   const handleDepthModeChange = (mode: OrderBookDepthMode) => {
     if (mode === orderBookDepthMode) return
     setOrderBookDepthMode(mode)
-    showToast('success', t('config.orderBookDepthUpdated'))
+    showToast('success', translateForLocale(locale, 'config.orderBookDepthUpdated'))
   }
 
   const handleSave = async (e: React.FormEvent) => {
