@@ -587,9 +587,7 @@ export function PositionsPanel({
                           {actionLabel}
                         </td>
                         <td className="font-mono">
-                          {isCloseOrder
-                            ? t('pos.closePosition')
-                            : o.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
+                          {formatConditionalOrderSize(o, sizeUnit, activeSymbol, markPrice ?? currentPrice)}
                         </td>
                         <td className="font-mono">{t('log.market')}</td>
                         <td className="font-mono text-[11px]">
@@ -1154,6 +1152,23 @@ function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', acti
     ? liveReferencePrice
     : (typeof position.entry_price === 'number' && Number.isFinite(position.entry_price) ? position.entry_price : 0)
   const quoteValue = position.quantity * price
+  if (!quoteValue) return `— ${quoteAsset}`
+  return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
+}
+
+function formatConditionalOrderSize(order: ApiConditionalOrder, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {
+  const { baseAsset, quoteAsset } = splitTradingSymbol(order.symbol)
+
+  if (sizeUnit === 'BASE') {
+    return `${order.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} ${baseAsset}`
+  }
+
+  const liveReferencePrice = order.symbol.toUpperCase() === activeSymbol.toUpperCase() ? livePrice : null
+  const referencePrice = typeof order.trigger_price === 'number' && Number.isFinite(order.trigger_price) && order.trigger_price > 0
+    ? order.trigger_price
+    : (typeof liveReferencePrice === 'number' && Number.isFinite(liveReferencePrice) ? liveReferencePrice : 0)
+  const quoteValue = order.quantity * referencePrice
+
   if (!quoteValue) return `— ${quoteAsset}`
   return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
 }

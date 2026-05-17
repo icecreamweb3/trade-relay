@@ -154,10 +154,17 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
         tp, sl = persisted_by_position_id.get(pos_id) or persisted_by_symbol_side.get((symbol, side)) or (None, None)
         with _tpsl_store_lock:
             memory_tp, memory_sl = _tpsl_store.get(pos_id, (None, None))
-        if memory_tp is not None:
-            tp = memory_tp
-        if memory_sl is not None:
-            sl = memory_sl
+
+        has_persisted_tpsl = tp is not None or sl is not None
+        if has_persisted_tpsl:
+            if memory_tp is not None:
+                tp = memory_tp
+            if memory_sl is not None:
+                sl = memory_sl
+        elif memory_tp is not None or memory_sl is not None:
+            with _tpsl_store_lock:
+                _tpsl_store.pop(pos_id, None)
+
         positions.append(
             PositionOut(
                 id=pos_id,
