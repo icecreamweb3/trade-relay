@@ -132,6 +132,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.triggerConditions': '触发条件',
     'pos.amount': '数量',
     'pos.closePosition': '平仓',
+    'pos.lastPrice': '最新价',
     'pos.triggerConditionWithPrice': '最新价 {operator} {price}',
     'pos.tpSlEntirePosition': '整仓止盈/止损',
     'pos.tpSlWarning': '在剧烈波动行情中，如果止损触发价过于接近强平价，订单可能无法成功执行。',
@@ -258,6 +259,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'common.confirm': '确认',
     'common.yes': '是',
     'common.no': '否',
+    'common.copied': '已复制',
+    'common.copyFailed': '复制失败',
+    'common.clickToCopy': '点击复制',
     'common.closeNotification': '关闭通知',
 
     // Config
@@ -455,6 +459,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.triggerConditions': 'Trigger Conditions',
     'pos.amount': 'Amount',
     'pos.closePosition': 'Close Position',
+    'pos.lastPrice': 'Last Price',
     'pos.triggerConditionWithPrice': 'Last Price {operator} {price}',
     'pos.tpSlEntirePosition': 'TP/SL for entire position',
     'pos.tpSlWarning': 'In a rapidly changing market, setting a stop-loss trigger price close to the liquidation price may result in the order failing to execute.',
@@ -577,6 +582,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'common.confirm': 'Confirm',
     'common.yes': 'Yes',
     'common.no': 'No',
+    'common.copied': 'copied',
+    'common.copyFailed': 'Copy failed',
+    'common.clickToCopy': 'Click to copy',
     'common.closeNotification': 'Close notification',
 
     'config.title': 'Settings',

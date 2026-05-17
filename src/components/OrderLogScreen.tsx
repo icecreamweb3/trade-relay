@@ -1,19 +1,22 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { Calendar } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
+import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
+  order_category?: string | null
   trade_direction?: string | null
   quantity: number; price: number; status: string; username?: string
   avg_price?: number | null
   realized_pnl?: number | null
   commission?: number | null
   commission_asset?: string | null
+  stop_price?: number | null
   algo_id?: string | null
   exchange_order_id?: string; created_at?: string; error_message?: string
 }
@@ -31,6 +34,8 @@ interface OrderFilters {
   status: string
 }
 
+type Translate = (key: string, vars?: Record<string, string | number>) => string
+
 const INITIAL_FILTERS: OrderFilters = {
   username: '',
   orderId: '',
@@ -44,6 +49,7 @@ const STATUS_OPTIONS = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECT
 export function OrderLogScreen() {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
+  const showToast = useToastStore((state) => state.showToast)
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
@@ -107,6 +113,18 @@ export function OrderLogScreen() {
     const refPrice = order.avg_price ?? (order.price && order.price > 0 ? order.price : null)
     if (refPrice == null) return '—'
     return (order.quantity * refPrice).toFixed(2)
+  }
+
+  const handleCopy = async (value: string | null | undefined, label: string) => {
+    const text = value?.trim()
+    if (!text) return
+
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast('success', `${label} ${t('common.copied')}`)
+    } catch {
+      showToast('error', t('common.copyFailed'))
+    }
   }
 
   return (
@@ -175,11 +193,11 @@ export function OrderLogScreen() {
         <table className="trade-table w-full">
           <thead><tr>
             <th>{t('log.index')}</th><th>{t('log.time')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
-            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
+            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th className="min-w-[180px]">{t('pos.triggerConditions')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
-              <tr><td colSpan={18} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
+              <tr><td colSpan={19} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
@@ -193,6 +211,9 @@ export function OrderLogScreen() {
                   {o.trade_direction === 'CLOSE' ? t('order.close') : o.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </td>
                 <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
+                <td className="font-mono text-[11px] whitespace-nowrap">
+                  {renderTriggerCondition(o, t)}
+                </td>
                 <td className="font-mono">{o.avg_price != null ? o.avg_price.toFixed(2) : '—'}</td>
                 <td className="font-mono">{formatNotional(o)}</td>
                 <td className={`font-mono ${Number(o.realized_pnl ?? 0) > 0 ? 'text-buy' : Number(o.realized_pnl ?? 0) < 0 ? 'text-sell' : 'text-[#858585]'}`}>
@@ -201,11 +222,23 @@ export function OrderLogScreen() {
                 <td className="font-mono text-[#858585]">{formatNumber(o.commission, 4)}</td>
                 <td className="font-mono text-[#858585]">{o.commission_asset ?? '—'}</td>
                 <td><StatusBadge status={o.status} t={t} /></td>
-                <td className="min-w-[160px] text-[#858585] font-mono whitespace-nowrap" title={o.algo_id ?? '--'}>
-                  {o.algo_id ?? '--'}
+                <td className="min-w-[160px] font-mono whitespace-nowrap">
+                  <CopyValueButton
+                    value={o.algo_id}
+                    title={t('log.algoId')}
+                    emptyPlaceholder="--"
+                    onCopy={handleCopy}
+                    hint={t('common.clickToCopy')}
+                  />
                 </td>
-                <td className="min-w-[160px] text-[#858585] font-mono whitespace-nowrap" title={o.exchange_order_id ?? '--'}>
-                  {o.exchange_order_id ?? '--'}
+                <td className="min-w-[160px] font-mono whitespace-nowrap">
+                  <CopyValueButton
+                    value={o.exchange_order_id}
+                    title={t('log.id')}
+                    emptyPlaceholder="--"
+                    onCopy={handleCopy}
+                    hint={t('common.clickToCopy')}
+                  />
                 </td>
                 <td className="min-w-[320px] text-[#858585]">
                   <div className="max-w-[420px] truncate" title={o.error_message ?? '--'}>
@@ -262,7 +295,38 @@ function DateTimeFilterInput({ value, onChange }: { value: string; onChange: (va
   )
 }
 
-function StatusBadge({ status, t }: { status: string; t: (key: string) => string }) {
+function CopyValueButton({
+  value,
+  title,
+  emptyPlaceholder,
+  onCopy,
+  hint,
+}: {
+  value?: string | null
+  title: string
+  emptyPlaceholder: string
+  onCopy: (value: string | null | undefined, title: string) => void
+  hint: string
+}) {
+  const text = value?.trim()
+
+  if (!text) {
+    return <span className="text-[#858585]">{emptyPlaceholder}</span>
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onCopy(text, title)}
+      title={`${hint}: ${text}`}
+      className="text-[#7fb2ff] hover:text-[#a9cbff] transition-colors underline-offset-2 hover:underline"
+    >
+      {text}
+    </button>
+  )
+}
+
+function StatusBadge({ status, t }: { status: string; t: Translate }) {
   const cls = status === 'FILLED' ? 'badge-filled'
     : status === 'MOCK' ? 'badge-mock'
     : status === 'FAILED' ? 'badge-failed'
@@ -270,13 +334,13 @@ function StatusBadge({ status, t }: { status: string; t: (key: string) => string
   return <span className={`badge ${cls}`}>{formatOrderStatus(status, t)}</span>
 }
 
-function formatOrderSide(side: string, t: (key: string) => string) {
+function formatOrderSide(side: string, t: Translate) {
   if (side === 'BUY') return t('side.buy')
   if (side === 'SELL') return t('side.sell')
   return side
 }
 
-function formatOrderType(orderType: string, t: (key: string) => string) {
+function formatOrderType(orderType: string, t: Translate) {
   switch (orderType) {
     case 'LIMIT': return t('type.limit')
     case 'MARKET': return t('type.market')
@@ -288,7 +352,42 @@ function formatOrderType(orderType: string, t: (key: string) => string) {
   }
 }
 
-function formatOrderStatus(status: string, t: (key: string) => string) {
+function renderTriggerCondition(order: Order, t: Translate): ReactNode {
+  if (order.stop_price == null || order.stop_price <= 0) return '—'
+
+  const upperCategory = String(order.order_category || '').toUpperCase()
+  const upperType = String(order.order_type || '').toUpperCase()
+  const isConditional = upperCategory === 'CONDITIONAL'
+    || upperType.includes('STOP')
+    || upperType.includes('TAKE_PROFIT')
+
+  if (!isConditional) return '—'
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-[#9aa3b2]">{t('pos.lastPrice')}</span>
+      <span className="font-semibold text-[#d8dee9]">{getTriggerOperator(order)}</span>
+      <span className="font-semibold text-[#f0b90b]">
+        {order.stop_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}
+      </span>
+    </span>
+  )
+}
+
+function getTriggerOperator(order: Order) {
+  const side = String(order.side || '').toUpperCase()
+  const orderType = String(order.order_type || '').toUpperCase()
+
+  if (orderType === 'TAKE_PROFIT' || orderType === 'TAKE_PROFIT_MARKET') {
+    return side === 'BUY' ? '<=' : '>='
+  }
+  if (orderType === 'STOP' || orderType === 'STOP_MARKET') {
+    return side === 'BUY' ? '>=' : '<='
+  }
+  return '—'
+}
+
+function formatOrderStatus(status: string, t: Translate) {
   switch (status) {
     case 'FILLED': return t('status.filled')
     case 'MOCK': return t('status.mock')
