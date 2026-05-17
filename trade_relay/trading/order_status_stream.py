@@ -16,7 +16,7 @@ from trade_relay import config as cfg
 from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
 from trade_relay.trading.close_trade_sync import sync_close_order_trade_details, sync_filled_order_trade_details
-from trade_relay.trading.tpsl_service import place_tp_sl_orders
+from trade_relay.trading.tpsl_service import cancel_close_tp_sl_orders, place_tp_sl_orders
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,94 @@ class UserOrderStatusStream:
         self._handled_open_tpsl_lock = threading.Lock()
         self._close_fill_metrics: dict[str, dict[str, object]] = {}
         self._close_fill_metrics_lock = threading.Lock()
+
+    def _sync_close_tpsl_quantity(
+        self,
+        *,
+        user_id: int,
+        symbol: str,
+        position_side: str,
+        quantity: float,
+        entry_price: Optional[float],
+    ) -> None:
+        if quantity <= 0 or position_side not in ("LONG", "SHORT"):
+            return
+
+        close_side = "SELL" if position_side == "LONG" else "BUY"
+        position = db.get_position(user_id, symbol, position_side)
+        position_id = int(position["id"]) if position and position.get("id") else None
+        active_rows = db.query_orders(user_id=user_id, status="NEW", limit=500)
+
+        tp_price: Optional[float] = None
+        sl_price: Optional[float] = None
+        needs_refresh = False
+
+        for row in active_rows:
+            if str(row.get("trade_direction") or "").upper() != "CLOSE":
+                continue
+            if str(row.get("symbol") or "").upper() != symbol.upper():
+                continue
+            if str(row.get("side") or "").upper() != close_side:
+                continue
+
+            order_type = str(row.get("order_type") or "").upper()
+            if order_type not in {"TAKE_PROFIT_MARKET", "STOP_MARKET"}:
+                continue
+
+            row_quantity = _safe_float(row.get("quantity") or 0) or 0.0
+            row_position_id = row.get("position_id")
+            position_id_mismatch = (
+                position_id is not None
+                and row_position_id is not None
+                and int(row_position_id) != position_id
+            )
+
+            if abs(row_quantity - quantity) > 0.0005 or position_id_mismatch:
+                needs_refresh = True
+
+            if order_type == "TAKE_PROFIT_MARKET":
+                price = _safe_float(row.get("price") or 0)
+                if price and price > 0:
+                    tp_price = price
+            elif order_type == "STOP_MARKET":
+                stop_price = _safe_float(row.get("stop_price") or 0)
+                if stop_price and stop_price > 0:
+                    sl_price = stop_price
+
+        if not needs_refresh or (tp_price is None and sl_price is None):
+            return
+
+        errors = place_tp_sl_orders(
+            username=self.username,
+            user_id=user_id,
+            symbol=symbol,
+            position_side=position_side,
+            quantity=quantity,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            position_id=position_id,
+        )
+        if errors:
+            logger.warning(
+                "Auto-refresh CLOSE TP/SL quantity failed: user=%s symbol=%s side=%s qty=%s errors=%s",
+                self.username,
+                symbol,
+                position_side,
+                quantity,
+                "; ".join(errors),
+            )
+            return
+
+        logger.info(
+            "Auto-refreshed CLOSE TP/SL quantity: user=%s symbol=%s side=%s qty=%s tp=%s sl=%s",
+            self.username,
+            symbol,
+            position_side,
+            quantity,
+            tp_price,
+            sl_price,
+        )
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -903,6 +991,26 @@ class UserOrderStatusStream:
                 if raw_side == "BOTH":
                     delete_sides.update({"LONG", "SHORT"})
                 for side in delete_sides:
+                    if side in ("LONG", "SHORT"):
+                        existing = existing_by_key.get((symbol, side)) or {}
+                        position_id = int(existing["id"]) if existing.get("id") else None
+                        errors = cancel_close_tp_sl_orders(
+                            client=self.client,
+                            user_id=user_id,
+                            symbol=symbol,
+                            position_side=side,
+                            position_id=position_id,
+                        )
+                        if errors:
+                            logger.warning(
+                                "Auto-cancel CLOSE TP/SL on flat position failed: user=%s symbol=%s side=%s errors=%s",
+                                self.username,
+                                symbol,
+                                side,
+                                "; ".join(errors),
+                            )
+                        with self._entry_price_cache_lock:
+                            self._entry_price_cache.pop((symbol, side), None)
                     if side in ("LONG", "SHORT", "BOTH"):
                         db.delete_position(user_id, symbol, side)
                 continue
@@ -926,6 +1034,13 @@ class UserOrderStatusStream:
                 leverage=leverage,
                 margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
                 position_side=normalized_side,
+            )
+            self._sync_close_tpsl_quantity(
+                user_id=user_id,
+                symbol=symbol,
+                position_side=normalized_side,
+                quantity=abs(amount),
+                entry_price=entry_price,
             )
             # Update entry_price cache so close-fill handlers can find it even after
             # the position row is deleted (e.g. when second of two partial closes arrives).

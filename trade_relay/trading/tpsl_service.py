@@ -49,6 +49,35 @@ def _replace_existing_conditional_orders(
     return errors
 
 
+def cancel_close_tp_sl_orders(
+    *,
+    client: BinanceClient,
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    position_id: Optional[int] = None,
+) -> list[str]:
+    close_side = "SELL" if str(position_side).upper() == "LONG" else "BUY"
+    errors: list[str] = []
+    errors.extend(_replace_existing_conditional_orders(
+        client=client,
+        user_id=user_id,
+        symbol=symbol,
+        close_side=close_side,
+        position_id=position_id,
+        order_type="TAKE_PROFIT_MARKET",
+    ))
+    errors.extend(_replace_existing_conditional_orders(
+        client=client,
+        user_id=user_id,
+        symbol=symbol,
+        close_side=close_side,
+        position_id=position_id,
+        order_type="STOP_MARKET",
+    ))
+    return errors
+
+
 def validate_tpsl_prices(
     *,
     position_side: str,
