@@ -1235,7 +1235,7 @@ def test_create_order_stores_conditional_algo_id_separately(monkeypatch):
     assert insert_params[14] is None
 
 
-def test_get_position_history_orders_by_latest_update_at(monkeypatch):
+def test_get_position_history_orders_by_latest_updated_at(monkeypatch):
     from trade_relay import database as db_module
 
     queries = []
@@ -1266,7 +1266,7 @@ def test_get_position_history_orders_by_latest_update_at(monkeypatch):
 
     assert rows == []
     sql, params = queries[-1]
-    assert "ORDER BY COALESCE(update_at, created_at) DESC, id DESC LIMIT %s" in sql
+    assert "ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT %s" in sql
     assert params == [5, 20]
 
 

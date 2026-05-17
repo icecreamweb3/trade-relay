@@ -39,7 +39,7 @@ class PositionHistoryOut(BaseModel):
     commission: float
     commission_asset: Optional[str] = None
     created_at: str
-    update_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 # Per-user TTL cache: user_id (None = admin) → (timestamp, result)
 _positions_cache: dict[int | None, tuple[float, list]] = {}
@@ -358,7 +358,7 @@ def get_position_history(user: dict = Depends(get_current_user)):
             commission=float(r["commission"]),
             commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
             created_at=serialize_utc_timestamp_required(r.get("created_at")),
-            update_at=serialize_utc_timestamp(r.get("update_at")),
+            updated_at=serialize_utc_timestamp(r.get("updated_at")),
         )
         for r in rows
     ]
@@ -395,5 +395,5 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         commission=float(r["commission"]),
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
-        update_at=serialize_utc_timestamp(r.get("update_at")),
+        updated_at=serialize_utc_timestamp(r.get("updated_at")),
     )

@@ -131,7 +131,7 @@ interface ApiPositionHistory {
   commission: number
   commission_asset?: string | null
   created_at: string
-  update_at?: string | null
+  updated_at?: string | null
 }
 
 interface ApiAccountSummary {

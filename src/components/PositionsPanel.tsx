@@ -38,7 +38,7 @@ interface Trade {
 interface PositionHistory {
   id: number; username: string; symbol: string; side: string
   entry_price: number; close_price: number; quantity: number
-  realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; update_at?: string | null
+  realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; updated_at?: string | null
 }
 
 interface MarketCloseConfirm {
@@ -629,7 +629,7 @@ export function PositionsPanel({
                 ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positionHistory.map(ph => (
                   <tr key={ph.id}>
-                    <td className="text-[#858585]">{formatTimestamp(ph.update_at || ph.created_at)}</td>
+                    <td className="text-[#858585]">{formatTimestamp(ph.updated_at || ph.created_at)}</td>
                     <td className="font-semibold">{ph.symbol}</td>
                     <td className={ph.side === 'LONG' ? 'text-buy' : 'text-sell'}>{ph.side}</td>
                     <td className="font-mono">{ph.quantity}</td>

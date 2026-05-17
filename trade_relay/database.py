@@ -927,7 +927,7 @@ def init_db() -> None:
                     commission_asset VARCHAR(16)  DEFAULT NULL COMMENT '手续费币种',
                     position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
                     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-                    update_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                     PRIMARY KEY (id),
                     KEY idx_user_id (user_id),
                     KEY idx_username (username),
@@ -935,6 +935,19 @@ def init_db() -> None:
                     KEY idx_created_at (created_at DESC)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史'
             """)
+            try:
+                cur.execute("SHOW COLUMNS FROM position_history LIKE 'update_at'")
+                has_legacy_update_at = cur.fetchone() is not None
+                cur.execute("SHOW COLUMNS FROM position_history LIKE 'updated_at'")
+                has_updated_at = cur.fetchone() is not None
+                if has_legacy_update_at and not has_updated_at:
+                    cur.execute(
+                        "ALTER TABLE position_history "
+                        "CHANGE COLUMN update_at updated_at DATETIME NOT NULL "
+                        "DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'"
+                    )
+            except Exception:
+                pass
             # Add columns that may be missing if table was created before this schema version
             for _col, _ddl in [
                 ("user_id",     "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
@@ -942,7 +955,7 @@ def init_db() -> None:
                 ("side",        "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
                 ("commission_asset", "ALTER TABLE position_history ADD COLUMN commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission"),
                 ("position_id", "ALTER TABLE position_history ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission"),
-                ("update_at",   "ALTER TABLE position_history ADD COLUMN update_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at"),
+                ("updated_at",  "ALTER TABLE position_history ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -2405,7 +2418,7 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                   (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, update_at)
+                         (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id,
@@ -2532,12 +2545,12 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
     """返回持仓历史记录。user_id=None 时返回所有用户。"""
     params: list = []
     sql = """SELECT id, user_id, username, symbol, side, entry_price, close_price,
-                    quantity, realized_pnl, commission, commission_asset, position_id, created_at, update_at
+                    quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at
              FROM position_history"""
     if user_id is not None:
         sql += " WHERE user_id = %s"
         params.append(user_id)
-    sql += " ORDER BY COALESCE(update_at, created_at) DESC, id DESC LIMIT %s"
+    sql += " ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT %s"
     params.append(limit)
     conn = get_connection()
     try:
