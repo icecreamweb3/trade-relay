@@ -11,6 +11,7 @@ const locale: Locale = (UI_LANG === 'en' ? 'en' : 'zh-CN')
 
 type Side = 'BUY' | 'SELL'
 type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'POST_ONLY'
+type AdvancedOrderType = 'CONDITIONAL' | 'POST_ONLY'
 type CondSubType = 'LIMIT' | 'MARKET'
 type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
@@ -119,6 +120,10 @@ function getConditionalSubTypeStorageKey(username: string, symbol: string) {
   return `trade-relay:conditional-sub-type:${username}:${symbol.toUpperCase()}`
 }
 
+function getAdvancedOrderTypeStorageKey(username: string, symbol: string) {
+  return `trade-relay:advanced-order-type:${username}:${symbol.toUpperCase()}`
+}
+
 function readStoredLeverage(username: string, symbol: string): number | null {
   try {
     const raw = window.localStorage.getItem(getLeverageStorageKey(username, symbol))
@@ -150,6 +155,23 @@ function readStoredConditionalSubType(username: string, symbol: string): CondSub
 function writeStoredConditionalSubType(username: string, symbol: string, subType: CondSubType) {
   try {
     window.localStorage.setItem(getConditionalSubTypeStorageKey(username, symbol), subType)
+  } catch {
+    // Ignore storage errors so order-type changes still work without persistence.
+  }
+}
+
+function readStoredAdvancedOrderType(username: string, symbol: string): AdvancedOrderType | null {
+  try {
+    const raw = window.localStorage.getItem(getAdvancedOrderTypeStorageKey(username, symbol))
+    return raw === 'CONDITIONAL' || raw === 'POST_ONLY' ? raw : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredAdvancedOrderType(username: string, symbol: string, type: AdvancedOrderType) {
+  try {
+    window.localStorage.setItem(getAdvancedOrderTypeStorageKey(username, symbol), type)
   } catch {
     // Ignore storage errors so order-type changes still work without persistence.
   }
@@ -227,6 +249,7 @@ export function OrderFormWidget({
   const [marginType, setMarginType] = useState<MarginType>('CROSS')
   const [posDir, setPosDir] = useState<PositionDir>('OPEN')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
+  const [lastAdvancedOrderType, setLastAdvancedOrderType] = useState<AdvancedOrderType>('CONDITIONAL')
   const [condSubType, setCondSubType] = useState<CondSubType>('MARKET')
   const [advancedOrderTypeOpen, setAdvancedOrderTypeOpen] = useState(false)
   const [qty, setQty] = useState('')
@@ -446,8 +469,16 @@ export function OrderFormWidget({
     return t('type.conditional')
   }
 
+  const selectedAdvancedOrderType: AdvancedOrderType =
+    orderType === 'CONDITIONAL' || orderType === 'POST_ONLY'
+      ? orderType
+      : lastAdvancedOrderType
+
   const selectOrderType = (type: OrderType) => {
     setOrderType(type)
+    if (type === 'CONDITIONAL' || type === 'POST_ONLY') {
+      setLastAdvancedOrderType(type)
+    }
     setAdvancedOrderTypeOpen(false)
   }
 
@@ -468,9 +499,13 @@ export function OrderFormWidget({
 
   useEffect(() => {
     if (!user?.username) {
+      setLastAdvancedOrderType('CONDITIONAL')
       setCondSubType('MARKET')
       return
     }
+
+    const storedAdvancedOrderType = readStoredAdvancedOrderType(user.username, symbol)
+    setLastAdvancedOrderType(storedAdvancedOrderType ?? 'CONDITIONAL')
 
     const storedCondSubType = readStoredConditionalSubType(user.username, symbol)
     setCondSubType(storedCondSubType ?? 'MARKET')
@@ -494,6 +529,11 @@ export function OrderFormWidget({
     if (!user?.username) return
     writeStoredConditionalSubType(user.username, symbol, condSubType)
   }, [condSubType, symbol, user?.username])
+
+  useEffect(() => {
+    if (!user?.username) return
+    writeStoredAdvancedOrderType(user.username, symbol, lastAdvancedOrderType)
+  }, [lastAdvancedOrderType, symbol, user?.username])
 
   useEffect(() => {
     const message = accountSummary?.message ?? null
@@ -925,14 +965,14 @@ export function OrderFormWidget({
           <div className="flex items-center">
             <button
               type="button"
-              onClick={() => selectOrderType('CONDITIONAL')}
+              onClick={() => selectOrderType(lastAdvancedOrderType)}
               className={`py-1 pl-2.5 pr-1.5 text-[11px] rounded-l transition-colors ${
                 orderType === 'CONDITIONAL' || orderType === 'POST_ONLY'
                   ? 'text-[#EAECEF] border-b border-[#F0B90B]'
                   : 'text-[#848E9C] hover:text-[#EAECEF] border border-transparent'
               }`}
             >
-              {t('type.conditional')}
+              {orderTypeLabel(lastAdvancedOrderType)}
             </button>
             <button
               type="button"
@@ -953,14 +993,14 @@ export function OrderFormWidget({
                   key={tp}
                   type="button"
                   onClick={() => selectOrderType(tp)}
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[11px] transition-colors ${
-                    orderType === tp
+                  className={`flex w-full items-center px-3 py-2 text-left text-[11px] transition-colors ${
+                    selectedAdvancedOrderType === tp
                       ? 'bg-[#2B3139] text-[#EAECEF]'
                       : 'text-[#C7CCD3] hover:bg-[#2B3139] hover:text-[#EAECEF]'
                   }`}
                 >
                   <span>{orderTypeLabel(tp)}</span>
-                  <span className={`ml-3 w-3 text-right ${orderType === tp ? 'text-[#EAECEF]' : 'text-transparent'}`}>✓</span>
+                  <span className={`ml-auto w-4 flex-none text-right ${selectedAdvancedOrderType === tp ? 'text-[#EAECEF]' : 'text-transparent'}`}>✓</span>
                 </button>
               ))}
             </div>
