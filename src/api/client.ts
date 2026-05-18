@@ -70,6 +70,7 @@ interface ApiOrder {
   order_type: string
   trade_direction?: string | null
   quantity: number
+  filled_qty?: number
   price: number
   avg_price?: number | null
   realized_pnl?: number | null
@@ -348,6 +349,12 @@ export const api = {
   async cancelOrder(orderId: number, symbol: string, exchangeOrderId: string): Promise<ApiResult> {
     return request<ApiResult>('POST', `/api/orders/${orderId}/cancel`, {
       body: { symbol, exchange_order_id: exchangeOrderId },
+    })
+  },
+
+  async amendOrder(orderId: number, quantity: number, price: number): Promise<ApiResult> {
+    return request<ApiResult>('POST', `/api/orders/${orderId}/amend`, {
+      body: { quantity, price },
     })
   },
 

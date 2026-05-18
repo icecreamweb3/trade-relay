@@ -21,7 +21,7 @@ interface Position {
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
-  quantity: number; price: number; stop_price?: number | null
+  quantity: number; filled_qty?: number; price: number; stop_price?: number | null
   reduce_only?: boolean; post_only?: boolean
   commission?: number | null; commission_asset?: string | null
   status: string; username?: string; created_at?: string; exchange_order_id?: string
@@ -43,6 +43,10 @@ interface MarketCloseConfirm {
   position: Position
   quantity: number
   side: 'BUY' | 'SELL'
+}
+
+interface AmendOrderDraft {
+  order: Order
 }
 
 export function PositionsPanel({
@@ -69,6 +73,7 @@ export function PositionsPanel({
   const [loading, setLoading] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<number | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
+  const [amendingId, setAmendingId] = useState<number | null>(null)
   const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
   const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
   const [bulkCancelling, setBulkCancelling] = useState<'basic' | 'conditional' | null>(null)
@@ -76,6 +81,7 @@ export function PositionsPanel({
   const [openOrdersSubTab, setOpenOrdersSubTab] = useState<'basic' | 'conditional'>('basic')
   const [tpslPosition, setTpslPosition] = useState<Position | null>(null)
   const [marketCloseConfirm, setMarketCloseConfirm] = useState<MarketCloseConfirm | null>(null)
+  const [amendDraft, setAmendDraft] = useState<AmendOrderDraft | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
   const _positionsFirstLoadDone = useRef(false)
 
@@ -262,6 +268,22 @@ export function PositionsPanel({
       setCancellingAlgoId(null)
     }
   }
+
+  const handleAmendOrder = useCallback(async (order: Order, quantity: number, price: number) => {
+    setAmendingId(order.id)
+    try {
+      await api.amendOrder(order.id, quantity, price)
+      showToast('success', t('pos.amendSuccess'))
+      setAmendDraft(null)
+      await loadRef.current()
+    } catch (err: unknown) {
+      showToast('error', t('pos.amendFailed', {
+        reason: getRequestErrorMessage(err, t('order.error.failed')),
+      }))
+    } finally {
+      setAmendingId(null)
+    }
+  }, [showToast, t])
 
   const handleCancelAllOpenOrders = useCallback(async () => {
     if (tab !== 'openOrders') return
@@ -542,13 +564,24 @@ export function PositionsPanel({
                       {tab === 'openOrders' && (
                         <td>
                           {o.status === 'NEW' || o.status === 'PARTIALLY_FILLED' ? (
-                            <button
-                              disabled={cancellingId === o.id}
-                              onClick={() => void handleCancelOrder(o)}
-                              className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              {cancellingId === o.id ? '…' : t('common.cancel')}
-                            </button>
+                            <div className="flex items-center justify-end gap-1">
+                              {canAmendOrder(o) ? (
+                                <button
+                                  disabled={amendingId === o.id || cancellingId === o.id}
+                                  onClick={() => setAmendDraft({ order: o })}
+                                  className="px-2 py-0.5 text-[10px] rounded border border-[#F0B90B] text-[#F0B90B] hover:bg-[#F0B90B] hover:text-black transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {amendingId === o.id ? '…' : t('common.modify')}
+                                </button>
+                              ) : null}
+                              <button
+                                disabled={cancellingId === o.id || amendingId === o.id}
+                                onClick={() => void handleCancelOrder(o)}
+                                className="px-2 py-0.5 text-[10px] rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {cancellingId === o.id ? '…' : t('common.cancel')}
+                              </button>
+                            </div>
                           ) : null}
                         </td>
                       )}
@@ -681,8 +714,24 @@ export function PositionsPanel({
         t={t}
       />
     )}
+
+    {amendDraft && (
+      <AmendOrderModal
+        order={amendDraft.order}
+        submitting={amendingId === amendDraft.order.id}
+        onCancel={() => setAmendDraft(null)}
+        onConfirm={(quantity, price) => void handleAmendOrder(amendDraft.order, quantity, price)}
+        t={t}
+      />
+    )}
     </>
   )
+}
+
+function canAmendOrder(order: Order): boolean {
+  const status = String(order.status || '').toUpperCase()
+  const orderType = String(order.order_type || '').toUpperCase()
+  return (status === 'NEW' || status === 'PARTIALLY_FILLED') && orderType === 'LIMIT' && Boolean(order.exchange_order_id)
 }
 
 function getRequestErrorMessage(error: unknown, fallback: string): string {
@@ -845,6 +894,106 @@ function BulkCancelConfirmModal({
             className="py-2 text-[12px] font-medium rounded border border-[#f44] text-[#f44] hover:bg-[#f44] hover:text-white transition-colors disabled:opacity-40"
           >
             {submitting ? t('pos.cancelAllLoading') : t('pos.cancelAllConfirmAction')}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function AmendOrderModal({
+  order,
+  submitting,
+  onCancel,
+  onConfirm,
+  t,
+}: {
+  order: Order
+  submitting: boolean
+  onCancel: () => void
+  onConfirm: (quantity: number, price: number) => void
+  t: (key: string, vars?: Record<string, string | number>) => string
+}) {
+  const [quantityInput, setQuantityInput] = useState(String(order.quantity))
+  const [priceInput, setPriceInput] = useState(order.price ? String(order.price) : '')
+  const filledQuantity = order.filled_qty ?? 0
+
+  useEffect(() => {
+    const api = (window as unknown as { electronAPI?: { setBinanceViewVisible?: (v: boolean) => void } }).electronAPI
+    api?.setBinanceViewVisible?.(false)
+    return () => { api?.setBinanceViewVisible?.(true) }
+  }, [])
+
+  const quantity = Number.parseFloat(quantityInput)
+  const price = Number.parseFloat(priceInput)
+  const remainingQuantity = Number.isFinite(quantity) ? quantity - filledQuantity : Number.NaN
+  const isValid = Number.isFinite(quantity) && quantity > filledQuantity && Number.isFinite(price) && price > 0
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className="bg-[#1E2026] border border-[#474D57] rounded-lg shadow-xl w-[360px] p-5 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[13px] font-bold text-[#EAECEF]">{t('pos.amendTitle')}</div>
+            <div className="mt-1 text-[11px] text-[#848E9C]">{order.symbol} · {order.side === 'BUY' ? t('side.buy') : t('side.sell')} · {t('type.limit')}</div>
+          </div>
+          <span className="rounded bg-[#2B3139] px-2 py-0.5 text-[10px] font-mono text-[#B7BDC6]">#{order.exchange_order_id ?? '—'}</span>
+        </div>
+
+        <div className="grid gap-3">
+          <label className="grid gap-1.5 text-[11px] text-[#B7BDC6]">
+            <span>{t('pos.amendTargetQuantity')}</span>
+            <input
+              value={quantityInput}
+              onChange={(event) => setQuantityInput(event.target.value)}
+              inputMode="decimal"
+              className="rounded border border-[#3C4149] bg-[#181A20] px-3 py-2 text-[12px] text-[#EAECEF] outline-none transition-colors focus:border-[#F0B90B]"
+            />
+          </label>
+          <label className="grid gap-1.5 text-[11px] text-[#B7BDC6]">
+            <span>{t('log.price')}</span>
+            <input
+              value={priceInput}
+              onChange={(event) => setPriceInput(event.target.value)}
+              inputMode="decimal"
+              className="rounded border border-[#3C4149] bg-[#181A20] px-3 py-2 text-[12px] text-[#EAECEF] outline-none transition-colors focus:border-[#F0B90B]"
+            />
+          </label>
+        </div>
+
+        <div className="grid gap-1 rounded border border-[#2B3139] bg-[#181A20] px-3 py-2 text-[11px] text-[#B7BDC6]">
+          <div className="flex items-center justify-between gap-3">
+            <span>{t('pos.amendFilled')}</span>
+            <span className="font-mono text-[#EAECEF]">{filledQuantity}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>{t('pos.amendRemaining')}</span>
+            <span className={`font-mono ${Number.isFinite(remainingQuantity) && remainingQuantity > 0 ? 'text-[#F0B90B]' : 'text-[#f6465d]'}`}>
+              {Number.isFinite(remainingQuantity) ? remainingQuantity : '—'}
+            </span>
+          </div>
+        </div>
+
+        <p className="text-[11px] leading-relaxed text-[#848E9C]">{t('pos.amendHint')}</p>
+        {!isValid && Number.isFinite(quantity) ? (
+          <p className="text-[11px] leading-relaxed text-[#f6465d]">{t('pos.amendTargetQuantityError')}</p>
+        ) : null}
+
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="py-2 text-[12px] font-medium rounded border border-[#474D57] text-[#848E9C] hover:text-[#EAECEF] hover:border-[#848E9C] transition-colors disabled:opacity-40"
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            onClick={() => onConfirm(quantity, price)}
+            disabled={submitting || !isValid}
+            className="py-2 text-[12px] font-bold rounded bg-[#F0B90B] hover:bg-[#d4a30a] text-black transition-colors disabled:opacity-40"
+          >
+            {submitting ? t('order.submitting') : t('common.confirm')}
           </button>
         </div>
       </div>

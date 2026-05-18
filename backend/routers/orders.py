@@ -236,6 +236,30 @@ class CancelOrderRequest(BaseModel):
     exchange_order_id: str
 
 
+class AmendOrderRequest(BaseModel):
+    quantity: float
+    price: float
+
+
+def _get_symbol_leverage(client: FuturesBinanceClient, symbol: str) -> int:
+    try:
+        rows = client.get_position_information(symbol=symbol)
+    except Exception:
+        return 10
+
+    for row in rows or []:
+        row_symbol = str(row.get("symbol") or "").upper()
+        if row_symbol and row_symbol != symbol.upper():
+            continue
+        try:
+            leverage = int(float(row.get("leverage") or 0))
+        except (TypeError, ValueError):
+            leverage = 0
+        if leverage > 0:
+            return leverage
+    return 10
+
+
 @router.post("/{order_id:int}/cancel")
 async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Depends(get_current_user)):
     """Cancel an open order on Binance and mark it CANCELED in DB."""
@@ -283,6 +307,139 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
     db_module.update_order_status(order_id, "CANCELED")
     _log.info("[ORDER_FLOW] phase=cancel_db_success order_id=%s username=%s", order_id, username)
     return {"ok": True}
+
+
+@router.post("/{order_id:int}/amend")
+async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depends(get_current_user)):
+    """Amend an open basic LIMIT order by canceling it and placing a replacement order."""
+    username = user["username"]
+    order_row = db_module.get_order_by_id(order_id)
+    if not order_row:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if user["role"] != "admin" and order_row.get("username") != username:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    quantity = float(body.quantity)
+    price = float(body.price)
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be greater than 0")
+    if price <= 0:
+        raise HTTPException(status_code=400, detail="price must be greater than 0")
+
+    order_type = str(order_row.get("order_type") or "").upper()
+    order_category = str(order_row.get("order_category") or "Basic")
+    status = str(order_row.get("status") or "").upper()
+    exchange_order_id = str(order_row.get("exchange_order_id") or "").strip()
+    filled_qty = float(order_row.get("filled_qty") or 0)
+
+    if order_category not in {"Basic", ""}:
+        raise HTTPException(status_code=400, detail="Only basic orders can be amended")
+    if order_type != "LIMIT":
+        raise HTTPException(status_code=400, detail="Only LIMIT orders support amend")
+    if status not in {"NEW", "PARTIALLY_FILLED"}:
+        raise HTTPException(status_code=400, detail="Only open orders can be amended")
+    if not exchange_order_id:
+        raise HTTPException(status_code=400, detail="Order has no exchange_order_id")
+
+    replacement_quantity = quantity - filled_qty
+    if replacement_quantity <= 0:
+        raise HTTPException(status_code=400, detail=f"quantity must be greater than filled quantity {filled_qty}")
+
+    target_username = str(order_row.get("username") or username)
+    target_user_id = int(order_row.get("user_id") or user["sub"])
+    mock = cfg.is_mock_mode(target_username)
+
+    _log.info(
+        "[ORDER_FLOW] phase=amend_request username=%s order_id=%s symbol=%s old_qty=%s filled_qty=%s target_qty=%s replacement_qty=%s old_price=%s new_price=%s",
+        username,
+        order_id,
+        order_row.get("symbol"),
+        order_row.get("quantity"),
+        filled_qty,
+        quantity,
+        replacement_quantity,
+        order_row.get("price"),
+        price,
+    )
+
+    if mock:
+        db_module.update_order_status(order_id, "CANCELED")
+        session = Session(target_user_id, target_username, user["role"])
+        result = await submit_order(
+            session,
+            str(order_row.get("symbol") or ""),
+            str(order_row.get("side") or ""),
+            order_type,
+            replacement_quantity,
+            price,
+            float(order_row["stop_price"]) if order_row.get("stop_price") is not None else None,
+            None,
+            None,
+            bool(order_row.get("post_only") or False),
+            10,
+            str(order_row.get("trade_direction") or "OPEN"),
+        )
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.message)
+        return {"ok": True, "order_id": result.order_id, "message": result.message}
+
+    api_key = cfg.get_api_key(target_username)
+    api_secret = cfg.get_api_secret(target_username)
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="No API credentials configured")
+
+    testnet = cfg.is_testnet(target_username)
+    symbol = str(order_row.get("symbol") or "").upper()
+    try:
+        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        cancel_result = await asyncio.to_thread(client.cancel_order, symbol, exchange_order_id)
+        if isinstance(cancel_result, dict) and cancel_result.get("error"):
+            raise RuntimeError(str(cancel_result.get("error_message") or cancel_result))
+    except Exception as exc:
+        _log.warning(
+            "[ORDER_FLOW] phase=amend_cancel_error username=%s order_id=%s error=%s",
+            username,
+            order_id,
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
+
+    db_module.update_order_status(order_id, "CANCELED")
+
+    leverage = await asyncio.to_thread(_get_symbol_leverage, client, symbol)
+    session = Session(target_user_id, target_username, user["role"])
+    result = await submit_order(
+        session,
+        symbol,
+        str(order_row.get("side") or ""),
+        order_type,
+        replacement_quantity,
+        price,
+        float(order_row["stop_price"]) if order_row.get("stop_price") is not None else None,
+        None,
+        None,
+        bool(order_row.get("post_only") or False),
+        leverage,
+        str(order_row.get("trade_direction") or "OPEN"),
+    )
+    if not result.success:
+        _log.warning(
+            "[ORDER_FLOW] phase=amend_replace_failed username=%s order_id=%s symbol=%s reason=%s",
+            username,
+            order_id,
+            symbol,
+            result.message,
+        )
+        raise HTTPException(status_code=502, detail=f"Order canceled but replacement failed: {result.message}")
+
+    _log.info(
+        "[ORDER_FLOW] phase=amend_success username=%s old_order_id=%s new_order_id=%s symbol=%s",
+        username,
+        order_id,
+        result.order_id,
+        symbol,
+    )
+    return {"ok": True, "order_id": result.order_id, "message": result.message}
 
 
 class ConditionalOrderOut(BaseModel):
