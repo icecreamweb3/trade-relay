@@ -256,6 +256,15 @@ class UserOrderStatusStream:
                             fill_qty=executed_qty,
                             fill_price=avg_price,
                         )
+                # Always backfill commission / realized_pnl via trade fills API,
+                # regardless of whether position_history was just created here or
+                # via the WS path, because the WS path may have missed the event
+                # (race condition: Market orders fill before DB write completes).
+                threading.Thread(
+                    target=sync_filled_order_trade_details,
+                    kwargs={"username": self.username, "client": self.client, "order_row": db_order},
+                    daemon=True,
+                ).start()
             # Always sync position from REST for filled orders (clears closed positions)
             threading.Thread(
                 target=self._sync_position_from_rest,
