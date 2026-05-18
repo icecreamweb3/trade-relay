@@ -583,6 +583,111 @@ function findTvChart() {
   return null
 }
 
+function findTvWidget() {
+  const directNames = [
+    'tvWidget', 'tv_chart_widget', 'TradingViewApi', 'tradingViewApi',
+    'tvChartWidget', 'chartWidget', 'tv', 'TV',
+  ]
+  for (const name of directNames) {
+    try {
+      const obj = window[name]
+      if (obj && typeof obj.chart === 'function' && typeof obj.subscribe === 'function') {
+        const chart = obj.chart()
+        if (chart && typeof chart.createShape === 'function') return obj
+      }
+    } catch { /* try next */ }
+  }
+
+  const containerSelectors = [
+    '#tv-chart-container',
+    '[data-tv-widget]',
+    '#chart-container',
+    '.chart-container',
+    '[id^="tradingview_"]',
+    '[class*="tv-chart"]',
+    '[data-testid="chart-container"]',
+    '[data-chart-source-type]',
+  ]
+  for (const sel of containerSelectors) {
+    try {
+      const el = document.querySelector(sel)
+      if (!el) continue
+      const fiberKey = Object.keys(el).find(
+        k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+      )
+      if (!fiberKey) continue
+      let fiber = el[fiberKey]
+      for (let depth = 0; depth < 50 && fiber; depth++) {
+        const probeTargets = [
+          fiber?.memoizedProps?.widget,
+          fiber?.stateNode?.tvWidget,
+          fiber?.stateNode?.widget,
+          fiber?.memoizedState?.widget,
+        ]
+        for (const widget of probeTargets) {
+          if (
+            widget && typeof widget.chart === 'function' && typeof widget.subscribe === 'function'
+          ) {
+            try {
+              const chart = widget.chart()
+              if (chart && typeof chart.createShape === 'function') return widget
+            } catch { /* stale ref */ }
+          }
+        }
+        fiber = fiber.return
+      }
+    } catch { /* try next */ }
+  }
+
+  for (const key of Object.keys(window)) {
+    if (key.length > 35 || key.startsWith('__')) continue
+    try {
+      const obj = window[key]
+      if (
+        obj && typeof obj === 'object' && !Array.isArray(obj) &&
+        typeof obj.chart === 'function' && typeof obj.subscribe === 'function'
+      ) {
+        const chart = obj.chart()
+        if (chart && typeof chart.createShape === 'function') return obj
+      }
+    } catch { /* try next */ }
+  }
+
+  for (const iframe of document.querySelectorAll('iframe')) {
+    try {
+      const w = iframe.contentWindow
+      if (!w) continue
+      for (const name of directNames) {
+        try {
+          const obj = w[name]
+          if (
+            obj && typeof obj.chart === 'function' && typeof obj.subscribe === 'function'
+          ) {
+            const chart = obj.chart()
+            if (chart && typeof chart.createShape === 'function') return obj
+          }
+        } catch { /* cross-origin or missing */ }
+      }
+    } catch { /* cross-origin iframe */ }
+  }
+
+  try {
+    const el = document.querySelector('.chart-container, .tv-chart')
+    if (el && typeof angular !== 'undefined') {
+      const widget = angular.element(el).scope?.()?.tvWidget
+      const chart = widget?.chart?.()
+      if (
+        widget && typeof widget.subscribe === 'function' &&
+        chart && typeof chart.createShape === 'function'
+      ) {
+        return widget
+      }
+    }
+  } catch { /* angular not present */ }
+
+  return null
+}
+
 /**
  * Retry findTvChart every 800 ms for up to maxMs milliseconds.
  * Resolves with the chart object or null on timeout.
@@ -614,17 +719,21 @@ const PALETTE = {
 
 const TRADE_ACTION_STYLE = {
   OPEN: {
-    arrowColor: null,
-    size: 1,
-    longShift: 0.995,
-    shortShift: 1.005,
+    textColor: null,
+    fontSize: 10,
+    longShift: 0.9975,
+    shortShift: 1.0025,
   },
   CLOSE: {
-    arrowColor: '#f5c542',
-    size: 2,
-    longShift: 0.992,
-    shortShift: 1.008,
+    textColor: '#f5c542',
+    fontSize: 11,
+    longShift: 0.9965,
+    shortShift: 1.0035,
   },
+}
+
+function _markerGlyph(direction) {
+  return direction === 'LONG' ? '▴' : '▾'
 }
 
 function _formatMarkerNumber(value) {
@@ -642,9 +751,17 @@ function _formatMarkerTime(tsStr) {
     : Date.parse(tsStr.replace(' ', 'T') + 'Z')
   if (isNaN(ms)) return '--:--'
   const date = new Date(ms)
-  const hh = String(date.getUTCHours()).padStart(2, '0')
-  const mm = String(date.getUTCMinutes()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
+}
+
+function _getLocalTimeZoneLabel() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local'
+  } catch {
+    return 'Local'
+  }
 }
 
 function _formatMarkerLabel(sig) {
@@ -661,12 +778,434 @@ function _formatMarkerCompactLabel(sig) {
 
 const MARKER_FULL_LABEL_LIMIT = 12
 const OVERLAY_VISIBLE_RANGE_POLL_MS = 1200
+const OVERLAY_MARKER_BASE_OFFSET_RATIO = 0.018
+const OVERLAY_MARKER_CLOSE_EXTRA_RATIO = 0.004
+const OVERLAY_MARKER_STACK_GAP_RATIO = 0.011
 
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
 let _orderLines     = []    // objects from createOrderLine() — need .remove()
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
+let _overlayShapeSignals = new Map()
+let _overlayTooltipEl = null
+let _tvWidget = null
+let _overlayDrawingEventHandler = null
+let _overlayCrosshairSubscription = null
+let _overlayCrosshairHandler = null
+let _lastPointerEvent = null
+let _overlayPinnedSignal = null
+
+function _escapeOverlayHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function _ensureOverlayTooltipEl() {
+  if (_overlayTooltipEl?.isConnected) return _overlayTooltipEl
+  const el = document.createElement('div')
+  el.id = '__trade_relay_marker_tooltip'
+  el.style.cssText = [
+    'position:fixed',
+    'left:0',
+    'top:0',
+    'display:none',
+    'min-width:160px',
+    'max-width:240px',
+    'padding:10px 12px',
+    'border-radius:10px',
+    'border:1px solid rgba(255,255,255,0.12)',
+    'background:rgba(12,18,28,0.96)',
+    'box-shadow:0 10px 30px rgba(0,0,0,0.35)',
+    'color:#f4f7fb',
+    'font:12px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+    'pointer-events:none',
+    'z-index:2147483646',
+    'white-space:normal',
+  ].join(';')
+  ;(document.body || document.documentElement).appendChild(el)
+  _overlayTooltipEl = el
+  return el
+}
+
+function _hideOverlayTooltip() {
+  if (!_overlayTooltipEl) return
+  _overlayTooltipEl.style.display = 'none'
+  _overlayPinnedSignal = null
+}
+
+function _showOverlayTooltip(sig, pointer) {
+  _overlayPinnedSignal = sig
+  const el = _ensureOverlayTooltipEl()
+  const side = sig.direction === 'LONG' ? 'Buy' : 'Sell'
+  const action = sig.trade_action === 'CLOSE' ? 'Close' : 'Open'
+  const color = sig.direction === 'LONG' ? '#26a69a' : '#ef5350'
+  const time = _formatMarkerTime(sig.timestamp)
+  const timeZone = _getLocalTimeZoneLabel()
+  el.innerHTML = [
+    `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">`,
+    `<strong style="font-size:12px;color:${color};">${_escapeOverlayHtml(side)}</strong>`,
+    `<span style="font-size:11px;color:#9db0c7;">${_escapeOverlayHtml(action)}</span>`,
+    `</div>`,
+    `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 10px;">`,
+    `<span style="color:#8fa3ba;">Qty</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.quantity))}</span>`,
+    `<span style="color:#8fa3ba;">Price</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.entry_price))}</span>`,
+    `<span style="color:#8fa3ba;">Time</span><span>${_escapeOverlayHtml(time)} ${_escapeOverlayHtml(timeZone)}</span>`,
+    `</div>`,
+  ].join('')
+
+  el.style.display = 'block'
+  el.style.visibility = 'hidden'
+
+  const margin = 14
+  const pointerX = Number.isFinite(pointer?.clientX) ? pointer.clientX : Math.round(window.innerWidth * 0.5)
+  const pointerY = Number.isFinite(pointer?.clientY) ? pointer.clientY : Math.round(window.innerHeight * 0.35)
+  let left = pointerX + margin
+  let top = pointerY + margin
+  const width = el.offsetWidth || 200
+  const height = el.offsetHeight || 110
+
+  if (left + width > window.innerWidth - 8) left = Math.max(8, pointerX - width - margin)
+  if (top + height > window.innerHeight - 8) top = Math.max(8, pointerY - height - margin)
+
+  el.style.left = `${left}px`
+  el.style.top = `${top}px`
+  el.style.visibility = 'visible'
+}
+
+function _trackOverlayPointer(event) {
+  _lastPointerEvent = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  }
+}
+
+function _trackOverlayShapeId(idOrPromise, sig) {
+  if (!idOrPromise) return
+  if (typeof idOrPromise?.then === 'function') {
+    idOrPromise.then((resolvedId) => {
+      if (!resolvedId) return
+      _drawnShapes.push(resolvedId)
+      _overlayShapeSignals.set(resolvedId, sig)
+    }).catch(() => {})
+    return
+  }
+  _drawnShapes.push(idOrPromise)
+  _overlayShapeSignals.set(idOrPromise, sig)
+}
+
+function _getOverlayVisiblePriceRange() {
+  try {
+    const chartApi = _tvChart || findTvChart()
+    const pane = chartApi?.getPanes?.()?.[0]
+    const priceScale = pane?.getMainSourcePriceScale?.()
+    const range = priceScale?.getVisiblePriceRange?.()
+    if (Number.isFinite(range?.from) && Number.isFinite(range?.to)) return range
+  } catch { /* ignore */ }
+  return null
+}
+
+function _getOverlaySignalDisplayPrice(sig) {
+  if (Number.isFinite(sig?._overlayDisplayPrice)) return sig._overlayDisplayPrice
+  const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
+  const baseLow = Number(sig?.bar_low ?? sig?.entry_price) || 0
+  const baseHigh = Number(sig?.bar_high ?? sig?.entry_price) || 0
+  return dir === 'LONG' ? baseLow : baseHigh
+}
+
+function _getOverlaySignalTimeSec(sig) {
+  if (Number.isFinite(sig?._overlayBarTimeSec)) return sig._overlayBarTimeSec
+  return _parseTsUtcSec(sig?.timestamp) ?? sig?.bar_index ?? 0
+}
+
+function _prepareOverlaySignalLayout() {
+  const interval = _getTvCurrentSymbolInterval()?.interval || _lastChartInterval || '1m'
+  const intervalMs = Math.max(_parseIntervalMs(interval), 60000)
+  const groupCounts = new Map()
+  const visiblePriceRange = _getOverlayVisiblePriceRange()
+  const priceSpan = Number.isFinite(visiblePriceRange?.to) && Number.isFinite(visiblePriceRange?.from)
+    ? Math.abs(visiblePriceRange.to - visiblePriceRange.from)
+    : null
+
+  // Build a lookup from bar open time (seconds) → {low, high} from kline cache,
+  // so markers anchor to real K-line high/low rather than just entry_price.
+  const klineBarMap = new Map()
+  if (_lastChartKlineKey) {
+    const klines = _klineCache.get(_lastChartKlineKey)
+    if (klines) {
+      for (const bar of klines) {
+        klineBarMap.set(Math.round(bar.openTime / 1000), { low: bar.low, high: bar.high })
+      }
+    }
+  }
+
+  _cachedSignals.forEach((sig) => {
+    const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
+    const timeMs = timeSec * 1000
+    const barBucket = Math.floor(timeMs / intervalMs)
+    const barTimeSec = Math.floor(timeMs / intervalMs) * (intervalMs / 1000)
+    const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
+    const tradeAction = sig.trade_action === 'CLOSE' ? 'CLOSE' : 'OPEN'
+    const groupKey = `${barBucket}:${dir}`
+    const stackIndex = groupCounts.get(groupKey) ?? 0
+    groupCounts.set(groupKey, stackIndex + 1)
+
+    const entryPrice = Number(sig.entry_price) || 0
+    const klineBar = klineBarMap.get(barTimeSec) || null
+    const baseLow = klineBar ? klineBar.low : (Number(sig.bar_low ?? sig.entry_price) || entryPrice)
+    const baseHigh = klineBar ? klineBar.high : (Number(sig.bar_high ?? sig.entry_price) || entryPrice)
+    const baseOffset = priceSpan != null
+      ? Math.max(priceSpan * OVERLAY_MARKER_BASE_OFFSET_RATIO, 0.08)
+      : Math.max(Math.abs(entryPrice) * 0.0018, 0.08)
+    const closeExtraOffset = tradeAction === 'CLOSE'
+      ? (priceSpan != null
+          ? Math.max(priceSpan * OVERLAY_MARKER_CLOSE_EXTRA_RATIO, 0.03)
+          : Math.max(Math.abs(entryPrice) * 0.0004, 0.03))
+      : 0
+    const stackGap = priceSpan != null
+      ? Math.max(priceSpan * OVERLAY_MARKER_STACK_GAP_RATIO, 0.05)
+      : Math.max(Math.abs(entryPrice) * 0.0011, 0.05)
+    const totalOffset = baseOffset + closeExtraOffset + stackIndex * stackGap
+
+    sig._overlayStackIndex = stackIndex
+    sig._overlayBarTimeSec = barTimeSec
+    sig._overlayDisplayPrice = dir === 'LONG'
+      ? baseLow - totalOffset
+      : baseHigh + totalOffset
+  })
+}
+
+function _getOverlaySignalPointerHit(event) {
+  if (!_cachedSignals.length) return null
+  const visibleRange = _getOverlayVisibleRange()
+  if (!visibleRange) return null
+  const x = Number(event?.clientX)
+  const y = Number(event?.clientY)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  if (
+    x < visibleRange.chartLeft ||
+    x > visibleRange.chartRight ||
+    y < (visibleRange.chartTop ?? 0) ||
+    y > (visibleRange.chartBottom ?? window.innerHeight)
+  ) {
+    return null
+  }
+
+  const chartWidth = Math.max(1, visibleRange.chartRight - visibleRange.chartLeft)
+  const hoveredTimeMs = visibleRange.fromMs +
+    ((x - visibleRange.chartLeft) / chartWidth) * (visibleRange.toMs - visibleRange.fromMs)
+  const timeToleranceMs = Math.max(30_000, ((visibleRange.toMs - visibleRange.fromMs) / chartWidth) * 28)
+
+  const priceRange = _getOverlayVisiblePriceRange()
+  let hoveredPrice = null
+  let priceTolerance = null
+  if (priceRange) {
+    const chartHeight = Math.max(1, (visibleRange.chartBottom ?? window.innerHeight) - (visibleRange.chartTop ?? 0))
+    const yRatio = (y - (visibleRange.chartTop ?? 0)) / chartHeight
+    hoveredPrice = priceRange.to - yRatio * (priceRange.to - priceRange.from)
+    priceTolerance = Math.max(Math.abs(priceRange.to - priceRange.from) * 0.08, 0.12)
+  }
+
+  let bestSignal = null
+  let bestScore = Infinity
+  for (const sig of _cachedSignals) {
+    const signalTimeSec = _getOverlaySignalTimeSec(sig)
+    if (!signalTimeSec) continue
+    const timeDeltaMs = Math.abs(signalTimeSec * 1000 - hoveredTimeMs)
+    if (timeDeltaMs > timeToleranceMs) continue
+
+    let score = timeDeltaMs / timeToleranceMs
+    if (Number.isFinite(hoveredPrice)) {
+      const signalPrice = Number(_getOverlaySignalDisplayPrice(sig))
+      if (Number.isFinite(signalPrice) && Number.isFinite(priceTolerance)) {
+        const priceDelta = Math.abs(signalPrice - hoveredPrice)
+        if (priceDelta > priceTolerance && timeDeltaMs > timeToleranceMs * 0.35) continue
+        score += priceDelta / priceTolerance
+      }
+    }
+
+    if (score < bestScore) {
+      bestScore = score
+      bestSignal = sig
+    }
+  }
+
+  return bestSignal
+}
+
+function _handleOverlayPointerMove(event) {
+  _trackOverlayPointer(event)
+  if (_overlayPinnedSignal) return
+  const sig = _getOverlaySignalPointerHit(event)
+  if (!sig) {
+    _hideOverlayTooltip()
+    return
+  }
+  _showOverlayTooltip(sig, event)
+  _overlayPinnedSignal = null
+}
+
+function _handleOverlayPointerClick(event) {
+  _trackOverlayPointer(event)
+  const sig = _getOverlaySignalPointerHit(event)
+  if (!sig) {
+    _hideOverlayTooltip()
+    return
+  }
+  _showOverlayTooltip(sig, event)
+}
+
+function _unsubscribeOverlayCrosshair() {
+  if (!_overlayCrosshairSubscription || !_overlayCrosshairHandler) return
+  try {
+    _overlayCrosshairSubscription.unsubscribe(null, _overlayCrosshairHandler)
+  } catch {
+    try {
+      _overlayCrosshairSubscription.unsubscribe(_overlayCrosshairHandler)
+    } catch { /* ignore */ }
+  }
+  _overlayCrosshairSubscription = null
+  _overlayCrosshairHandler = null
+}
+
+function _getOverlayHoverPriceTolerance(crosshairPrice) {
+  try {
+    const widget = _tvWidget || findTvWidget()
+    const chartApi = widget?.activeChart?.() || widget?.chart?.() || _tvChart || findTvChart()
+    const pane = chartApi?.getPanes?.()?.[0]
+    const priceScale = pane?.getMainSourcePriceScale?.()
+    const range = priceScale?.getVisiblePriceRange?.()
+    if (Number.isFinite(range?.from) && Number.isFinite(range?.to)) {
+      return Math.max(Math.abs(range.to - range.from) * 0.06, Math.abs(Number(crosshairPrice) || 0) * 0.0015, 0.08)
+    }
+  } catch { /* ignore */ }
+  return Math.max(Math.abs(Number(crosshairPrice) || 0) * 0.0025, 0.08)
+}
+
+function _findHoveredOverlaySignal(params) {
+  if (!_cachedSignals.length || !Number.isFinite(params?.time)) return null
+  const visibleRange = _getOverlayVisibleRange()
+  if (!visibleRange) return null
+
+  const chartWidth = Math.max(1, visibleRange.chartRight - visibleRange.chartLeft)
+  const visibleSpanMs = Math.max(1, visibleRange.toMs - visibleRange.fromMs)
+  const timeToleranceMs = Math.max(15_000, (visibleSpanMs / chartWidth) * 14)
+  const crosshairTimeMs = Number(params.time) * 1000
+  const crosshairPrice = Number(params.price)
+  const priceTolerance = Number.isFinite(crosshairPrice)
+    ? _getOverlayHoverPriceTolerance(crosshairPrice)
+    : null
+
+  let bestSignal = null
+  let bestScore = Infinity
+
+  for (const sig of _cachedSignals) {
+    const signalTimeSec = _getOverlaySignalTimeSec(sig)
+    if (!signalTimeSec) continue
+    const timeDeltaMs = Math.abs(signalTimeSec * 1000 - crosshairTimeMs)
+    if (timeDeltaMs > timeToleranceMs) continue
+
+    let score = timeDeltaMs / timeToleranceMs
+    if (Number.isFinite(crosshairPrice)) {
+      const signalPrice = Number(_getOverlaySignalDisplayPrice(sig))
+      if (Number.isFinite(signalPrice) && Number.isFinite(priceTolerance)) {
+        const priceDelta = Math.abs(signalPrice - crosshairPrice)
+        if (priceDelta > priceTolerance && timeDeltaMs > timeToleranceMs * 0.35) continue
+        score += priceDelta / priceTolerance
+      }
+    }
+
+    if (score < bestScore) {
+      bestScore = score
+      bestSignal = sig
+    }
+  }
+
+  return bestSignal
+}
+
+function _getOverlayTooltipPointerFromCrosshair(params) {
+  const range = _getTvVisibleRangeMs()
+  return {
+    clientX: Number.isFinite(params?.offsetX)
+      ? (range?.chartLeft ?? 0) + params.offsetX
+      : _lastPointerEvent?.clientX,
+    clientY: Number.isFinite(params?.offsetY)
+      ? (range?.chartTop ?? 0) + params.offsetY
+      : _lastPointerEvent?.clientY,
+  }
+}
+
+function _handleOverlayCrosshairMoved(params) {
+  if (!_cachedSignals.length || !Number.isFinite(params?.time)) {
+    _hideOverlayTooltip()
+    return
+  }
+  const sig = _findHoveredOverlaySignal(params)
+  if (!sig) {
+    _hideOverlayTooltip()
+    return
+  }
+  _showOverlayTooltip(sig, _getOverlayTooltipPointerFromCrosshair(params))
+}
+
+document.addEventListener('mousemove', _handleOverlayPointerMove, true)
+document.addEventListener('pointerdown', (event) => {
+  _trackOverlayPointer(event)
+  if (_overlayTooltipEl?.contains(event.target)) return
+  if (_getOverlaySignalPointerHit(event)) return
+  _hideOverlayTooltip()
+}, true)
+document.addEventListener('click', _handleOverlayPointerClick, true)
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') _hideOverlayTooltip()
+}, true)
+
+function _syncOverlayDrawingEvents() {
+  const widget = findTvWidget()
+  if (!widget) return
+  if (_tvWidget === widget && _overlayDrawingEventHandler && _overlayCrosshairSubscription) return
+
+  if (_tvWidget && _overlayDrawingEventHandler && typeof _tvWidget.unsubscribe === 'function') {
+    try {
+      _tvWidget.unsubscribe('drawing_event', _overlayDrawingEventHandler)
+    } catch { /* stale widget */ }
+  }
+  _unsubscribeOverlayCrosshair()
+
+  _tvWidget = widget
+  _overlayDrawingEventHandler = (sourceId, drawingEventType) => {
+    if (drawingEventType !== 'click') return
+    const sig = _overlayShapeSignals.get(sourceId)
+    if (!sig) return
+    _showOverlayTooltip(sig, _lastPointerEvent)
+  }
+
+  try {
+    widget.subscribe('drawing_event', _overlayDrawingEventHandler)
+  } catch {
+    _overlayDrawingEventHandler = null
+  }
+
+  try {
+    const chartApi = widget.activeChart?.() || widget.chart?.()
+    const crosshair = chartApi?.crossHairMoved?.()
+    if (crosshair?.subscribe) {
+      _overlayCrosshairHandler = (params) => {
+        _handleOverlayCrosshairMoved(params || {})
+      }
+      crosshair.subscribe(null, _overlayCrosshairHandler)
+      _overlayCrosshairSubscription = crosshair
+    }
+  } catch {
+    _unsubscribeOverlayCrosshair()
+  }
+}
+
 function _getOverlayVisibleRange() {
   const range = _getTvVisibleRangeMs()
   if (!range || !Number.isFinite(range.fromMs) || !Number.isFinite(range.toMs)) return null
@@ -681,7 +1220,7 @@ function _getOverlayVisibleRangeKey() {
 
 function _isSignalInVisibleRange(sig, visibleRange) {
   if (!visibleRange) return false
-  const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
+  const timeSec = _getOverlaySignalTimeSec(sig)
   if (!timeSec) return false
   const timeMs = timeSec * 1000
   return timeMs >= visibleRange.fromMs && timeMs <= visibleRange.toMs
@@ -694,6 +1233,8 @@ let _detailOrderLines = []
 /** Redraw only the entry arrows from the cached signal list. */
 function _redrawArrows(chart) {
   _drawnShapes = []
+  _overlayShapeSignals = new Map()
+  _prepareOverlaySignalLayout()
   const visibleRange = _getOverlayVisibleRange()
   const fullLabelStartIndex = Math.max(0, _cachedSignals.length - MARKER_FULL_LABEL_LIMIT)
 
@@ -702,32 +1243,40 @@ function _redrawArrows(chart) {
     const colors = PALETTE[dir]
     const tradeAction = sig.trade_action === 'CLOSE' ? 'CLOSE' : 'OPEN'
     const actionStyle = TRADE_ACTION_STYLE[tradeAction]
+    const glyph = _markerGlyph(dir)
     const showLabel = sig.show_label !== false
     const showFullLabel = showLabel && (visibleRange
       ? _isSignalInVisibleRange(sig, visibleRange)
       : index >= fullLabelStartIndex
     )
-    const markerText = !showLabel ? '' : showFullLabel ? _formatMarkerLabel(sig) : _formatMarkerCompactLabel(sig)
-    const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
-    const baseLow  = sig.bar_low  ?? sig.entry_price
-    const baseHigh = sig.bar_high ?? sig.entry_price
-    const priceHint = dir === 'LONG'
-      ? baseLow  * actionStyle.longShift
-      : baseHigh * actionStyle.shortShift
+    const markerText = !showLabel
+      ? glyph
+      : showFullLabel
+      ? `${glyph} ${_formatMarkerLabel(sig)}`
+      : glyph
+    const timeSec = _getOverlaySignalTimeSec(sig)
+    const priceHint = _getOverlaySignalDisplayPrice(sig)
     try {
       const id = chart.createShape(
         { time: timeSec, price: priceHint },
         {
-          shape: dir === 'LONG' ? 'arrow_up' : 'arrow_down',
+          shape: 'text',
+          text: markerText,
           lock: true, disableSelection: false, zOrder: 'top',
           overrides: {
-            arrowColor: actionStyle.arrowColor || colors.arrow,
-            text: markerText,
-            size: actionStyle.size,
+            color: actionStyle.textColor || colors.arrow,
+            fontsize: actionStyle.fontSize,
+            bold: true,
+            'linetooltext.color': actionStyle.textColor || colors.arrow,
+            'linetooltext.fontsize': actionStyle.fontSize,
+            'linetooltext.bold': true,
+            'linetooltext.fillBackground': false,
+            'linetooltext.drawBorder': false,
+            'linetooltext.wordWrap': false,
           },
         }
       )
-      if (id) _drawnShapes.push(id)
+      _trackOverlayShapeId(id, sig)
     } catch { /* */ }
   })
 }
@@ -749,6 +1298,8 @@ function clearDetailShapes(chart) {
 }
 
 function clearOverlayShapes(chart) {
+  _hideOverlayTooltip()
+
   // Also clear any visible signal detail first
   clearDetailShapes(chart)
 
@@ -768,6 +1319,7 @@ function clearOverlayShapes(chart) {
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
   _cachedSignals = []
+  _overlayShapeSignals = new Map()
 
   // 4. Remove detail orderLines too
   _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
@@ -793,7 +1345,7 @@ function drawSignalDetail(chart, sig) {
 
   const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
   const colors = PALETTE[dir]
-  const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
+  const timeSec = _getOverlaySignalTimeSec(sig)
 
   // SL line
   try {
@@ -942,6 +1494,7 @@ ipcRenderer.on('overlay-signals', async (event, signals) => {
   }
 
   try {
+    _syncOverlayDrawingEvents()
     drawSignalsOnChart(_tvChart, signals)
     ipcRenderer.send('overlay-status', { ok: true, count: signals.length })
   } catch (err) {
@@ -950,6 +1503,7 @@ ipcRenderer.on('overlay-signals', async (event, signals) => {
     const fresh = await waitForTvChart(8000)
     if (fresh) {
       _tvChart = fresh
+      _syncOverlayDrawingEvents()
       drawSignalsOnChart(fresh, signals)
       ipcRenderer.send('overlay-status', { ok: true, count: signals.length, retried: true })
     } else {
@@ -1225,6 +1779,8 @@ function _getTvVisibleRangeMs() {
         toMs:   range.to   * 1000,
         chartLeft:  b.left,
         chartRight: b.right,
+        chartTop: b.top,
+        chartBottom: b.bottom,
       }
     }
     // No container found — use viewport width as fallback
@@ -1233,6 +1789,8 @@ function _getTvVisibleRangeMs() {
       toMs:   range.to   * 1000,
       chartLeft: 0,
       chartRight: window.innerWidth,
+      chartTop: 0,
+      chartBottom: window.innerHeight,
     }
   } catch { return null }
 }
