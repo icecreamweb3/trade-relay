@@ -780,7 +780,7 @@ const MARKER_FULL_LABEL_LIMIT = 12
 const OVERLAY_VISIBLE_RANGE_POLL_MS = 1200
 const OVERLAY_MARKER_BASE_OFFSET_RATIO = 0.018
 const OVERLAY_MARKER_CLOSE_EXTRA_RATIO = 0.004
-const OVERLAY_MARKER_STACK_GAP_RATIO = 0.011
+const OVERLAY_MARKER_STACK_GAP_RATIO = 0.022
 
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
@@ -931,31 +931,57 @@ function _prepareOverlaySignalLayout() {
     ? Math.abs(visiblePriceRange.to - visiblePriceRange.from)
     : null
 
-  // Build a lookup from bar open time (seconds) → {low, high} from kline cache,
-  // so markers anchor to real K-line high/low rather than just entry_price.
-  const klineBarMap = new Map()
+  // Build a sorted kline array from the cache so we can binary-search for each
+  // signal's bar by time.  This is more reliable than computing barBucket via
+  // intervalMs because it does not depend on the TV interval being detected
+  // correctly; two trades within the same real K-line always share the same
+  // barTimeSec regardless of any interval mismatch.
+  let klineSorted = null
   if (_lastChartKlineKey) {
-    const klines = _klineCache.get(_lastChartKlineKey)
-    if (klines) {
-      for (const bar of klines) {
-        klineBarMap.set(Math.round(bar.openTime / 1000), { low: bar.low, high: bar.high })
+    const cached = _klineCache.get(_lastChartKlineKey)
+    if (cached && cached.length > 0) {
+      klineSorted = cached.map(b => ({
+        openTimeSec: Math.round(b.openTime / 1000),
+        low: b.low,
+        high: b.high,
+      }))
+      // Ensure ascending order (cache is normally sorted but be defensive)
+      if (klineSorted.length > 1 && klineSorted[0].openTimeSec > klineSorted[klineSorted.length - 1].openTimeSec) {
+        klineSorted.sort((a, b) => a.openTimeSec - b.openTimeSec)
       }
     }
   }
 
+  // Binary search: find the last kline bar whose openTimeSec ≤ tradeSec.
+  function _findKlineBar(tradeSec) {
+    if (!klineSorted || klineSorted.length === 0) return null
+    let lo = 0, hi = klineSorted.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (klineSorted[mid].openTimeSec <= tradeSec) lo = mid
+      else hi = mid - 1
+    }
+    return klineSorted[lo].openTimeSec <= tradeSec ? klineSorted[lo] : null
+  }
+
   _cachedSignals.forEach((sig) => {
     const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
-    const timeMs = timeSec * 1000
-    const barBucket = Math.floor(timeMs / intervalMs)
-    const barTimeSec = Math.floor(timeMs / intervalMs) * (intervalMs / 1000)
     const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
     const tradeAction = sig.trade_action === 'CLOSE' ? 'CLOSE' : 'OPEN'
-    const groupKey = `${barBucket}:${dir}`
+
+    // Prefer real kline bar open time as the bucket key — this ensures that all
+    // trades within the same real candle share the same groupKey even when the
+    // detected interval is slightly off.
+    const klineBar = _findKlineBar(timeSec)
+    const barTimeSec = klineBar
+      ? klineBar.openTimeSec
+      : Math.floor(timeSec * 1000 / intervalMs) * (intervalMs / 1000)
+
+    const groupKey = `${barTimeSec}:${dir}`
     const stackIndex = groupCounts.get(groupKey) ?? 0
     groupCounts.set(groupKey, stackIndex + 1)
 
     const entryPrice = Number(sig.entry_price) || 0
-    const klineBar = klineBarMap.get(barTimeSec) || null
     const baseLow = klineBar ? klineBar.low : (Number(sig.bar_low ?? sig.entry_price) || entryPrice)
     const baseHigh = klineBar ? klineBar.high : (Number(sig.bar_high ?? sig.entry_price) || entryPrice)
     const baseOffset = priceSpan != null
