@@ -612,10 +612,80 @@ const PALETTE = {
   SHORT:  { arrow: '#ef5350', entry: '#ef5350', sl: '#26a69a', tp: '#ef5350' },
 }
 
+const TRADE_ACTION_STYLE = {
+  OPEN: {
+    arrowColor: null,
+    size: 1,
+    longShift: 0.995,
+    shortShift: 1.005,
+  },
+  CLOSE: {
+    arrowColor: '#f5c542',
+    size: 2,
+    longShift: 0.992,
+    shortShift: 1.008,
+  },
+}
+
+function _formatMarkerNumber(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '--'
+  if (Math.abs(num) >= 1000) return num.toFixed(0)
+  if (Math.abs(num) >= 1) return num.toFixed(2).replace(/\.00$/, '').replace(/(\.\d*[1-9])0+$/, '$1')
+  return num.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function _formatMarkerTime(tsStr) {
+  if (!tsStr) return '--:--'
+  const ms = (/[TZ]/.test(tsStr) || tsStr.includes('+'))
+    ? Date.parse(tsStr)
+    : Date.parse(tsStr.replace(' ', 'T') + 'Z')
+  if (isNaN(ms)) return '--:--'
+  const date = new Date(ms)
+  const hh = String(date.getUTCHours()).padStart(2, '0')
+  const mm = String(date.getUTCMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+function _formatMarkerLabel(sig) {
+  const action = sig.trade_action === 'CLOSE' ? 'C' : 'O'
+  const qty = _formatMarkerNumber(sig.quantity)
+  const price = _formatMarkerNumber(sig.entry_price)
+  const time = _formatMarkerTime(sig.timestamp)
+  return `${action} ${qty}@${price} ${time}`
+}
+
+function _formatMarkerCompactLabel(sig) {
+  return sig.trade_action === 'CLOSE' ? 'C' : 'O'
+}
+
+const MARKER_FULL_LABEL_LIMIT = 12
+const OVERLAY_VISIBLE_RANGE_POLL_MS = 1200
+
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
 let _orderLines     = []    // objects from createOrderLine() — need .remove()
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
+let _lastOverlayVisibleRangeKey = null
+function _getOverlayVisibleRange() {
+  const range = _getTvVisibleRangeMs()
+  if (!range || !Number.isFinite(range.fromMs) || !Number.isFinite(range.toMs)) return null
+  return range
+}
+
+function _getOverlayVisibleRangeKey() {
+  const range = _getOverlayVisibleRange()
+  if (!range) return null
+  return `${Math.round(range.fromMs / 1000)}:${Math.round(range.toMs / 1000)}`
+}
+
+function _isSignalInVisibleRange(sig, visibleRange) {
+  if (!visibleRange) return false
+  const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
+  if (!timeSec) return false
+  const timeMs = timeSec * 1000
+  return timeMs >= visibleRange.fromMs && timeMs <= visibleRange.toMs
+}
 
 // Detail shapes for the currently selected / replayed signal (SL, TP, orderLine)
 let _detailShapes     = []
@@ -624,22 +694,37 @@ let _detailOrderLines = []
 /** Redraw only the entry arrows from the cached signal list. */
 function _redrawArrows(chart) {
   _drawnShapes = []
-  _cachedSignals.forEach((sig) => {
+  const visibleRange = _getOverlayVisibleRange()
+  const fullLabelStartIndex = Math.max(0, _cachedSignals.length - MARKER_FULL_LABEL_LIMIT)
+
+  _cachedSignals.forEach((sig, index) => {
     const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
     const colors = PALETTE[dir]
+    const tradeAction = sig.trade_action === 'CLOSE' ? 'CLOSE' : 'OPEN'
+    const actionStyle = TRADE_ACTION_STYLE[tradeAction]
+    const showLabel = sig.show_label !== false
+    const showFullLabel = showLabel && (visibleRange
+      ? _isSignalInVisibleRange(sig, visibleRange)
+      : index >= fullLabelStartIndex
+    )
+    const markerText = !showLabel ? '' : showFullLabel ? _formatMarkerLabel(sig) : _formatMarkerCompactLabel(sig)
     const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
     const baseLow  = sig.bar_low  ?? sig.entry_price
     const baseHigh = sig.bar_high ?? sig.entry_price
     const priceHint = dir === 'LONG'
-      ? baseLow  * 0.995   // shift LONG arrow 0.5% below bar_low
-      : baseHigh * 1.005   // shift SHORT arrow 0.5% above bar_high
+      ? baseLow  * actionStyle.longShift
+      : baseHigh * actionStyle.shortShift
     try {
       const id = chart.createShape(
         { time: timeSec, price: priceHint },
         {
           shape: dir === 'LONG' ? 'arrow_up' : 'arrow_down',
           lock: true, disableSelection: false, zOrder: 'top',
-          overrides: { arrowColor: colors.arrow, text: '', size: 1 },
+          overrides: {
+            arrowColor: actionStyle.arrowColor || colors.arrow,
+            text: markerText,
+            size: actionStyle.size,
+          },
         }
       )
       if (id) _drawnShapes.push(id)
@@ -757,11 +842,27 @@ function drawSignalDetail(chart, sig) {
  * Draw entry arrows only for all signals.
  * SL / TP lines are drawn on demand via drawSignalDetail() when a signal is selected.
  */
+  _lastOverlayVisibleRangeKey = null
+
 function drawSignalsOnChart(chart, signals) {
   clearOverlayShapes(chart)
   _cachedSignals = signals.slice()  // cache for redraw after detail clear
+  _lastOverlayVisibleRangeKey = _getOverlayVisibleRangeKey()
   _redrawArrows(chart)
 }
+
+function _refreshOverlayForVisibleRangeChange() {
+  if (!_tvChart || !_cachedSignals.length) return
+  const nextKey = _getOverlayVisibleRangeKey()
+  if (!nextKey || nextKey === _lastOverlayVisibleRangeKey) return
+  _lastOverlayVisibleRangeKey = nextKey
+  try {
+    clearDetailShapes(_tvChart)
+  } catch { /* */ }
+}
+setInterval(() => {
+  _refreshOverlayForVisibleRangeChange()
+}, OVERLAY_VISIBLE_RANGE_POLL_MS)
 
 // ── IPC: receive signals from main process ──────────────────────────────────
 // The React renderer sends signals to main, main forwards here.

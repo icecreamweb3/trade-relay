@@ -74,6 +74,19 @@ class OrderUserOption(BaseModel):
     username: str
 
 
+class OrderMarkerOut(BaseModel):
+    id: int
+    username: str
+    symbol: str
+    side: str
+    trade_direction: Optional[str] = None
+    order_type: str
+    order_category: str = 'Basic'
+    filled_qty: float
+    avg_price: float
+    created_at: str
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_out(r: dict) -> OrderOut:
@@ -129,6 +142,25 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         algo_client_id=None,
         exchange_order_id=None,
         error_message=None,
+        created_at=serialize_utc_timestamp_required(r.get("created_at")),
+    )
+
+
+def _row_to_marker_out(r: dict) -> OrderMarkerOut:
+    trade_dir = str(r["trade_direction"]).upper() if r.get("trade_direction") else None
+    order_category = str(r.get("order_category") or "Basic")
+    if order_category == "Condition":
+        order_category = "Conditional"
+    return OrderMarkerOut(
+        id=int(r["id"]),
+        username=str(r["username"]),
+        symbol=str(r["symbol"]),
+        side=str(r["side"]),
+        trade_direction=trade_dir,
+        order_type=str(r.get("order_type") or ""),
+        order_category=order_category,
+        filled_qty=float(r.get("filled_qty") or 0),
+        avg_price=float(r.get("avg_price") or 0),
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
     )
 
@@ -229,6 +261,21 @@ def get_order_history(user: dict = Depends(get_current_user)):
 @router.get("/fills", response_model=list[OrderOut])
 def get_fills(user: dict = Depends(get_current_user)):
     return _get_recent_fills_cached()
+
+
+@router.get("/markers", response_model=list[OrderMarkerOut])
+def get_order_markers(
+    symbol: str,
+    limit: int = 200,
+    user: dict = Depends(get_current_user),
+):
+    user_id = int(user["sub"])
+    rows = db_module.get_user_filled_order_markers(
+        user_id=user_id,
+        symbol=symbol,
+        limit=limit,
+    )
+    return [_row_to_marker_out(r) for r in rows]
 
 
 class CancelOrderRequest(BaseModel):

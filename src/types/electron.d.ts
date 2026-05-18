@@ -43,6 +43,8 @@ interface ElectronAPI {
   // Chart
   chartToggleFullscreen?: () => Promise<{ ok: boolean }>
   getTvKlines?: (symbol: string, interval: string, limit?: number) => Promise<unknown[] | null>
+  setChartOverlaySignals?: (signals: Array<Record<string, unknown>>) => Promise<{ ok: boolean; count?: number; reason?: string }>
+  clearChartOverlaySignals?: () => Promise<{ ok: boolean; reason?: string }>
   openExternal: (url: string) => Promise<void>
 
   // Renderer → main log forwarding

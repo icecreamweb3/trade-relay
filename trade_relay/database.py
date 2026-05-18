@@ -2013,6 +2013,58 @@ def get_recent_platform_trades(limit: int = 30) -> list:
         conn.close()
 
 
+def get_user_filled_order_markers(
+    *,
+    user_id: int,
+    symbol: str,
+    limit: int = 200,
+) -> list:
+    """Return filled orders for one user+symbol for chart marker rendering."""
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        return []
+
+    safe_limit = max(1, min(int(limit), 500))
+    _log_db_query(
+        "orders",
+        "get_user_filled_order_markers",
+        user_id=user_id,
+        symbol=normalized_symbol,
+        limit=safe_limit,
+    )
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, username, symbol, side, trade_direction,
+                       order_type, order_category, filled_qty, avg_price, created_at
+                FROM orders
+                WHERE user_id = %s
+                  AND UPPER(symbol) = %s
+                  AND status = 'FILLED'
+                  AND filled_qty > 0
+                  AND avg_price IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (user_id, normalized_symbol, safe_limit),
+            )
+            rows = cur.fetchall()
+            _log_db_query_result(
+                "orders",
+                "get_user_filled_order_markers",
+                user_id=user_id,
+                symbol=normalized_symbol,
+                limit=safe_limit,
+                count=len(rows),
+            )
+            return rows
+    finally:
+        conn.close()
+
+
 def get_daily_pnl(user_id: int) -> list:
     """Return daily realized P&L for a user from daily_profile.
 

@@ -1,11 +1,41 @@
 import { useEffect, useRef } from 'react'
 import { useMarketStore, MarketEvent } from '../store/marketStore'
+import { api, type ApiOrderMarker } from '../api/client'
+import { useAuthStore } from '../store/authStore'
+import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
 // ── Direct Binance Futures WebSocket subscription ─────────────────────────────
 // One direct connection is kept here for kline + trade data.
 // Mark price / funding REST polling was removed to reduce extra Binance requests.
 
 const FSTREAM_BASE = 'wss://fstream.binance.com'
+
+interface ChartOverlaySignal {
+  direction: 'LONG' | 'SHORT'
+  trade_action: 'OPEN' | 'CLOSE'
+  show_label: boolean
+  timestamp: string
+  entry_price: number
+  quantity: number
+  bar_low: number
+  bar_high: number
+}
+
+function mapOrderMarkersToOverlaySignals(markers: ApiOrderMarker[], showLabels: boolean): ChartOverlaySignal[] {
+  return markers
+    .filter((marker) => Number.isFinite(marker.avg_price) && marker.avg_price > 0 && Boolean(marker.created_at))
+    .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
+    .map((marker) => ({
+      direction: String(marker.side).toUpperCase() === 'SELL' ? 'SHORT' : 'LONG',
+      trade_action: String(marker.trade_direction).toUpperCase() === 'CLOSE' ? 'CLOSE' : 'OPEN',
+      show_label: showLabels,
+      timestamp: marker.created_at,
+      entry_price: Number(marker.avg_price),
+      quantity: Number(marker.filled_qty),
+      bar_low: Number(marker.avg_price),
+      bar_high: Number(marker.avg_price),
+    }))
+}
 
 function makeWs(
   url: string,
@@ -72,6 +102,9 @@ function makeWs(
 }
 
 export function useMarketData() {
+  const user = useAuthStore((state) => state.user)
+  const chartOrderMarkersVisible = useUiPreferencesStore((state) => state.chartOrderMarkersVisible)
+  const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
   const {
     processMarketEvent,
     setSymbol,
@@ -260,4 +293,60 @@ export function useMarketData() {
       dayPriceChangePercent,
     })
   }, [symbol, dayOpenPrice, currentPrice, dayPriceChange, dayPriceChangePercent])
+
+  useEffect(() => {
+    const clearOverlay = async () => {
+      try {
+        await window.electronAPI?.clearChartOverlaySignals?.()
+      } catch {
+        // Ignore overlay clear errors; chart may still be loading.
+      }
+    }
+
+    if (!user || !symbol || !chartOrderMarkersVisible) {
+      void clearOverlay()
+      return
+    }
+
+    let alive = true
+    let requestSequence = 0
+
+    const syncMarkers = async () => {
+      requestSequence += 1
+      const currentRequest = requestSequence
+
+      try {
+        const markers = await api.getOrderMarkers({ symbol, limit: 200 })
+        if (!alive || currentRequest !== requestSequence) return
+
+        const signals = mapOrderMarkersToOverlaySignals(markers, chartOrderMarkerLabelsVisible)
+        if (signals.length === 0) {
+          await clearOverlay()
+          return
+        }
+
+        await window.electronAPI?.setChartOverlaySignals?.(signals)
+      } catch (error) {
+        if (!alive || currentRequest !== requestSequence) return
+        window.electronAPI?.logToMain?.('warn', 'load chart order markers failed', {
+          symbol,
+          chartInterval,
+          userId: user.id,
+          labelsVisible: chartOrderMarkerLabelsVisible,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    void syncMarkers()
+    const timer = setInterval(() => {
+      void syncMarkers()
+    }, 15000)
+
+    return () => {
+      alive = false
+      requestSequence += 1
+      clearInterval(timer)
+    }
+  }, [user, symbol, chartInterval, chartOrderMarkersVisible, chartOrderMarkerLabelsVisible])
 }

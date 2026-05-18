@@ -555,6 +555,27 @@ ipcMain.handle('get-tv-klines', async (_event, symbol, interval, limit) => {
   } catch { return null }
 })
 
+ipcMain.handle('set-chart-overlay-signals', async (_event, signals) => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  const normalizedSignals = Array.isArray(signals) ? signals : []
+  try {
+    binanceView.webContents.send('overlay-signals', normalizedSignals)
+    return { ok: true, count: normalizedSignals.length }
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'overlay_send_failed' }
+  }
+})
+
+ipcMain.handle('clear-chart-overlay-signals', async () => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  try {
+    binanceView.webContents.send('overlay-clear')
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'overlay_clear_failed' }
+  }
+})
+
 ipcMain.handle('open-binance-devtools', () => { if (binanceView) binanceView.webContents.openDevTools({ mode: 'detach' }) })
 
 ipcMain.handle('open-external', (_event, url) => {

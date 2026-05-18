@@ -4,13 +4,17 @@ import { useToastStore } from '../store/toastStore'
 import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
-type SettingsCategory = 'language' | 'password' | 'orderbook'
+type SettingsCategory = 'language' | 'password' | 'orderbook' | 'chart'
 
 export function ConfigScreen() {
   const locale = useUiPreferencesStore((state) => state.locale)
   const setLocale = useUiPreferencesStore((state) => state.setLocale)
   const orderBookDepthMode = useUiPreferencesStore((state) => state.orderBookDepthMode)
   const setOrderBookDepthMode = useUiPreferencesStore((state) => state.setOrderBookDepthMode)
+  const chartOrderMarkersVisible = useUiPreferencesStore((state) => state.chartOrderMarkersVisible)
+  const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
+  const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
+  const setChartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.setChartOrderMarkerLabelsVisible)
   const { t } = useTranslation(locale)
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('language')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -33,6 +37,18 @@ export function ConfigScreen() {
     if (mode === orderBookDepthMode) return
     setOrderBookDepthMode(mode)
     showToast('success', translateForLocale(locale, 'config.orderBookDepthUpdated'))
+  }
+
+  const handleChartOrderMarkersVisibleChange = (visible: boolean) => {
+    if (visible === chartOrderMarkersVisible) return
+    setChartOrderMarkersVisible(visible)
+    showToast('success', translateForLocale(locale, 'config.chartOrderMarkersUpdated'))
+  }
+
+  const handleChartOrderMarkerLabelsVisibleChange = (visible: boolean) => {
+    if (visible === chartOrderMarkerLabelsVisible) return
+    setChartOrderMarkerLabelsVisible(visible)
+    showToast('success', translateForLocale(locale, 'config.chartOrderMarkerLabelsUpdated'))
   }
 
   const handleSave = async (e: React.FormEvent) => {
@@ -79,6 +95,7 @@ export function ConfigScreen() {
               ['language', t('config.category.language')],
               ['password', t('config.category.password')],
               ['orderbook', t('config.category.orderbook')],
+              ['chart', t('config.category.chart')],
             ] as Array<[SettingsCategory, string]>).map(([category, label]) => (
               <button
                 key={category}
@@ -178,6 +195,60 @@ export function ConfigScreen() {
                   >
                     <span>{label}</span>
                     <span className={orderBookDepthMode === mode ? 'text-[#4da3ff]' : 'text-transparent'}>✓</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {activeCategory === 'chart' && (
+            <section className="max-w-2xl space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-[#e6ebf2]">{t('config.category.chart')}</h2>
+                <p className="mt-1 text-sm text-[#8b94a5]">{t('config.chartOrderMarkersDescription')}</p>
+              </div>
+              <div className="grid max-w-md gap-2">
+                {([
+                  [true, t('config.chartOrderMarkers.show')],
+                  [false, t('config.chartOrderMarkers.hide')],
+                ] as Array<[boolean, string]>).map(([visible, label]) => (
+                  <button
+                    key={String(visible)}
+                    type="button"
+                    onClick={() => handleChartOrderMarkersVisibleChange(visible)}
+                    className={`flex items-center justify-between rounded border px-3 py-2 text-sm transition-colors ${
+                      chartOrderMarkersVisible === visible
+                        ? 'border-[#007acc] bg-[#14263a] text-[#EAECEF]'
+                        : 'border-[#2d3542] bg-[#0d131a] text-[#c5ccd8] hover:border-[#3a4454] hover:text-[#EAECEF]'
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span className={chartOrderMarkersVisible === visible ? 'text-[#4da3ff]' : 'text-transparent'}>✓</span>
+                  </button>
+                ))}
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-[#d6dbe4]">{t('config.chartOrderMarkerLabelsTitle')}</h3>
+                <p className="mt-1 text-sm text-[#8b94a5]">{t('config.chartOrderMarkerLabelsDescription')}</p>
+              </div>
+              <div className="grid max-w-md gap-2">
+                {([
+                  [true, t('config.chartOrderMarkerLabels.show')],
+                  [false, t('config.chartOrderMarkerLabels.hide')],
+                ] as Array<[boolean, string]>).map(([visible, label]) => (
+                  <button
+                    key={`label-${String(visible)}`}
+                    type="button"
+                    onClick={() => handleChartOrderMarkerLabelsVisibleChange(visible)}
+                    disabled={!chartOrderMarkersVisible}
+                    className={`flex items-center justify-between rounded border px-3 py-2 text-sm transition-colors ${
+                      chartOrderMarkerLabelsVisible === visible
+                        ? 'border-[#007acc] bg-[#14263a] text-[#EAECEF]'
+                        : 'border-[#2d3542] bg-[#0d131a] text-[#c5ccd8] hover:border-[#3a4454] hover:text-[#EAECEF]'
+                    } ${!chartOrderMarkersVisible ? 'cursor-not-allowed opacity-50 hover:border-[#2d3542] hover:text-[#c5ccd8]' : ''}`}
+                  >
+                    <span>{label}</span>
+                    <span className={chartOrderMarkerLabelsVisible === visible ? 'text-[#4da3ff]' : 'text-transparent'}>✓</span>
                   </button>
                 ))}
               </div>

@@ -120,6 +120,19 @@ interface ApiTrade {
   created_at?: string
 }
 
+export interface ApiOrderMarker {
+  id: number
+  username: string
+  symbol: string
+  side: string
+  trade_direction?: string | null
+  order_type: string
+  order_category?: string | null
+  filled_qty: number
+  avg_price: number
+  created_at: string
+}
+
 interface ApiPositionHistory {
   id: number
   username: string
@@ -325,6 +338,13 @@ export const api = {
 
   async getOrderUsers(): Promise<ApiOrderUser[]> {
     return request<ApiOrderUser[]>('GET', '/api/orders/users')
+  },
+
+  async getOrderMarkers(params: {
+    symbol: string
+    limit?: number
+  }): Promise<ApiOrderMarker[]> {
+    return request<ApiOrderMarker[]>('GET', '/api/orders/markers', { params })
   },
 
   // ── Positions ─────────────────────────────────────────────────────────────
