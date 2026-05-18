@@ -536,6 +536,13 @@ export function OrderFormWidget({
   }, [lastAdvancedOrderType, symbol, user?.username])
 
   useEffect(() => {
+    if (posDir !== 'CLOSE') return
+    setShowTpSl(false)
+    setTp('')
+    setSl('')
+  }, [posDir])
+
+  useEffect(() => {
     const message = accountSummary?.message ?? null
     if (!message) {
       lastAccountErrorRef.current = null
@@ -866,8 +873,8 @@ export function OrderFormWidget({
     if ((orderType === 'LIMIT' || orderType === 'POST_ONLY' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
       body.price = parseFloat(price)
     if (orderType === 'CONDITIONAL' && stopPrice) body.stop_price = parseFloat(stopPrice)
-    if (showTpSl && tp) body.tp_price = parseFloat(tp)
-    if (showTpSl && sl) body.sl_price = parseFloat(sl)
+    if (posDir === 'OPEN' && showTpSl && tp) body.tp_price = parseFloat(tp)
+    if (posDir === 'OPEN' && showTpSl && sl) body.sl_price = parseFloat(sl)
 
     // Market orders require confirmation before submission
     if (orderType === 'MARKET') {
@@ -1208,17 +1215,19 @@ export function OrderFormWidget({
         )}
 
         {/* TP / SL */}
-        <div>
-          <button type="button" onClick={() => setShowTpSl(v => !v)}
-            className={`flex items-center gap-1.5 text-[10px] transition-colors ${showTpSl ? 'text-[#F0B90B]' : 'text-[#848E9C] hover:text-[#EAECEF]'}`}>
-            <span className={`flex items-center justify-center w-3 h-3 rounded-sm border text-[8px] leading-none ${showTpSl ? 'bg-[#F0B90B] border-[#F0B90B] text-black' : 'border-[#848E9C]'}`}>
-              {showTpSl ? '✓' : ''}
-            </span>
-            {t('order.tpSl')}
-          </button>
-        </div>
+        {posDir === 'OPEN' && (
+          <div>
+            <button type="button" onClick={() => setShowTpSl(v => !v)}
+              className={`flex items-center gap-1.5 text-[10px] transition-colors ${showTpSl ? 'text-[#F0B90B]' : 'text-[#848E9C] hover:text-[#EAECEF]'}`}>
+              <span className={`flex items-center justify-center w-3 h-3 rounded-sm border text-[8px] leading-none ${showTpSl ? 'bg-[#F0B90B] border-[#F0B90B] text-black' : 'border-[#848E9C]'}`}>
+                {showTpSl ? '✓' : ''}
+              </span>
+              {t('order.tpSl')}
+            </button>
+          </div>
+        )}
 
-        {showTpSl && (
+        {posDir === 'OPEN' && showTpSl && (
           <div className="space-y-2">
             <div>
               <label className="block text-[10px] text-[#848E9C] uppercase tracking-wider mb-1">{t('order.takeProfit')}</label>
