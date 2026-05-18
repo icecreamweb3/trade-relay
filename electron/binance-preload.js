@@ -720,13 +720,13 @@ const PALETTE = {
 const TRADE_ACTION_STYLE = {
   OPEN: {
     textColor: null,
-    fontSize: 10,
+    fontSize: 13,
     longShift: 0.9975,
     shortShift: 1.0025,
   },
   CLOSE: {
     textColor: '#f5c542',
-    fontSize: 11,
+    fontSize: 14,
     longShift: 0.9965,
     shortShift: 1.0035,
   },
