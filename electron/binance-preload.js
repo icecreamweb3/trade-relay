@@ -780,7 +780,7 @@ const MARKER_FULL_LABEL_LIMIT = 12
 const OVERLAY_VISIBLE_RANGE_POLL_MS = 1200
 const OVERLAY_MARKER_BASE_OFFSET_RATIO = 0.018
 const OVERLAY_MARKER_CLOSE_EXTRA_RATIO = 0.004
-const OVERLAY_MARKER_STACK_GAP_RATIO = 0.022
+const OVERLAY_MARKER_STACK_GAP_RATIO = 0.038
 
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
