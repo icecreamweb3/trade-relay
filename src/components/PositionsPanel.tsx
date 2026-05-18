@@ -47,6 +47,7 @@ interface MarketCloseConfirm {
 
 interface AmendOrderDraft {
   order: Order
+  position: Position | null
 }
 
 export function PositionsPanel({
@@ -568,7 +569,7 @@ export function PositionsPanel({
                               {canAmendOrder(o) ? (
                                 <button
                                   disabled={amendingId === o.id || cancellingId === o.id}
-                                  onClick={() => setAmendDraft({ order: o })}
+                                  onClick={() => setAmendDraft({ order: o, position: findPositionForOrder(positions, o) })}
                                   className="px-2 py-0.5 text-[10px] rounded border border-[#F0B90B] text-[#F0B90B] hover:bg-[#F0B90B] hover:text-black transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
                                   {amendingId === o.id ? '…' : t('common.modify')}
@@ -718,6 +719,7 @@ export function PositionsPanel({
     {amendDraft && (
       <AmendOrderModal
         order={amendDraft.order}
+        position={amendDraft.position}
         submitting={amendingId === amendDraft.order.id}
         onCancel={() => setAmendDraft(null)}
         onConfirm={(quantity, price) => void handleAmendOrder(amendDraft.order, quantity, price)}
@@ -732,6 +734,17 @@ function canAmendOrder(order: Order): boolean {
   const status = String(order.status || '').toUpperCase()
   const orderType = String(order.order_type || '').toUpperCase()
   return (status === 'NEW' || status === 'PARTIALLY_FILLED') && orderType === 'LIMIT' && Boolean(order.exchange_order_id)
+}
+
+function findPositionForOrder(positions: Position[], order: Order): Position | null {
+  const matched = positions.find((position) => {
+    if (position.symbol.toUpperCase() !== order.symbol.toUpperCase()) return false
+    if (position.quantity <= 0) return false
+    if (order.side === 'SELL') return position.side === 'LONG'
+    if (order.side === 'BUY') return position.side === 'SHORT'
+    return false
+  })
+  return matched ?? null
 }
 
 function getRequestErrorMessage(error: unknown, fallback: string): string {
@@ -904,12 +917,14 @@ function BulkCancelConfirmModal({
 
 function AmendOrderModal({
   order,
+  position,
   submitting,
   onCancel,
   onConfirm,
   t,
 }: {
   order: Order
+  position: Position | null
   submitting: boolean
   onCancel: () => void
   onConfirm: (quantity: number, price: number) => void
@@ -929,6 +944,19 @@ function AmendOrderModal({
   const price = Number.parseFloat(priceInput)
   const remainingQuantity = Number.isFinite(quantity) ? quantity - filledQuantity : Number.NaN
   const isValid = Number.isFinite(quantity) && quantity > filledQuantity && Number.isFinite(price) && price > 0
+  const entryPrice = position?.entry_price ?? null
+  const estimateQuantity = Number.isFinite(remainingQuantity) && remainingQuantity > 0 ? remainingQuantity : null
+  const estimatedPnl = position && entryPrice && estimateQuantity && Number.isFinite(price)
+    ? (position.side === 'LONG'
+      ? (price - entryPrice) * estimateQuantity
+      : (entryPrice - price) * estimateQuantity)
+    : null
+  const amendOutcomeType = estimatedPnl == null
+    ? null
+    : estimatedPnl >= 0
+      ? t('type.takeProfit')
+      : t('order.stopLoss')
+  const { quoteAsset } = splitTradingSymbol(order.symbol)
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -973,6 +1001,28 @@ function AmendOrderModal({
               {Number.isFinite(remainingQuantity) ? remainingQuantity : '—'}
             </span>
           </div>
+          {position && entryPrice ? (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <span>{t('pos.entry')}</span>
+                <span className="font-mono text-[#EAECEF]">{entryPrice.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 8 })}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>{t('pos.tpSl')}</span>
+                <span className={`font-medium ${estimatedPnl == null ? 'text-[#848E9C]' : estimatedPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                  {amendOutcomeType ?? '—'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>{t('pos.estimatedPnl')}</span>
+                <span className={`font-mono ${estimatedPnl == null ? 'text-[#848E9C]' : estimatedPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}`}>
+                  {estimatedPnl == null
+                    ? '—'
+                    : `${estimatedPnl >= 0 ? '+' : ''}${estimatedPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })} ${quoteAsset}`}
+                </span>
+              </div>
+            </>
+          ) : null}
         </div>
 
         <p className="text-[11px] leading-relaxed text-[#848E9C]">{t('pos.amendHint')}</p>
