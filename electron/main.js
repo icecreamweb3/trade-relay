@@ -252,6 +252,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
+      backgroundThrottling: false,
     },
   })
 
@@ -282,6 +283,7 @@ function createBinanceView() {
       nodeIntegration: false,
       webSecurity: false,
       allowRunningInsecureContent: false,
+      backgroundThrottling: false,
     },
   })
 
