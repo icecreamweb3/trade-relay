@@ -29,7 +29,11 @@ function mapOrderMarkersToOverlaySignals(markers: ApiOrderMarker[], showLabels: 
       direction: String(marker.side).toUpperCase() === 'SELL' ? 'SHORT' : 'LONG',
       trade_action: String(marker.trade_direction).toUpperCase() === 'CLOSE' ? 'CLOSE' : 'OPEN',
       show_label: showLabels,
-      timestamp: marker.created_at,
+      // Conditional orders: created_at is when the order was placed;
+      // updated_at is when it was actually triggered and filled.
+      timestamp: (String(marker.order_category).toLowerCase() === 'conditional' && marker.updated_at)
+        ? marker.updated_at
+        : marker.created_at,
       entry_price: Number(marker.avg_price),
       quantity: Number(marker.filled_qty),
       bar_low: Number(marker.avg_price),

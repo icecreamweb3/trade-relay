@@ -2039,7 +2039,8 @@ def get_user_filled_order_markers(
             cur.execute(
                 """
                 SELECT id, user_id, username, symbol, side, trade_direction,
-                       order_type, order_category, filled_qty, avg_price, created_at
+                       order_type, order_category, filled_qty, avg_price,
+                       created_at, updated_at
                 FROM orders
                 WHERE user_id = %s
                   AND UPPER(symbol) = %s
