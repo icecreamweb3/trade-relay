@@ -609,6 +609,14 @@ ipcMain.handle('maximize-window', () => {
 ipcMain.handle('close-window', () => mainWindow?.close())
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
+// On Linux with fractional HiDPI scaling (e.g. 125 / 150 %), Chromium may
+// misreport mouse coordinates inside BrowserView, causing the TradingView
+// crosshair to appear offset from the actual cursor position.
+// Forcing device-scale-factor=1 lets Electron handle scaling correctly.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('force-device-scale-factor', '1')
+}
+
 app.whenReady().then(() => {
   logger.info('Trade Relay starting up', { logFile: logger.getLogFile(), bootstrapFile: logger.getBootstrapFile() })
   logger.info('[market-data] using renderer BrowserView + REST polling for mark price and funding')

@@ -998,9 +998,10 @@ function _prepareOverlaySignalLayout() {
     const totalOffset = baseOffset + closeExtraOffset + stackIndex * stackGap
 
     sig._overlayStackIndex = stackIndex
-    // Shift half an interval to the right so the marker renders in the middle of the candle.
+    // arrow_up/arrow_down shapes are anchored at their visual center on the time axis;
+    // use barTimeSec + half interval so the arrow sits over the candle body center.
     const intervalSec = intervalMs / 1000
-    sig._overlayBarTimeSec = barTimeSec - 0.25 * intervalSec
+    sig._overlayBarTimeSec = barTimeSec + intervalSec * 0.5
     sig._overlayDisplayPrice = dir === 'LONG'
       ? baseLow - totalOffset
       : baseHigh + totalOffset
@@ -1277,35 +1278,49 @@ function _redrawArrows(chart) {
       ? _isSignalInVisibleRange(sig, visibleRange)
       : index >= fullLabelStartIndex
     )
-    const markerText = !showLabel
-      ? glyph
-      : showFullLabel
-      ? `${glyph} ${_formatMarkerLabel(sig)}`
-      : glyph
     const timeSec = _getOverlaySignalTimeSec(sig)
     const priceHint = _getOverlaySignalDisplayPrice(sig)
+    const arrowShape = dir === 'LONG' ? 'arrow_up' : 'arrow_down'
+    const arrowColor = actionStyle.textColor || colors.arrow
     try {
       const id = chart.createShape(
         { time: timeSec, price: priceHint },
         {
-          shape: 'text',
-          text: markerText,
+          shape: arrowShape,
           lock: true, disableSelection: false, zOrder: 'top',
           overrides: {
-            color: actionStyle.textColor || colors.arrow,
-            fontsize: actionStyle.fontSize,
-            bold: true,
-            'linetooltext.color': actionStyle.textColor || colors.arrow,
-            'linetooltext.fontsize': actionStyle.fontSize,
-            'linetooltext.bold': true,
-            'linetooltext.fillBackground': false,
-            'linetooltext.drawBorder': false,
-            'linetooltext.wordWrap': false,
+            color: arrowColor,
           },
         }
       )
       _trackOverlayShapeId(id, sig)
     } catch { /* */ }
+    // Label text drawn separately so arrow anchor stays precise
+    if (showLabel && showFullLabel) {
+      const labelText = _formatMarkerLabel(sig)
+      try {
+        const labelId = chart.createShape(
+          { time: timeSec, price: priceHint },
+          {
+            shape: 'text',
+            text: labelText,
+            lock: true, disableSelection: false, zOrder: 'top',
+            overrides: {
+              color: arrowColor,
+              fontsize: actionStyle.fontSize - 2,
+              bold: true,
+              'linetooltext.color': arrowColor,
+              'linetooltext.fontsize': actionStyle.fontSize - 2,
+              'linetooltext.bold': true,
+              'linetooltext.fillBackground': false,
+              'linetooltext.drawBorder': false,
+              'linetooltext.wordWrap': false,
+            },
+          }
+        )
+        _trackOverlayShapeId(labelId, sig)
+      } catch { /* */ }
+    }
   })
 }
 
