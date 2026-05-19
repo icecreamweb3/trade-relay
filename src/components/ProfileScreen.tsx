@@ -8,7 +8,9 @@ interface Stats {
   total_commission_by_asset: Array<{ asset: string; total: number }>
 }
 
-interface DailyPnl { date: string; pnl: number; commission: number; trades: number; win_rate: number }
+interface DailyPnl { date: string; pnl: number; account_balance: number | null; commission: number; trades: number; win_rate: number }
+
+type DailyChartTab = 'pnl' | 'equity'
 
 interface DailyLeaderboardEntry {
   rank: number
@@ -58,8 +60,40 @@ function formatAccountBalance(value: number | null | undefined) {
   return `${value.toFixed(4)} USDT`
 }
 
+function formatCompactBalance(value: number) {
+  if (!Number.isFinite(value)) return '—'
+  return `${value.toFixed(2)} USDT`
+}
+
 function getNetProfit(pnl: number, commission: number) {
   return pnl - commission
+}
+
+function buildEquitySeries(daily: DailyPnl[], currentBalance: number | null | undefined) {
+  const result: Array<{ date: string; balance: number; netProfit: number }> = []
+  let runningBalance = typeof currentBalance === 'number' && !Number.isNaN(currentBalance)
+    ? currentBalance
+    : null
+
+  for (let index = daily.length - 1; index >= 0; index -= 1) {
+    const entry = daily[index]
+    const netProfit = getNetProfit(entry.pnl, entry.commission)
+    const storedBalance = typeof entry.account_balance === 'number' && !Number.isNaN(entry.account_balance)
+      ? entry.account_balance
+      : null
+    const balance = storedBalance ?? runningBalance
+
+    if (balance == null) continue
+
+    result.unshift({
+      date: entry.date,
+      balance,
+      netProfit,
+    })
+    runningBalance = balance - netProfit
+  }
+
+  return result
 }
 
 export function ProfileScreen() {
@@ -67,6 +101,7 @@ export function ProfileScreen() {
   const { t } = useTranslation(locale)
   const [stats, setStats] = useState<Stats | null>(null)
   const [daily, setDaily] = useState<DailyPnl[]>([])
+  const [dailyChartTab, setDailyChartTab] = useState<DailyChartTab>('pnl')
   const [leaderboard, setLeaderboard] = useState<DailyLeaderboardEntry[]>([])
   const [allTimeLeaderboard, setAllTimeLeaderboard] = useState<AllTimeLeaderboardEntry[]>([])
   const [allTimeRange, setAllTimeRange] = useState<AllTimeRange>(null)
@@ -90,6 +125,7 @@ export function ProfileScreen() {
   const maxPnl = Math.max(...daily.map(d => Math.abs(d.pnl)), 1)
   const hasSingleDay = daily.length === 1
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
+  const equitySeries = buildEquitySeries(daily, stats?.account_balance)
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] overflow-auto">
@@ -115,9 +151,28 @@ export function ProfileScreen() {
 
           {/* Daily PnL bar chart */}
           <div className="bg-[#252526] rounded border border-[#3e3e42] p-3">
-            <div className="text-xs text-[#858585] mb-3">{t('profile.dailyPnl')}</div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-xs text-[#858585]">{t('profile.dailyPnl')}</div>
+              <div className="flex items-center gap-2">
+                <ChartTabButton
+                  label={t('profile.dailyPnlTab')}
+                  active={dailyChartTab === 'pnl'}
+                  onClick={() => setDailyChartTab('pnl')}
+                />
+                <ChartTabButton
+                  label={t('profile.accountEquityTab')}
+                  active={dailyChartTab === 'equity'}
+                  onClick={() => setDailyChartTab('equity')}
+                />
+              </div>
+            </div>
             {daily.length === 0 ? (
               <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
+            ) : dailyChartTab === 'equity' ? (
+              <EquityCurveChart
+                series={equitySeries}
+                emptyLabel={t('profile.accountEquityUnavailable')}
+              />
             ) : (
               <div className="rounded border border-[#31343b] bg-[#202225] px-3 py-4">
                 <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
@@ -286,6 +341,114 @@ function LeaderboardRangeButton({
     >
       {label}
     </button>
+  )
+}
+
+function ChartTabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded border px-2 py-1 text-[11px] transition-colors ${
+        active
+          ? 'border-[#5a6573] bg-[#30343b] text-[#e6e9ef]'
+          : 'border-[#3e434c] bg-transparent text-[#8a92a0] hover:border-[#4b5562] hover:text-[#c7ccd4]'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function EquityCurveChart({
+  series,
+  emptyLabel,
+}: {
+  series: Array<{ date: string; balance: number; netProfit: number }>
+  emptyLabel: string
+}) {
+  if (series.length === 0) {
+    return <div className="text-xs text-[#858585] text-center py-4">{emptyLabel}</div>
+  }
+
+  const balances = series.map((entry) => entry.balance)
+  const minBalance = Math.min(...balances)
+  const maxBalance = Math.max(...balances)
+  const span = Math.max(maxBalance - minBalance, 1)
+  const width = Math.max((series.length - 1) * 120, 480)
+  const height = 220
+  const paddingX = 36
+  const paddingTop = 24
+  const paddingBottom = 34
+  const innerWidth = width - paddingX * 2
+  const innerHeight = height - paddingTop - paddingBottom
+  const stepX = series.length > 1 ? innerWidth / (series.length - 1) : 0
+  const points = series.map((entry, index) => {
+    const x = paddingX + stepX * index
+    const y = paddingTop + ((maxBalance - entry.balance) / span) * innerHeight
+    return { x, y, ...entry }
+  })
+  const polylinePoints = points.map((point) => `${point.x},${point.y}`).join(' ')
+
+  return (
+    <div className="rounded border border-[#31343b] bg-[#202225] px-3 py-4">
+      <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
+        <span>{series[0]?.date ?? '—'}</span>
+        <span className="font-mono">range {formatCompactBalance(minBalance)} / {formatCompactBalance(maxBalance)}</span>
+      </div>
+      <div className="mb-2 flex items-center justify-between text-[10px] text-[#59606c]">
+        <span>{formatCompactBalance(maxBalance)}</span>
+        <span>{formatCompactBalance(minBalance)}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <div style={{ minWidth: `${width}px` }}>
+          <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full min-w-full">
+            <defs>
+              <linearGradient id="equity-fill" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor="#0ecb81" stopOpacity="0.28" />
+                <stop offset="100%" stopColor="#0ecb81" stopOpacity="0.02" />
+              </linearGradient>
+            </defs>
+            <line x1={paddingX} y1={paddingTop} x2={paddingX} y2={height - paddingBottom} stroke="#2c3138" strokeWidth="1" />
+            <line x1={paddingX} y1={height - paddingBottom} x2={width - paddingX} y2={height - paddingBottom} stroke="#2c3138" strokeWidth="1" />
+            <path
+              d={`M ${points[0]?.x ?? paddingX} ${height - paddingBottom} L ${polylinePoints} L ${points[points.length - 1]?.x ?? paddingX} ${height - paddingBottom} Z`}
+              fill="url(#equity-fill)"
+            />
+            <polyline
+              fill="none"
+              stroke="#0ecb81"
+              strokeWidth="2.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              points={polylinePoints}
+            />
+            {points.map((point) => {
+              const isUp = point.netProfit >= 0
+              return (
+                <g key={point.date}>
+                  <circle cx={point.x} cy={point.y} r="4" fill={isUp ? '#0ecb81' : '#f6465d'} stroke="#171a1f" strokeWidth="2" />
+                  <text x={point.x} y={point.y - 10} textAnchor="middle" className="fill-[#c7ccd4] text-[10px] font-mono">
+                    {point.balance.toFixed(2)}
+                  </text>
+                  <text x={point.x} y={height - 12} textAnchor="middle" className="fill-[#8c93a1] text-[10px] font-mono">
+                    {formatChartDate(point.date)}
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
   )
 }
 

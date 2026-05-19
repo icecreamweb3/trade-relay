@@ -5,7 +5,7 @@ def test_build_profile_overview_uses_daily_profile_for_win_rate(monkeypatch):
     monkeypatch.setattr(
         profile_router.db_module,
         "get_daily_pnl",
-        lambda user_id: [{"date": "2026-05-16", "pnl": 12.5, "commission": 0.7, "trades": 5, "win_rate": 60.0}],
+        lambda user_id: [{"date": "2026-05-16", "pnl": 12.5, "account_balance": 1288.3366, "commission": 0.7, "trades": 5, "win_rate": 60.0}],
     )
     monkeypatch.setattr(
         profile_router.db_module,
@@ -36,6 +36,7 @@ def test_build_profile_overview_uses_daily_profile_for_win_rate(monkeypatch):
     assert overview.stats.total_commission == 0.7
     assert overview.stats.account_balance == 1288.3366
     assert overview.stats.total_commission_by_asset == [{"asset": "USDC", "total": 0.7}]
+    assert overview.daily_pnl[0].account_balance == 1288.3366
     assert overview.daily_leaderboard[0].username == "alice"
     assert overview.daily_leaderboard[0].rank == 1
     assert overview.daily_leaderboard[0].account_balance == 188.5
@@ -49,8 +50,8 @@ def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypa
         profile_router.db_module,
         "get_daily_pnl",
         lambda user_id: [
-            {"date": "2026-05-16", "pnl": 5.0229, "commission": 0.0, "trades": 3, "win_rate": 66.6667},
-            {"date": "2026-05-17", "pnl": -1.5, "commission": 0.25, "trades": 1, "win_rate": 0.0},
+            {"date": "2026-05-16", "pnl": 5.0229, "account_balance": 105.25, "commission": 0.0, "trades": 3, "win_rate": 66.6667},
+            {"date": "2026-05-17", "pnl": -1.5, "account_balance": 103.5, "commission": 0.25, "trades": 1, "win_rate": 0.0},
         ],
     )
     monkeypatch.setattr(
@@ -82,6 +83,7 @@ def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypa
     assert overview.stats.total_commission_by_asset == [{"asset": "USDC", "total": 0.25}]
     assert overview.stats.total_trades == 4
     assert overview.stats.win_rate == 50.0
+    assert [entry.account_balance for entry in overview.daily_pnl] == [105.25, 103.5]
     assert overview.daily_pnl[0].pnl == 5.0229
     assert overview.daily_pnl[1].commission == 0.25
 

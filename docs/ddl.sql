@@ -104,6 +104,7 @@ CREATE TABLE daily_profile (
     username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
     profile_date  DATE            NOT NULL COMMENT 'UTC自然日',
     pnl           DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日已实现盈亏',
+    account_balance DECIMAL(30,10) DEFAULT NULL COMMENT '更新时的实际钱包余额',
     trade_count   INT             NOT NULL DEFAULT 0 COMMENT '当日交易次数',
     win_count     INT             NOT NULL DEFAULT 0 COMMENT '当日盈利次数',
     win_rate      DECIMAL(10,4)   NOT NULL DEFAULT 0 COMMENT '当日胜率',
@@ -233,6 +234,7 @@ ALTER TABLE position_history
 
 ALTER TABLE daily_profile
     ADD COLUMN IF NOT EXISTS username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id,
+    ADD COLUMN IF NOT EXISTS account_balance DECIMAL(30,10) DEFAULT NULL COMMENT '更新时的实际钱包余额' AFTER pnl,
     ADD COLUMN IF NOT EXISTS trade_count INT NOT NULL DEFAULT 0 COMMENT '当日交易次数' AFTER pnl,
     ADD COLUMN IF NOT EXISTS win_count INT NOT NULL DEFAULT 0 COMMENT '当日盈利次数' AFTER trade_count,
     ADD COLUMN IF NOT EXISTS win_rate DECIMAL(10,4) NOT NULL DEFAULT 0 COMMENT '当日胜率' AFTER win_count,

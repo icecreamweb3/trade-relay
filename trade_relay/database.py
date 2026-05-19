@@ -255,6 +255,45 @@ def _get_profile_day_bounds(profile_date: date) -> tuple[datetime, datetime]:
     return start_at, start_at + timedelta(days=1)
 
 
+def _fetch_live_wallet_balance(username: str) -> float | None:
+    normalized_username = str(username or "").strip()
+    if not normalized_username:
+        return None
+
+    try:
+        from trade_relay import config as cfg_module
+        from trade_relay.exchange.binance_client import BinanceClient
+    except Exception:
+        logger.exception(
+            "[DAILY_PROFILE] phase=wallet_balance_import_error username=%s",
+            normalized_username,
+        )
+        return None
+
+    api_key = cfg_module.get_api_key(normalized_username)
+    api_secret = cfg_module.get_api_secret(normalized_username)
+    if not api_key or not api_secret:
+        return None
+
+    try:
+        client = BinanceClient(
+            api_key=api_key,
+            secret_key=api_secret,
+            testnet=cfg_module.is_testnet(normalized_username),
+        )
+        account = client.get_account_info() or {}
+        wallet_balance = account.get("totalWalletBalance")
+        if wallet_balance is None:
+            return None
+        return round(float(wallet_balance), 4)
+    except Exception:
+        logger.exception(
+            "[DAILY_PROFILE] phase=wallet_balance_fetch_error username=%s",
+            normalized_username,
+        )
+        return None
+
+
 def _refresh_daily_profile_for_user_date(
     cur,
     user_id: int,
@@ -288,14 +327,16 @@ def _refresh_daily_profile_for_user_date(
     win_count = int(row.get("win_count") or 0)
     win_rate = (win_count / trade_count * 100.0) if trade_count > 0 else 0.0
     resolved_username = str(row.get("latest_username") or username or "")
+    account_balance = _fetch_live_wallet_balance(resolved_username)
     cur.execute(
         """
         INSERT INTO daily_profile
-            (user_id, username, profile_date, pnl, trade_count, win_count, win_rate, commission, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (user_id, username, profile_date, pnl, account_balance, trade_count, win_count, win_rate, commission, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             username = VALUES(username),
             pnl = VALUES(pnl),
+            account_balance = VALUES(account_balance),
             trade_count = VALUES(trade_count),
             win_count = VALUES(win_count),
             win_rate = VALUES(win_rate),
@@ -307,6 +348,7 @@ def _refresh_daily_profile_for_user_date(
             resolved_username,
             profile_date,
             float(row.get("pnl") or 0),
+            account_balance,
             trade_count,
             win_count,
             win_rate,
@@ -368,11 +410,12 @@ def _rebuild_daily_profile_from_history(
     cur.execute(
         """
         INSERT INTO daily_profile
-            (user_id, username, profile_date, pnl, trade_count, win_count, win_rate, commission, updated_at)
+            (user_id, username, profile_date, pnl, account_balance, trade_count, win_count, win_rate, commission, updated_at)
         SELECT user_id,
                COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
                DATE(created_at) AS profile_date,
                SUM(COALESCE(realized_pnl, 0)) AS pnl,
+               NULL AS account_balance,
                COUNT(*) AS trade_count,
                SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
                CASE
@@ -974,6 +1017,7 @@ def init_db() -> None:
                     username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
                     profile_date  DATE            NOT NULL COMMENT 'UTC自然日',
                     pnl           DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '当日已实现盈亏',
+                    account_balance DECIMAL(30,10) DEFAULT NULL COMMENT '更新时的实际钱包余额',
                     trade_count   INT             NOT NULL DEFAULT 0 COMMENT '当日交易次数',
                     win_count     INT             NOT NULL DEFAULT 0 COMMENT '当日盈利次数',
                     win_rate      DECIMAL(10,4)   NOT NULL DEFAULT 0 COMMENT '当日胜率',
@@ -987,6 +1031,7 @@ def init_db() -> None:
             """)
             for _col, _ddl in [
                 ("username", "ALTER TABLE daily_profile ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
+                ("account_balance", "ALTER TABLE daily_profile ADD COLUMN account_balance DECIMAL(30,10) DEFAULT NULL COMMENT '更新时的实际钱包余额' AFTER pnl"),
                 ("trade_count", "ALTER TABLE daily_profile ADD COLUMN trade_count INT NOT NULL DEFAULT 0 COMMENT '当日交易次数' AFTER pnl"),
                 ("win_count", "ALTER TABLE daily_profile ADD COLUMN win_count INT NOT NULL DEFAULT 0 COMMENT '当日盈利次数' AFTER trade_count"),
                 ("win_rate", "ALTER TABLE daily_profile ADD COLUMN win_rate DECIMAL(10,4) NOT NULL DEFAULT 0 COMMENT '当日胜率' AFTER win_count"),
@@ -2069,7 +2114,7 @@ def get_user_filled_order_markers(
 def get_daily_pnl(user_id: int) -> list:
     """Return daily realized P&L for a user from daily_profile.
 
-    Each row: { date: str, pnl: float, commission: float, trades: int, win_rate: float }
+    Each row: { date: str, pnl: float, account_balance: float | None, commission: float, trades: int, win_rate: float }
     """
     conn = get_connection()
     try:
@@ -2078,6 +2123,7 @@ def get_daily_pnl(user_id: int) -> list:
                 """
                 SELECT profile_date AS date,
                        pnl,
+                       account_balance,
                        commission,
                        trade_count AS trades,
                        win_rate
@@ -2108,16 +2154,8 @@ def get_daily_profile_leaderboard(
                        dp.trade_count AS trades,
                        dp.win_rate,
                        dp.commission,
-                       latest_account.wallet_balance AS account_balance
+                                             dp.account_balance
                 FROM daily_profile dp
-                LEFT JOIN account_summary latest_account
-                  ON latest_account.id = (
-                      SELECT account_candidate.id
-                      FROM account_summary account_candidate
-                      WHERE account_candidate.user_id = dp.user_id
-                      ORDER BY account_candidate.synced_at DESC, account_candidate.id DESC
-                      LIMIT 1
-                  )
                 WHERE dp.profile_date = %s
                 ORDER BY dp.pnl DESC, dp.win_rate DESC, dp.trade_count DESC, dp.username ASC
                 LIMIT %s

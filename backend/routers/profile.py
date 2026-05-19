@@ -24,6 +24,7 @@ class ProfileStats(BaseModel):
 class DailyPnl(BaseModel):
     date: str
     pnl: float
+    account_balance: float | None
     commission: float
     trades: int
     win_rate: float
@@ -67,6 +68,7 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
         DailyPnl(
             date=str(r["date"]),
             pnl=round(float(r.get("pnl") or 0), 4),
+            account_balance=round(float(r.get("account_balance")), 4) if r.get("account_balance") is not None else None,
             commission=round(float(r.get("commission") or 0), 4),
             trades=int(r.get("trades") or 0),
             win_rate=round(float(r.get("win_rate") or 0), 2),

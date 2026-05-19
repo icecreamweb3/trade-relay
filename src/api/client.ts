@@ -187,6 +187,7 @@ interface ApiProfileStats {
 interface ApiDailyPnl {
   date: string
   pnl: number
+  account_balance: number | null
   commission: number
   trades: number
   win_rate: number
