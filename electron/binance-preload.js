@@ -1309,9 +1309,9 @@ let _detailOrderLines = []
 
 /** Redraw only the entry arrows from the cached signal list. */
 function _redrawArrows(chart) {
-  // Advance generation so any in-flight Promise IDs from the previous draw self-delete.
-  _shapeGeneration++
-  // Remove previously drawn arrow/label shapes before re-drawing to avoid stacking.
+  // NOTE: _shapeGeneration is already incremented by clearOverlayShapes() or
+  // clearOverlayShapes-via-drawSignalsOnChart before this is called.
+  // Remove any synchronously-tracked shapes that slipped through.
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
   _overlayShapeSignals = new Map()
@@ -1390,6 +1390,11 @@ function clearDetailShapes(chart) {
 
 function clearOverlayShapes(chart) {
   _hideOverlayTooltip()
+
+  // Increment generation FIRST so any in-flight createShape() Promises
+  // (from the previous draw) self-delete when they resolve instead of
+  // re-adding orphaned IDs to _drawnShapes.
+  _shapeGeneration++
 
   // Remove only tracked shape IDs so user-drawn objects (Fibonacci, trend lines, etc.)
   // are NOT touched. We intentionally avoid removeAllShapes() / getAllShapes().
