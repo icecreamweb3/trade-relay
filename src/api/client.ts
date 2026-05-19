@@ -83,6 +83,7 @@ interface ApiOrder {
   username?: string
   exchange_order_id?: string
   created_at?: string
+  updated_at?: string | null
   error_message?: string
 }
 
@@ -118,6 +119,7 @@ interface ApiTrade {
   commission_asset: string
   username?: string
   created_at?: string
+  updated_at?: string | null
 }
 
 export interface ApiOrderMarker {

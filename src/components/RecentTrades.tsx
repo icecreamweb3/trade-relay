@@ -23,6 +23,11 @@ interface Fill {
   commission_asset?: string | null
   status?: string
   created_at?: string
+  updated_at?: string | null
+}
+
+function getEffectiveFillTimestamp(fill: Fill): string | undefined {
+  return fill.updated_at || fill.created_at
 }
 
 const GRID_TEMPLATE = 'minmax(52px, 0.9fr) minmax(72px, 1fr) 52px 52px 58px 88px 84px 124px 148px 78px 96px'
@@ -234,7 +239,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                     {tradeKind.label}
                   </span>
                 </span>
-                <span className="text-right text-[#aaa]" title={formatUtcTimestampToLocalString(f.created_at)}>{fmtTime(f.created_at)}</span>
+                <span className="text-right text-[#aaa]" title={formatUtcTimestampToLocalString(getEffectiveFillTimestamp(f))}>{fmtTime(getEffectiveFillTimestamp(f))}</span>
               </div>
             )
           })

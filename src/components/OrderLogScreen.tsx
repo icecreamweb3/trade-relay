@@ -12,13 +12,18 @@ interface Order {
   order_category?: string | null
   trade_direction?: string | null
   quantity: number; price: number; status: string; username?: string
+  filled_qty?: number
   avg_price?: number | null
   realized_pnl?: number | null
   commission?: number | null
   commission_asset?: string | null
   stop_price?: number | null
   algo_id?: string | null
-  exchange_order_id?: string; created_at?: string; error_message?: string
+  exchange_order_id?: string; created_at?: string; updated_at?: string | null; error_message?: string
+}
+
+function getEffectiveOrderTimestamp(order: Pick<Order, 'filled_qty' | 'updated_at' | 'created_at'>): string | undefined {
+  return (Number(order.filled_qty) > 0 && order.updated_at) ? order.updated_at : order.created_at
 }
 
 interface UserOption {
@@ -201,7 +206,7 @@ export function OrderLogScreen() {
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
-                <td className="text-[#858585]">{formatLogTimestamp(o.created_at)}</td>
+                <td className="text-[#858585]">{formatLogTimestamp(getEffectiveOrderTimestamp(o))}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">{o.symbol}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>

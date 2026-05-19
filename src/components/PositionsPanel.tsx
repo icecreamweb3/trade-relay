@@ -24,7 +24,7 @@ interface Order {
   quantity: number; filled_qty?: number; price: number; stop_price?: number | null
   reduce_only?: boolean; post_only?: boolean
   commission?: number | null; commission_asset?: string | null
-  status: string; username?: string; created_at?: string; exchange_order_id?: string
+  status: string; username?: string; created_at?: string; updated_at?: string | null; exchange_order_id?: string
 }
 
 interface Trade {
@@ -540,7 +540,7 @@ export function PositionsPanel({
                   ? <tr><td colSpan={tab === 'openOrders' ? 12 : 9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                   : (tab === 'openOrders' ? openOrders : history).map(o => (
                     <tr key={o.id}>
-                      <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
+                      <td className="text-[#858585]">{formatTimestamp(tab === 'history' ? (o.updated_at || o.created_at) : o.created_at)}</td>
                       <td className="font-semibold">{o.symbol}</td>
                       <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>

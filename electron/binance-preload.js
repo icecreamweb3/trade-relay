@@ -750,10 +750,24 @@ function _formatMarkerTime(tsStr) {
     ? Date.parse(tsStr)
     : Date.parse(tsStr.replace(' ', 'T') + 'Z')
   if (isNaN(ms)) return '--:--'
-  const date = new Date(ms)
-  const hh = String(date.getHours()).padStart(2, '0')
-  const mm = String(date.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
+  try {
+    const timeZone = _getLocalTimeZoneLabel()
+    return new Intl.DateTimeFormat('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone,
+    }).format(new Date(ms))
+  } catch {
+    const date = new Date(ms)
+    const hh = String(date.getHours()).padStart(2, '0')
+    const mm = String(date.getMinutes()).padStart(2, '0')
+    return `${hh}:${mm}`
+  }
+}
+
+function _getMarkerDisplayTime(sig) {
+  return _formatMarkerTime(sig?.timestamp)
 }
 
 function _getLocalTimeZoneLabel() {
@@ -805,7 +819,7 @@ function _formatMarkerLabel(sig) {
   const action = sig.trade_action === 'CLOSE' ? 'C' : 'O'
   const qty = _formatMarkerNumber(sig.quantity)
   const price = _formatMarkerNumber(sig.entry_price)
-  const time = _formatMarkerTime(sig.timestamp)
+  const time = _getMarkerDisplayTime(sig)
   return `${action} ${qty}@${price} ${time}`
 }
 
@@ -882,7 +896,7 @@ function _showOverlayTooltip(sig, pointer) {
   const side = sig.direction === 'LONG' ? _tooltipT('buy') : _tooltipT('sell')
   const action = sig.trade_action === 'CLOSE' ? _tooltipT('close') : _tooltipT('open')
   const color = sig.direction === 'LONG' ? '#26a69a' : '#ef5350'
-  const time = _formatMarkerTime(sig.timestamp)
+  const time = _getMarkerDisplayTime(sig)
   const timeZone = _getLocalTimeZoneLabel()
   const notional = (Number.isFinite(sig.quantity) && Number.isFinite(sig.entry_price))
     ? _formatMarkerNumber(sig.quantity * sig.entry_price)
@@ -1013,7 +1027,9 @@ function _prepareOverlaySignalLayout() {
   }
 
   _cachedSignals.forEach((sig) => {
-    const timeSec = _parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0
+    const timeSec = Number.isFinite(sig?._overlayBarTimeSec)
+      ? sig._overlayBarTimeSec
+      : (_parseTsUtcSec(sig.timestamp) ?? sig.bar_index ?? 0)
     const dir = sig.direction === 'LONG' ? 'LONG' : 'SHORT'
     const tradeAction = sig.trade_action === 'CLOSE' ? 'CLOSE' : 'OPEN'
 
@@ -1046,10 +1062,12 @@ function _prepareOverlaySignalLayout() {
     const totalOffset = baseOffset + closeExtraOffset + stackIndex * stackGap
 
     sig._overlayStackIndex = stackIndex
-    // arrow_up/arrow_down shapes are anchored at their visual center on the time axis;
-    // use barTimeSec + half interval so the arrow sits over the candle body center.
-    const intervalSec = intervalMs / 1000
-    sig._overlayBarTimeSec = barTimeSec + intervalSec * 0.5
+    if (!Number.isFinite(sig?._overlayBarTimeSec)) {
+      // arrow_up/arrow_down shapes are anchored at their visual center on the time axis;
+      // use barTimeSec + half interval so the arrow sits over the candle body center.
+      const intervalSec = intervalMs / 1000
+      sig._overlayBarTimeSec = barTimeSec + intervalSec * 0.5
+    }
     sig._overlayDisplayPrice = dir === 'LONG'
       ? baseLow - totalOffset
       : baseHigh + totalOffset

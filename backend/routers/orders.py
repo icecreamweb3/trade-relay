@@ -19,7 +19,7 @@ from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
-from backend.time_utils import serialize_utc_timestamp_required
+from backend.time_utils import serialize_utc_timestamp, serialize_utc_timestamp_required
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 _log = get_logger(__name__)
@@ -67,6 +67,7 @@ class OrderOut(BaseModel):
     exchange_order_id: Optional[str]
     error_message: Optional[str]
     created_at: str
+    updated_at: Optional[str] = None
 
 
 class OrderUserOption(BaseModel):
@@ -119,6 +120,7 @@ def _row_to_out(r: dict) -> OrderOut:
         exchange_order_id=r.get("exchange_order_id"),
         error_message=r.get("error_message"),
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
+        updated_at=serialize_utc_timestamp(r.get("updated_at")),
     )
 
 
@@ -144,6 +146,7 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         exchange_order_id=None,
         error_message=None,
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
+        updated_at=serialize_utc_timestamp(r.get("updated_at")),
     )
 
 

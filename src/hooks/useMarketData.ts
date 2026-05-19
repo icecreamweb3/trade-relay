@@ -3,6 +3,7 @@ import { useMarketStore, MarketEvent } from '../store/marketStore'
 import { api, type ApiOrderMarker } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { parseUtcTimestamp } from '../utils/datetime'
 
 // ── Direct Binance Futures WebSocket subscription ─────────────────────────────
 // One direct connection is kept here for kline + trade data.
@@ -15,30 +16,52 @@ interface ChartOverlaySignal {
   trade_action: 'OPEN' | 'CLOSE'
   show_label: boolean
   timestamp: string
+  _overlayBarTimeSec?: number
+  display_time?: string
   entry_price: number
   quantity: number
   bar_low: number
   bar_high: number
 }
 
+function toLocalChartBarTimeSec(timestamp?: string | null): number | undefined {
+  const parsed = parseUtcTimestamp(timestamp)
+  if (!parsed) return undefined
+
+  const localTimeMs = parsed.getTime() - parsed.getTimezoneOffset() * 60_000
+  return Math.floor(localTimeMs / 1000)
+}
+
+function formatLocalMarkerTime(timestamp?: string | null): string | undefined {
+  const parsed = parseUtcTimestamp(timestamp)
+  if (!parsed) return undefined
+
+  const hours = String(parsed.getHours()).padStart(2, '0')
+  const minutes = String(parsed.getMinutes()).padStart(2, '0')
+  return `${hours}:${minutes}`
+}
+
 function mapOrderMarkersToOverlaySignals(markers: ApiOrderMarker[], showLabels: boolean): ChartOverlaySignal[] {
   return markers
-    .filter((marker) => Number.isFinite(marker.avg_price) && marker.avg_price > 0 && Boolean(marker.created_at))
-    .sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at))
-    .map((marker) => ({
-      direction: String(marker.side).toUpperCase() === 'SELL' ? 'SHORT' : 'LONG',
-      trade_action: String(marker.trade_direction).toUpperCase() === 'CLOSE' ? 'CLOSE' : 'OPEN',
-      show_label: showLabels,
-      // Conditional orders: created_at is when the order was placed;
-      // updated_at is when it was actually triggered and filled.
-      timestamp: (String(marker.order_category).toLowerCase() === 'conditional' && marker.updated_at)
-        ? marker.updated_at
-        : marker.created_at,
-      entry_price: Number(marker.avg_price),
-      quantity: Number(marker.filled_qty),
-      bar_low: Number(marker.avg_price),
-      bar_high: Number(marker.avg_price),
-    }))
+    .filter((marker) => Number.isFinite(marker.avg_price) && marker.avg_price > 0 && Boolean(marker.updated_at || marker.created_at))
+    .sort((left, right) => Date.parse(left.updated_at || left.created_at) - Date.parse(right.updated_at || right.created_at))
+    .map((marker) => {
+      const markerTimestamp = marker.updated_at || marker.created_at
+
+      return {
+        direction: String(marker.side).toUpperCase() === 'SELL' ? 'SHORT' : 'LONG',
+        trade_action: String(marker.trade_direction).toUpperCase() === 'CLOSE' ? 'CLOSE' : 'OPEN',
+        show_label: showLabels,
+        // Use updated_at as the effective fill time for all orders.
+        timestamp: markerTimestamp,
+        _overlayBarTimeSec: toLocalChartBarTimeSec(markerTimestamp),
+        display_time: formatLocalMarkerTime(markerTimestamp),
+        entry_price: Number(marker.avg_price),
+        quantity: Number(marker.filled_qty),
+        bar_low: Number(marker.avg_price),
+        bar_high: Number(marker.avg_price),
+      }
+    })
 }
 
 function makeWs(
