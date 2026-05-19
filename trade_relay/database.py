@@ -275,6 +275,35 @@ def _fetch_live_wallet_balance(username: str) -> float | None:
     if not api_key or not api_secret:
         return None
 
+    env_symbol = str(os.environ.get("BINANCE_SYMBOL", "BTCUSDC") or "").upper()
+    quote_asset = None
+    for candidate in ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH"):
+        if env_symbol.endswith(candidate) and len(env_symbol) > len(candidate):
+            quote_asset = candidate
+            break
+
+    def _fallback_cached_wallet_balance() -> float | None:
+        try:
+            user_row = get_user_by_username(normalized_username)
+            if not user_row:
+                return None
+            user_id = int(user_row.get("id") or 0)
+            if user_id <= 0:
+                return None
+            summary = get_account_summary_from_db(user_id, env_symbol or None) or get_account_summary_from_db(user_id, None)
+            if not summary:
+                return None
+            cached_wallet_balance = summary.get("wallet_balance")
+            if cached_wallet_balance is None:
+                return None
+            return round(float(cached_wallet_balance), 4)
+        except Exception:
+            logger.exception(
+                "[DAILY_PROFILE] phase=wallet_balance_cache_fallback_error username=%s",
+                normalized_username,
+            )
+            return None
+
     try:
         client = BinanceClient(
             api_key=api_key,
@@ -283,15 +312,23 @@ def _fetch_live_wallet_balance(username: str) -> float | None:
         )
         account = client.get_account_info() or {}
         wallet_balance = account.get("totalWalletBalance")
+        if quote_asset:
+            assets = account.get("assets", []) or []
+            selected_asset = next(
+                (entry for entry in assets if str(entry.get("asset", "")).upper() == quote_asset),
+                None,
+            )
+            if selected_asset is not None:
+                wallet_balance = selected_asset.get("walletBalance")
         if wallet_balance is None:
-            return None
+            return _fallback_cached_wallet_balance()
         return round(float(wallet_balance), 4)
     except Exception:
         logger.exception(
             "[DAILY_PROFILE] phase=wallet_balance_fetch_error username=%s",
             normalized_username,
         )
-        return None
+        return _fallback_cached_wallet_balance()
 
 
 def _refresh_daily_profile_for_user_date(
@@ -431,6 +468,27 @@ def _rebuild_daily_profile_from_history(
         [_utc_now_naive(), *history_params],
     )
     rebuilt_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
+    cur.execute(
+        """
+        SELECT user_id,
+               COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+               DATE(created_at) AS profile_date
+        FROM position_history
+        """
+        + "\n".join(history_filters)
+        + "\nGROUP BY user_id, DATE(created_at)",
+        history_params,
+    )
+    grouped_rows = cur.fetchall() or []
+    for grouped_row in grouped_rows:
+        _refresh_daily_profile_for_user_date(
+            cur,
+            int(grouped_row["user_id"]),
+            str(grouped_row.get("username") or ""),
+            _coerce_utc_date(grouped_row["profile_date"]),
+        )
+
     return {"deleted": int(deleted_rows), "rebuilt": int(rebuilt_rows)}
 
 
