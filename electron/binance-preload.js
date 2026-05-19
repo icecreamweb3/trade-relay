@@ -1307,14 +1307,11 @@ function _isSignalInVisibleRange(sig, visibleRange) {
 let _detailShapes     = []
 let _detailOrderLines = []
 
-/** Redraw only the entry arrows from the cached signal list. */
+/** Redraw only the entry arrows from the cached signal list.
+ * Assumes clearOverlayShapes() has already been called — does NOT
+ * delete existing shapes or touch _shapeGeneration.
+ */
 function _redrawArrows(chart) {
-  // NOTE: _shapeGeneration is already incremented by clearOverlayShapes() or
-  // clearOverlayShapes-via-drawSignalsOnChart before this is called.
-  // Remove any synchronously-tracked shapes that slipped through.
-  _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
-  _drawnShapes = []
-  _overlayShapeSignals = new Map()
   _prepareOverlaySignalLayout()
   const visibleRange = _getOverlayVisibleRange()
   const fullLabelStartIndex = Math.max(0, _cachedSignals.length - MARKER_FULL_LABEL_LIMIT)
@@ -1339,7 +1336,7 @@ function _redrawArrows(chart) {
         { time: timeSec, price: priceHint },
         {
           shape: arrowShape,
-          lock: true, disableSelection: false, zOrder: 'top',
+          lock: false, disableSelection: false, zOrder: 'top',
           overrides: {
             color: arrowColor,
           },
@@ -1356,7 +1353,7 @@ function _redrawArrows(chart) {
           {
             shape: 'text',
             text: labelText,
-            lock: true, disableSelection: false, zOrder: 'top',
+            lock: false, disableSelection: false, zOrder: 'top',
             overrides: {
               color: arrowColor,
               fontsize: actionStyle.fontSize - 2,
@@ -1377,15 +1374,12 @@ function _redrawArrows(chart) {
 }
 
 function clearDetailShapes(chart) {
-  // Remove only the detail shapes that were individually tracked.
-  // We intentionally avoid removeAllShapes() / getAllShapes() to preserve
-  // any drawings the user placed manually on the chart.
+  // Remove only the SL/TP detail shapes that were individually tracked.
+  // Entry arrows are managed separately and are NOT touched here.
   _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _detailOrderLines.forEach(ol => { try { ol.remove() } catch {} })
   _detailOrderLines = []
   _detailShapes = []
-  // Redraw entry arrows
-  _redrawArrows(chart)
 }
 
 function clearOverlayShapes(chart) {
@@ -1396,16 +1390,23 @@ function clearOverlayShapes(chart) {
   // re-adding orphaned IDs to _drawnShapes.
   _shapeGeneration++
 
-  // Remove only tracked shape IDs so user-drawn objects (Fibonacci, trend lines, etc.)
-  // are NOT touched. We intentionally avoid removeAllShapes() / getAllShapes().
+  // Primary clear: removeAllShapes() is the most reliable way to clear
+  // shapes created with createShape() on all known TV builds.
+  // 1. removeAllShapes() — fastest bulk clear
+  try { chart.removeAllShapes() } catch { /* not available on this build */ }
 
-  // Remove detail shapes (SL/TP lines, order lines)
+  // 2. getAllShapes + removeEntity — catches shapes removeAllShapes may miss
+  try {
+    const all = chart.getAllShapes?.()
+    if (Array.isArray(all)) all.forEach(s => { try { chart.removeEntity(s.id) } catch {} })
+  } catch { /* */ }
+
+  // 3. removeEntity for each individually tracked ID
   _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
   _detailOrderLines = []
   _detailShapes = []
 
-  // Remove entry arrow / label shapes
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
   _cachedSignals = []
@@ -1493,9 +1494,8 @@ function _refreshOverlayForVisibleRangeChange() {
   const nextKey = _getOverlayVisibleRangeKey()
   if (!nextKey || nextKey === _lastOverlayVisibleRangeKey) return
   _lastOverlayVisibleRangeKey = nextKey
-  try {
-    clearDetailShapes(_tvChart)
-  } catch { /* */ }
+  // Only update the key; do NOT redraw here to avoid stacking shapes
+  // and clearing user-drawn objects. Labels update on the next 15 s sync.
 }
 setInterval(() => {
   _refreshOverlayForVisibleRangeChange()
@@ -1603,7 +1603,13 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 // IPC: clear all drawn shapes
 ipcRenderer.on('overlay-clear', async () => {
   const chart = _tvChart || findTvChart()
-  if (chart) clearOverlayShapes(chart)
+  if (chart) {
+    clearOverlayShapes(chart)
+    // Safety net: some TV builds return falsy/unresolved IDs from createShape(),
+    // leaving shapes untracked. removeAllShapes() ensures they are all gone
+    // when the user explicitly hides markers.
+    try { chart.removeAllShapes() } catch { /* not available on this build */ }
+  }
 })
 
 // IPC: show SL/TP detail for a clicked/replayed signal
@@ -2240,6 +2246,48 @@ async function _getCachedKlinesWithRefresh(symbol, interval, limit) {
 })()
 
 // Expose a minimal debug API to console (accessible since contextIsolation is off)
+// Also expose a __tradeRelayDebug object so executeJavaScript can call clearAll() directly
+window.__tradeRelayDebug = {
+  clearAll: () => {
+    const results = []
+    const chart = _tvChart || findTvChart()
+    if (!chart) return 'no_chart'
+
+    // Try removeAllShapes on chart API object
+    try { chart.removeAllShapes(); results.push('chart.removeAllShapes:ok') }
+    catch (e) { results.push('chart.removeAllShapes:err:' + e.message) }
+
+    // Try getAllShapes + removeEntity
+    try {
+      const all = chart.getAllShapes?.()
+      if (Array.isArray(all) && all.length > 0) {
+        all.forEach(s => { try { chart.removeEntity(s.id) } catch {} })
+        results.push('getAllShapes+removeEntity:ok:' + all.length)
+      } else {
+        results.push('getAllShapes:empty_or_unavail')
+      }
+    } catch (e) { results.push('getAllShapes:err:' + e.message) }
+
+    // clearOverlayShapes from preload
+    try { clearOverlayShapes(chart); results.push('clearOverlayShapes:ok') }
+    catch (e) { results.push('clearOverlayShapes:err:' + e.message) }
+
+    // Try widget-level removeAllShapes (widget, not chart API)
+    const directNames = ['tvWidget','tv_chart_widget','tvChartWidget','chartWidget','tv','TV']
+    for (const name of directNames) {
+      try {
+        const w = window[name]
+        if (!w) continue
+        if (typeof w.removeAllShapes === 'function') { w.removeAllShapes(); results.push(name+'.removeAllShapes:ok') }
+        const ac = w.activeChart?.() || w.chart?.()
+        if (ac && typeof ac.removeAllShapes === 'function') { ac.removeAllShapes(); results.push(name+'.activeChart.removeAllShapes:ok') }
+      } catch (e) { results.push(name+':err:' + e.message) }
+    }
+
+    return results.join(' | ')
+  },
+}
+
 window.__omnitrader = {
   version: '0.1.0',
   status: 'intercepting',

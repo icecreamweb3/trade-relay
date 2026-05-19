@@ -576,6 +576,46 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
   }
 })
 
+// Nuclear option: executeJavaScript directly in the Binance page context.
+// Bypasses the preload IPC entirely, useful for debugging.
+ipcMain.handle('force-clear-chart-arrows', async () => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  try {
+    const result = await binanceView.webContents.executeJavaScript(`
+      (function() {
+        try {
+          // Try the preload's exposed debug object first
+          if (window.__tradeRelayDebug && typeof window.__tradeRelayDebug.clearAll === 'function') {
+            window.__tradeRelayDebug.clearAll()
+            return 'debug_clearAll_ok'
+          }
+          // Walk TradingView widget objects looking for removeAllShapes
+          let found = false
+          const keys = Object.keys(window).filter(k => k.startsWith('TV') || k.startsWith('tv') || k.includes('widget'))
+          for (const k of keys) {
+            try {
+              const w = window[k]
+              if (w && typeof w.removeAllShapes === 'function') { w.removeAllShapes(); found = true }
+              if (w && typeof w.activeChart === 'function') {
+                const c = w.activeChart()
+                if (c && typeof c.removeAllShapes === 'function') { c.removeAllShapes(); found = true }
+              }
+              if (w && typeof w.chart === 'function') {
+                const c = w.chart()
+                if (c && typeof c.removeAllShapes === 'function') { c.removeAllShapes(); found = true }
+              }
+            } catch(e) {}
+          }
+          return found ? 'widget_scan_ok' : 'no_widget_found'
+        } catch(e) { return 'error:' + e.message }
+      })()
+    `)
+    return { ok: true, result }
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'executeJS_failed' }
+  }
+})
+
 ipcMain.handle('open-binance-devtools', () => { if (binanceView) binanceView.webContents.openDevTools({ mode: 'detach' }) })
 
 ipcMain.handle('open-external', (_event, url) => {
