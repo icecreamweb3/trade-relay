@@ -825,6 +825,7 @@ let _orderLines     = []    // objects from createOrderLine() — need .remove()
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
 let _overlayShapeSignals = new Map()
+let _shapeGeneration = 0   // incremented each redraw; stale promises self-delete
 let _overlayTooltipEl = null
 let _tvWidget = null
 let _overlayDrawingEventHandler = null
@@ -927,9 +928,15 @@ function _trackOverlayPointer(event) {
 
 function _trackOverlayShapeId(idOrPromise, sig) {
   if (!idOrPromise) return
+  const gen = _shapeGeneration
   if (typeof idOrPromise?.then === 'function') {
     idOrPromise.then((resolvedId) => {
       if (!resolvedId) return
+      if (gen !== _shapeGeneration) {
+        // Generation has advanced — this shape belongs to a stale redraw; delete it immediately.
+        try { (_tvChart || findTvChart())?.removeEntity(resolvedId) } catch { /* */ }
+        return
+      }
       _drawnShapes.push(resolvedId)
       _overlayShapeSignals.set(resolvedId, sig)
     }).catch(() => {})
@@ -1302,6 +1309,8 @@ let _detailOrderLines = []
 
 /** Redraw only the entry arrows from the cached signal list. */
 function _redrawArrows(chart) {
+  // Advance generation so any in-flight Promise IDs from the previous draw self-delete.
+  _shapeGeneration++
   // Remove previously drawn arrow/label shapes before re-drawing to avoid stacking.
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
