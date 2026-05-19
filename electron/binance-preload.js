@@ -1408,18 +1408,8 @@ function clearOverlayShapes(chart) {
   // re-adding orphaned IDs to _drawnShapes.
   _shapeGeneration++
 
-  // Primary clear: removeAllShapes() is the most reliable way to clear
-  // shapes created with createShape() on all known TV builds.
-  // 1. removeAllShapes() — fastest bulk clear
-  try { chart.removeAllShapes() } catch { /* not available on this build */ }
-
-  // 2. getAllShapes + removeEntity — catches shapes removeAllShapes may miss
-  try {
-    const all = chart.getAllShapes?.()
-    if (Array.isArray(all)) all.forEach(s => { try { chart.removeEntity(s.id) } catch {} })
-  } catch { /* */ }
-
-  // 3. removeEntity for each individually tracked ID
+  // Remove only the shapes that belong to our overlay. Bulk chart-level clears
+  // also delete user-authored drawings such as trend lines.
   _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
   _detailOrderLines = []
@@ -1623,10 +1613,6 @@ ipcRenderer.on('overlay-clear', async () => {
   const chart = _tvChart || findTvChart()
   if (chart) {
     clearOverlayShapes(chart)
-    // Safety net: some TV builds return falsy/unresolved IDs from createShape(),
-    // leaving shapes untracked. removeAllShapes() ensures they are all gone
-    // when the user explicitly hides markers.
-    try { chart.removeAllShapes() } catch { /* not available on this build */ }
   }
 })
 
