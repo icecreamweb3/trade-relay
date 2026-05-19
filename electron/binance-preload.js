@@ -1325,14 +1325,10 @@ function _redrawArrows(chart) {
 }
 
 function clearDetailShapes(chart) {
-  // Remove everything on the chart, then redraw only the arrows.
-  // This is the only reliable approach because horizontal_line createShape()
-  // returns falsy IDs, so removeEntity(id) cannot target them individually.
-  try { chart.removeAllShapes() } catch { /* */ }
-  try {
-    const all = chart.getAllShapes()
-    if (Array.isArray(all)) all.forEach(s => { try { chart.removeEntity(s.id) } catch {} })
-  } catch { /* */ }
+  // Remove only the detail shapes that were individually tracked.
+  // We intentionally avoid removeAllShapes() / getAllShapes() to preserve
+  // any drawings the user placed manually on the chart.
+  _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _detailOrderLines.forEach(ol => { try { ol.remove() } catch {} })
   _detailOrderLines = []
   _detailShapes = []
@@ -1343,31 +1339,20 @@ function clearDetailShapes(chart) {
 function clearOverlayShapes(chart) {
   _hideOverlayTooltip()
 
-  // Also clear any visible signal detail first
-  clearDetailShapes(chart)
+  // Remove only tracked shape IDs so user-drawn objects (Fibonacci, trend lines, etc.)
+  // are NOT touched. We intentionally avoid removeAllShapes() / getAllShapes().
 
-  // 1. getAllShapes() + removeEntity() — most comprehensive; catches horizontal_line
-  //    shapes whose createShape() returned a falsy ID (so they aren't in _drawnShapes).
-  try {
-    const all = chart.getAllShapes()
-    if (Array.isArray(all)) {
-      all.forEach(s => { try { chart.removeEntity(s.id) } catch { /* */ } })
-    }
-  } catch { /* getAllShapes not available on this TV build */ }
+  // Remove detail shapes (SL/TP lines, order lines)
+  _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
+  _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
+  _detailOrderLines = []
+  _detailShapes = []
 
-  // 2. removeAllShapes() bulk clear — belt-and-suspenders for older builds
-  try { chart.removeAllShapes() } catch { /* not available */ }
-
-  // 3. Explicitly remove each tracked shape ID (redundant but safe)
+  // Remove entry arrow / label shapes
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
   _cachedSignals = []
   _overlayShapeSignals = new Map()
-
-  // 4. Remove detail orderLines too
-  _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
-  _detailOrderLines = []
-  _detailShapes = []
 }
 
 /** Parse a bare "YYYY-MM-DD HH:MM:SS" timestamp from the backend as UTC. */
