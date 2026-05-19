@@ -65,7 +65,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chartToggleFullscreen: () => ipcRenderer.invoke('chart-toggle-fullscreen'),
   getTvKlines: (symbol, interval, limit = 500) =>
     ipcRenderer.invoke('get-tv-klines', symbol, interval, limit),
-  setChartOverlaySignals: (signals) => ipcRenderer.invoke('set-chart-overlay-signals', signals),
+  setChartOverlaySignals: (signals, locale) => ipcRenderer.invoke('set-chart-overlay-signals', signals, locale),
   clearChartOverlaySignals: () => ipcRenderer.invoke('clear-chart-overlay-signals'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 

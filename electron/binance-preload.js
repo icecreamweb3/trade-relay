@@ -764,6 +764,43 @@ function _getLocalTimeZoneLabel() {
   }
 }
 
+/**
+ * Read the UI locale stored by the React app (falls back to zh-CN).
+ * Runs inside the page context so localStorage is available.
+ */
+function _getUiLocale() {
+  return _uiLocale || 'en'
+}
+
+const _TOOLTIP_I18N = {
+  'zh-CN': {
+    buy:      '买入',
+    sell:     '卖出',
+    open:     '开仓',
+    close:    '平仓',
+    qty:      '数量',
+    price:    '价格',
+    notional: '名义',
+    time:     '时间',
+  },
+  en: {
+    buy:      'Buy',
+    sell:     'Sell',
+    open:     'Open',
+    close:    'Close',
+    qty:      'Qty',
+    price:    'Price',
+    notional: 'Notional',
+    time:     'Time',
+  },
+}
+
+function _tooltipT(key) {
+  const locale = _getUiLocale()
+  const dict = _TOOLTIP_I18N[locale] || _TOOLTIP_I18N['en']
+  return dict[key] || _TOOLTIP_I18N['en'][key] || key
+}
+
 function _formatMarkerLabel(sig) {
   const action = sig.trade_action === 'CLOSE' ? 'C' : 'O'
   const qty = _formatMarkerNumber(sig.quantity)
@@ -841,20 +878,24 @@ function _hideOverlayTooltip() {
 function _showOverlayTooltip(sig, pointer) {
   _overlayPinnedSignal = sig
   const el = _ensureOverlayTooltipEl()
-  const side = sig.direction === 'LONG' ? 'Buy' : 'Sell'
-  const action = sig.trade_action === 'CLOSE' ? 'Close' : 'Open'
+  const side = sig.direction === 'LONG' ? _tooltipT('buy') : _tooltipT('sell')
+  const action = sig.trade_action === 'CLOSE' ? _tooltipT('close') : _tooltipT('open')
   const color = sig.direction === 'LONG' ? '#26a69a' : '#ef5350'
   const time = _formatMarkerTime(sig.timestamp)
   const timeZone = _getLocalTimeZoneLabel()
+  const notional = (Number.isFinite(sig.quantity) && Number.isFinite(sig.entry_price))
+    ? _formatMarkerNumber(sig.quantity * sig.entry_price)
+    : '--'
   el.innerHTML = [
     `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;">`,
     `<strong style="font-size:12px;color:${color};">${_escapeOverlayHtml(side)}</strong>`,
     `<span style="font-size:11px;color:#9db0c7;">${_escapeOverlayHtml(action)}</span>`,
     `</div>`,
     `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 10px;">`,
-    `<span style="color:#8fa3ba;">Qty</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.quantity))}</span>`,
-    `<span style="color:#8fa3ba;">Price</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.entry_price))}</span>`,
-    `<span style="color:#8fa3ba;">Time</span><span>${_escapeOverlayHtml(time)} ${_escapeOverlayHtml(timeZone)}</span>`,
+    `<span style="color:#8fa3ba;">${_tooltipT('qty')}</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.quantity))}</span>`,
+    `<span style="color:#8fa3ba;">${_tooltipT('price')}</span><span>${_escapeOverlayHtml(_formatMarkerNumber(sig.entry_price))}</span>`,
+    `<span style="color:#8fa3ba;">${_tooltipT('notional')}</span><span>${_escapeOverlayHtml(notional)}</span>`,
+    `<span style="color:#8fa3ba;">${_tooltipT('time')}</span><span>${_escapeOverlayHtml(time)} ${_escapeOverlayHtml(timeZone)}</span>`,
     `</div>`,
   ].join('')
 
@@ -1494,7 +1535,10 @@ function waitForChartSymbol(expectedPair, maxMs = 8000) {
   })
 }
 
-ipcRenderer.on('overlay-signals', async (event, signals) => {
+let _uiLocale = 'en'
+
+ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
+  if (locale) _uiLocale = locale
   if (!signals || signals.length === 0) return
 
   // After a pushState symbol switch, wait for the chart to display the correct

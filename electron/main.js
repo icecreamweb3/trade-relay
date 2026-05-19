@@ -555,11 +555,11 @@ ipcMain.handle('get-tv-klines', async (_event, symbol, interval, limit) => {
   } catch { return null }
 })
 
-ipcMain.handle('set-chart-overlay-signals', async (_event, signals) => {
+ipcMain.handle('set-chart-overlay-signals', async (_event, signals, locale) => {
   if (!binanceView) return { ok: false, reason: 'no_view' }
   const normalizedSignals = Array.isArray(signals) ? signals : []
   try {
-    binanceView.webContents.send('overlay-signals', normalizedSignals)
+    binanceView.webContents.send('overlay-signals', normalizedSignals, locale)
     return { ok: true, count: normalizedSignals.length }
   } catch (error) {
     return { ok: false, reason: error?.message || 'overlay_send_failed' }

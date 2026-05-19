@@ -329,7 +329,8 @@ export function useMarketData() {
           return
         }
 
-        await window.electronAPI?.setChartOverlaySignals?.(signals)
+        const locale = useUiPreferencesStore.getState().locale
+        await window.electronAPI?.setChartOverlaySignals?.(signals, locale)
       } catch (error) {
         if (!alive || currentRequest !== requestSequence) return
         window.electronAPI?.logToMain?.('warn', 'load chart order markers failed', {
