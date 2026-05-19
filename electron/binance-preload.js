@@ -1302,6 +1302,8 @@ let _detailOrderLines = []
 
 /** Redraw only the entry arrows from the cached signal list. */
 function _redrawArrows(chart) {
+  // Remove previously drawn arrow/label shapes before re-drawing to avoid stacking.
+  _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
   _drawnShapes = []
   _overlayShapeSignals = new Map()
   _prepareOverlaySignalLayout()
