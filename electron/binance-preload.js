@@ -780,7 +780,7 @@ const MARKER_FULL_LABEL_LIMIT = 12
 const OVERLAY_VISIBLE_RANGE_POLL_MS = 1200
 const OVERLAY_MARKER_BASE_OFFSET_RATIO = 0.018
 const OVERLAY_MARKER_CLOSE_EXTRA_RATIO = 0.004
-const OVERLAY_MARKER_STACK_GAP_RATIO = 0.038
+const OVERLAY_MARKER_STACK_GAP_RATIO = 0.07
 
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
@@ -994,7 +994,7 @@ function _prepareOverlaySignalLayout() {
       : 0
     const stackGap = priceSpan != null
       ? Math.max(priceSpan * OVERLAY_MARKER_STACK_GAP_RATIO, 0.05)
-      : Math.max(Math.abs(entryPrice) * 0.0011, 0.05)
+      : Math.max(Math.abs(entryPrice) * 0.0022, 0.05)
     const totalOffset = baseOffset + closeExtraOffset + stackIndex * stackGap
 
     sig._overlayStackIndex = stackIndex
