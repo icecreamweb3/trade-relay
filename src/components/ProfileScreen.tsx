@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../api/client'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { useAuthStore } from '../store/authStore'
 
 interface Stats {
   total_pnl: number; win_rate: number; total_trades: number; total_commission: number; account_balance: number | null
@@ -69,6 +70,48 @@ function getNetProfit(pnl: number, commission: number) {
   return pnl - commission
 }
 
+function getTodayUtcDateString() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function buildDailyLeaderboardRows(
+  leaderboard: DailyLeaderboardEntry[],
+  currentUsername: string | undefined,
+  currentBalance: number | null | undefined,
+) {
+  const normalizedUsername = currentUsername?.trim().toLowerCase()
+  if (!normalizedUsername) return leaderboard
+
+  const hasCurrentUser = leaderboard.some((entry) => entry.username.trim().toLowerCase() === normalizedUsername)
+  if (hasCurrentUser) return leaderboard
+
+  const supplemented = [
+    ...leaderboard,
+    {
+      rank: 0,
+      username: currentUsername!.trim(),
+      date: leaderboard[0]?.date ?? getTodayUtcDateString(),
+      pnl: 0,
+      account_balance: typeof currentBalance === 'number' && !Number.isNaN(currentBalance) ? currentBalance : null,
+      trades: 0,
+      win_rate: 0,
+      commission: 0,
+    },
+  ]
+
+  supplemented.sort((left, right) => {
+    if (right.pnl !== left.pnl) return right.pnl - left.pnl
+    if (right.win_rate !== left.win_rate) return right.win_rate - left.win_rate
+    if (right.trades !== left.trades) return right.trades - left.trades
+    return left.username.localeCompare(right.username)
+  })
+
+  return supplemented.map((entry, index) => ({
+    ...entry,
+    rank: index + 1,
+  }))
+}
+
 function buildEquitySeries(daily: DailyPnl[], currentBalance: number | null | undefined) {
   const result: Array<{ date: string; balance: number; netProfit: number }> = []
   let runningBalance = typeof currentBalance === 'number' && !Number.isNaN(currentBalance)
@@ -99,6 +142,7 @@ function buildEquitySeries(daily: DailyPnl[], currentBalance: number | null | un
 export function ProfileScreen() {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
+  const currentUser = useAuthStore((state) => state.user)
   const [stats, setStats] = useState<Stats | null>(null)
   const [daily, setDaily] = useState<DailyPnl[]>([])
   const [dailyChartTab, setDailyChartTab] = useState<DailyChartTab>('pnl')
@@ -126,6 +170,7 @@ export function ProfileScreen() {
   const hasSingleDay = daily.length === 1
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
   const equitySeries = buildEquitySeries(daily, stats?.account_balance)
+  const displayedLeaderboard = buildDailyLeaderboardRows(leaderboard, currentUser?.username, stats?.account_balance)
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e] overflow-auto">
@@ -218,7 +263,7 @@ export function ProfileScreen() {
               <div className="text-xs text-[#858585]">{t('profile.dailyLeaderboard')}</div>
               <div className="text-[11px] font-mono text-[#6f7682]">UTC</div>
             </div>
-            {leaderboard.length === 0 ? (
+            {displayedLeaderboard.length === 0 ? (
               <div className="text-xs text-[#858585] text-center py-4">{t('pos.empty')}</div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225]">
@@ -233,7 +278,7 @@ export function ProfileScreen() {
                     <span className="text-right">{t('profile.winRate')}</span>
                     <span className="text-right">{t('profile.commission')}</span>
                   </div>
-                  {leaderboard.map((entry) => (
+                  {displayedLeaderboard.map((entry) => (
                     <div
                       key={`${entry.date}-${entry.username}-${entry.rank}`}
                       className="grid grid-cols-[64px_minmax(160px,1.1fr)_136px_120px_120px_104px_104px_132px] gap-3 border-b border-[#2a2d33] px-3 py-2 text-sm text-[#cccccc] last:border-b-0"
