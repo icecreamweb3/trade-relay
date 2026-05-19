@@ -998,10 +998,9 @@ function _prepareOverlaySignalLayout() {
     const totalOffset = baseOffset + closeExtraOffset + stackIndex * stackGap
 
     sig._overlayStackIndex = stackIndex
-    // Shift to bar center (open + half interval) so the text shape renders
-    // in the middle of the candle rather than at the left (open) edge.
+    // Shift half an interval to the right so the marker renders in the middle of the candle.
     const intervalSec = intervalMs / 1000
-    sig._overlayBarTimeSec = barTimeSec
+    sig._overlayBarTimeSec = barTimeSec - 0.25 * intervalSec
     sig._overlayDisplayPrice = dir === 'LONG'
       ? baseLow - totalOffset
       : baseHigh + totalOffset
