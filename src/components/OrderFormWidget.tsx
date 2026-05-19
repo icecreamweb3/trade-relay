@@ -266,6 +266,8 @@ export function OrderFormWidget({
   const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
   const [positionLongQty, setPositionLongQty] = useState<number | null>(null)
   const [positionShortQty, setPositionShortQty] = useState<number | null>(null)
+  const [pendingLongCloseQty, setPendingLongCloseQty] = useState<number>(0)
+  const [pendingShortCloseQty, setPendingShortCloseQty] = useState<number>(0)
   const [liveSymbolPositions, setLiveSymbolPositions] = useState<PositionSnapshot[] | null>(null)
   const showToast = useToastStore((state) => state.showToast)
   const lastAccountErrorRef = useRef<string | null>(null)
@@ -365,13 +367,18 @@ export function OrderFormWidget({
     if (!isActive || !user?.username || !symbol || isAdminAccount) {
       setPositionLongQty(null)
       setPositionShortQty(null)
+      setPendingLongCloseQty(0)
+      setPendingShortCloseQty(0)
       setLiveSymbolPositions(null)
       return
     }
     let alive = true
     const load = async () => {
       try {
-        const all = await api.getPositions()
+        const [all, openOrders] = await Promise.all([
+          api.getPositions(),
+          api.getOpenOrders().catch(() => [] as Awaited<ReturnType<typeof api.getOpenOrders>>),
+        ])
         if (!alive) return
         const sym = symbol.toUpperCase()
         const nextPositions = all.filter((p) => p.symbol.toUpperCase() === sym)
@@ -381,9 +388,24 @@ export function OrderFormWidget({
           if (p.side === 'LONG') longQty += p.quantity
           else if (p.side === 'SHORT') shortQty += p.quantity
         }
+        // Pending close qty = sum of active reduce-only / close-direction orders for this symbol
+        let pendingLong = 0
+        let pendingShort = 0
+        for (const o of openOrders) {
+          if (o.symbol.toUpperCase() !== sym) continue
+          const isClose = String(o.trade_direction ?? '').toUpperCase() === 'CLOSE' || o.reduce_only
+          if (!isClose) continue
+          const remaining = o.quantity - (o.filled_qty ?? 0)
+          if (remaining <= 0) continue
+          // SELL close order reduces a LONG position; BUY close order reduces a SHORT position
+          if (String(o.side).toUpperCase() === 'SELL') pendingLong += remaining
+          else if (String(o.side).toUpperCase() === 'BUY') pendingShort += remaining
+        }
         setLiveSymbolPositions(nextPositions)
         setPositionLongQty(longQty)
         setPositionShortQty(shortQty)
+        setPendingLongCloseQty(pendingLong)
+        setPendingShortCloseQty(pendingShort)
       } catch {
         // silently ignore — account summary is fallback
       }
@@ -643,6 +665,9 @@ export function OrderFormWidget({
 
   const liveLongQty = positionLongQty ?? accountSummary?.long_position_qty ?? null
   const liveShortQty = positionShortQty ?? accountSummary?.short_position_qty ?? null
+  // Available close qty = position qty minus already-pending close orders
+  const availLongCloseQty = liveLongQty != null ? Math.max(0, liveLongQty - pendingLongCloseQty) : null
+  const availShortCloseQty = liveShortQty != null ? Math.max(0, liveShortQty - pendingShortCloseQty) : null
 
   const liveLongEntryPrice = useMemo(() => {
     if (!liveSymbolPositions || liveSymbolPositions.length === 0) return null
@@ -687,8 +712,8 @@ export function OrderFormWidget({
   const closeEstimate = useMemo(() => {
     if (posDir !== 'CLOSE' || !closeEstimatePrice || !closeEstimateBaseQty) return null
 
-    const longClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveLongQty ?? 0, 0))
-    const shortClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveShortQty ?? 0, 0))
+    const longClosableQty = Math.min(closeEstimateBaseQty, Math.max(availLongCloseQty ?? liveLongQty ?? 0, 0))
+    const shortClosableQty = Math.min(closeEstimateBaseQty, Math.max(availShortCloseQty ?? liveShortQty ?? 0, 0))
 
     const longPnl = longClosableQty > 0 && liveLongEntryPrice != null
       ? longClosableQty * (closeEstimatePrice - liveLongEntryPrice)
@@ -706,6 +731,8 @@ export function OrderFormWidget({
     posDir,
     closeEstimatePrice,
     closeEstimateBaseQty,
+    availLongCloseQty,
+    availShortCloseQty,
     liveLongQty,
     liveShortQty,
     liveLongEntryPrice,
@@ -714,8 +741,8 @@ export function OrderFormWidget({
 
   const fillPct = (pct: number) => {
     if (posDir === 'CLOSE') {
-      const longQty = liveLongQty ?? 0
-      const shortQty = liveShortQty ?? 0
+      const longQty = availLongCloseQty ?? 0
+      const shortQty = availShortCloseQty ?? 0
       const posQty = Math.max(longQty, shortQty)
       if (sizeUnit === 'QUOTE') {
         const refPrice = orderType === 'MARKET'
@@ -755,34 +782,64 @@ export function OrderFormWidget({
   }, [accountSummary?.available_balance, leverage, sizeUnit, quoteAsset, referencePrice, baseTicker])
 
   const longCloseDisplay = useMemo(() => {
-    const qty = liveLongQty
-    if (qty == null) return '—'
-    if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
-    if (qty === 0) return withAsset(0, quoteAsset)
-    // Use live WS price first for immediate response
+    const qty = availLongCloseQty
+    const totalQty = liveLongQty
+    if (totalQty == null) return '—'
+    if (sizeUnit === 'BASE') {
+      const availStr = fmt(qty ?? totalQty, 3)
+      return pendingLongCloseQty > 0
+        ? `${availStr}/${fmt(totalQty, 3)} ${baseTicker}`
+        : `${availStr} ${baseTicker}`
+    }
+    const displayQty = qty ?? totalQty
+    if (displayQty === 0 && pendingLongCloseQty === 0) return withAsset(0, quoteAsset)
     const livePrice = markPrice ?? currentPrice
-    if (livePrice != null) return withAsset(qty * livePrice, quoteAsset)
-    // Fallback: server-side notional from account summary
+    if (livePrice != null) {
+      const val = withAsset(displayQty * livePrice, quoteAsset)
+      return pendingLongCloseQty > 0 ? `${val}*` : val
+    }
     const notional = accountSummary?.long_position_value ?? null
-    if (notional != null) return withAsset(notional, quoteAsset)
+    if (notional != null) {
+      const val = withAsset(notional * (totalQty > 0 ? displayQty / totalQty : 1), quoteAsset)
+      return pendingLongCloseQty > 0 ? `${val}*` : val
+    }
     const restPrice = accountSummary?.rest_mark_price ?? null
-    if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
-    return `${fmt(qty, 3)} ${baseTicker}`
-  }, [liveLongQty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    if (restPrice != null) {
+      const val = withAsset(displayQty * restPrice, quoteAsset)
+      return pendingLongCloseQty > 0 ? `${val}*` : val
+    }
+    return `${fmt(displayQty, 3)} ${baseTicker}`
+  }, [availLongCloseQty, liveLongQty, pendingLongCloseQty, accountSummary?.long_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   const shortCloseDisplay = useMemo(() => {
-    const qty = liveShortQty
-    if (qty == null) return '—'
-    if (sizeUnit === 'BASE') return `${fmt(qty, 3)} ${baseTicker}`
-    if (qty === 0) return withAsset(0, quoteAsset)
+    const qty = availShortCloseQty
+    const totalQty = liveShortQty
+    if (totalQty == null) return '—'
+    if (sizeUnit === 'BASE') {
+      const availStr = fmt(qty ?? totalQty, 3)
+      return pendingShortCloseQty > 0
+        ? `${availStr}/${fmt(totalQty, 3)} ${baseTicker}`
+        : `${availStr} ${baseTicker}`
+    }
+    const displayQty = qty ?? totalQty
+    if (displayQty === 0 && pendingShortCloseQty === 0) return withAsset(0, quoteAsset)
     const livePrice = markPrice ?? currentPrice
-    if (livePrice != null) return withAsset(qty * livePrice, quoteAsset)
+    if (livePrice != null) {
+      const val = withAsset(displayQty * livePrice, quoteAsset)
+      return pendingShortCloseQty > 0 ? `${val}*` : val
+    }
     const notional = accountSummary?.short_position_value ?? null
-    if (notional != null) return withAsset(notional, quoteAsset)
+    if (notional != null) {
+      const val = withAsset(notional * (totalQty > 0 ? displayQty / totalQty : 1), quoteAsset)
+      return pendingShortCloseQty > 0 ? `${val}*` : val
+    }
     const restPrice = accountSummary?.rest_mark_price ?? null
-    if (restPrice != null) return withAsset(qty * restPrice, quoteAsset)
-    return `${fmt(qty, 3)} ${baseTicker}`
-  }, [liveShortQty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
+    if (restPrice != null) {
+      const val = withAsset(displayQty * restPrice, quoteAsset)
+      return pendingShortCloseQty > 0 ? `${val}*` : val
+    }
+    return `${fmt(displayQty, 3)} ${baseTicker}`
+  }, [availShortCloseQty, liveShortQty, pendingShortCloseQty, accountSummary?.short_position_value, accountSummary?.rest_mark_price, sizeUnit, markPrice, currentPrice, quoteAsset, baseTicker])
 
   // Unrealized PnL adjusted in real-time using the latest available price.
   // base_pnl comes from the REST poll; we add the delta caused by price movement
