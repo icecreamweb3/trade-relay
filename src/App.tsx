@@ -192,6 +192,7 @@ function MainApp() {
                   refreshTrigger={orderRefresh + positionRefresh}
                   isActive={isTradeScreenActive}
                   sizeUnit={tradeSizeUnit}
+                  onOrdersChanged={() => setOrderRefresh(n => n + 1)}
                 />
               </Panel>
             </PanelGroup>

@@ -54,10 +54,12 @@ export function PositionsPanel({
   refreshTrigger,
   isActive = true,
   sizeUnit = 'QUOTE',
+  onOrdersChanged,
 }: {
   refreshTrigger?: number
   isActive?: boolean
   sizeUnit?: 'QUOTE' | 'BASE'
+  onOrdersChanged?: () => void
 }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
@@ -246,6 +248,7 @@ export function PositionsPanel({
       await api.cancelOrder(o.id, o.symbol, o.exchange_order_id)
       showToast('success', t('pos.cancelSingleSuccess'))
       setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
+      onOrdersChanged?.()
     } catch (err: unknown) {
       showToast('error', t('pos.cancelSingleFailed', {
         reason: getRequestErrorMessage(err, t('pos.cancelFailed')),
@@ -277,6 +280,7 @@ export function PositionsPanel({
       showToast('success', t('pos.amendSuccess'))
       setAmendDraft(null)
       await loadRef.current()
+      onOrdersChanged?.()
     } catch (err: unknown) {
       showToast('error', t('pos.amendFailed', {
         reason: getRequestErrorMessage(err, t('order.error.failed')),
@@ -284,7 +288,7 @@ export function PositionsPanel({
     } finally {
       setAmendingId(null)
     }
-  }, [showToast, t])
+  }, [onOrdersChanged, showToast, t])
 
   const handleCancelAllOpenOrders = useCallback(async () => {
     if (tab !== 'openOrders') return
@@ -309,6 +313,7 @@ export function PositionsPanel({
         }
         if (cancelledIds.size > 0) {
           setOpenOrders((prev) => prev.filter((order) => !cancelledIds.has(order.id)))
+          onOrdersChanged?.()
         }
         if (failedCount === 0) {
           showToast('success', t('pos.cancelAllSuccess', { count: cancelledIds.size }))
@@ -347,7 +352,7 @@ export function PositionsPanel({
     } finally {
       setBulkCancelling(null)
     }
-  }, [conditionalOrders, openOrders, openOrdersSubTab, showToast, t, tab])
+  }, [conditionalOrders, onOrdersChanged, openOrders, openOrdersSubTab, showToast, t, tab])
 
   const basicCancellableCount = openOrders.filter((order) =>
     (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') && order.exchange_order_id,
