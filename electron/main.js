@@ -49,6 +49,7 @@ let _autoExpandDone = false
 let _splitRatio = 0.60   // default left panel 60% horizontal
 let _chartRatio = 0.65   // default chart 65% vertical within left panel
 let _binanceViewVisible = true
+let _binanceViewAttached = false
 
 // Map TRADE_RELAY_LANG (zh|en) → Binance locale path segment
 const _trLang = (process.env.TRADE_RELAY_LANG || '').toLowerCase()
@@ -325,6 +326,7 @@ function createBinanceView() {
   })
 
   mainWindow.addBrowserView(binanceView)
+  _binanceViewAttached = true
   const rawUA = binanceView.webContents.getUserAgent()
   binanceView.webContents.setUserAgent(rawUA.replace(/\s*Electron\/[\d.]+/, ''))
 
@@ -410,10 +412,25 @@ function createBinanceView() {
   })
 }
 
+function ensureBinanceViewAttached() {
+  if (!binanceView || !mainWindow || _binanceViewAttached) return
+  logger.info('[BINANCE_VIEW] action=attach')
+  mainWindow.addBrowserView(binanceView)
+  _binanceViewAttached = true
+}
+
+function detachBinanceView() {
+  if (!binanceView || !mainWindow || !_binanceViewAttached) return
+  logger.info('[BINANCE_VIEW] action=detach')
+  mainWindow.removeBrowserView(binanceView)
+  _binanceViewAttached = false
+}
+
 function hideBinanceView() {
   if (!binanceView) return
-  logger.info('[BINANCE_VIEW] action=hide bounds=offscreen visible=%s', _binanceViewVisible)
+  logger.info('[BINANCE_VIEW] action=hide visible=%s attached=%s', _binanceViewVisible, _binanceViewAttached)
   binanceView.setBounds({ x: -9999, y: -9999, width: 1, height: 1 })
+  detachBinanceView()
 }
 
 function updateBinanceViewBounds() {
@@ -429,6 +446,7 @@ function updateBinanceViewBounds() {
   const availH = bounds.height - TITLEBAR_H - STATUSBAR_H
   const panelWidth = Math.floor(bounds.width * _splitRatio)
   const chartHeight = Math.floor(availH * _chartRatio)
+  ensureBinanceViewAttached()
   logger.info('[BINANCE_VIEW] action=update-bounds visible=true window=%o bounds=%o splitRatio=%s chartRatio=%s', bounds, {
     x: 0,
     y: TITLEBAR_H,
