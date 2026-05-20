@@ -849,6 +849,14 @@ let _overlayCrosshairHandler = null
 let _lastPointerEvent = null
 let _overlayPinnedSignal = null
 
+function _logOverlayToMain(level, msg, extra) {
+  try {
+    ipcRenderer.send('log-to-main', level, `[BINANCE_OVERLAY] ${msg}`, extra)
+  } catch {
+    // Ignore logging failures inside the preload overlay layer.
+  }
+}
+
 function _escapeOverlayHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -961,6 +969,34 @@ function _trackOverlayShapeId(idOrPromise, sig) {
   _overlayShapeSignals.set(idOrPromise, sig)
 }
 
+function _removeTrackedShapeIds(chart, ids, bucket) {
+  const failedIds = []
+  const errors = []
+  let removedCount = 0
+
+  ids.forEach((id) => {
+    if (!id) return
+    try {
+      chart.removeEntity(id)
+      removedCount += 1
+    } catch (error) {
+      failedIds.push(id)
+      if (errors.length < 5) {
+        errors.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+  })
+
+  return {
+    bucket,
+    attemptedCount: ids.length,
+    removedCount,
+    failedCount: failedIds.length,
+    failedIds,
+    errors,
+  }
+}
+
 function _getChartShapeIdSet(chart) {
   try {
     const allShapes = chart?.getAllShapes?.()
@@ -968,6 +1004,61 @@ function _getChartShapeIdSet(chart) {
     return new Set(allShapes.map((shape) => shape?.id).filter(Boolean))
   } catch {
     return null
+  }
+}
+
+function _getChartShapes(chart) {
+  try {
+    const allShapes = chart?.getAllShapes?.()
+    return Array.isArray(allShapes) ? allShapes : []
+  } catch {
+    return []
+  }
+}
+
+function _summarizeShape(shape) {
+  const summary = {
+    id: shape?.id ?? null,
+    name: shape?.name ?? null,
+    type: shape?.type ?? null,
+    tool: shape?.tool ?? null,
+    text: shape?.text ?? null,
+  }
+
+  const descriptor = [summary.name, summary.type, summary.tool, summary.text]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  return { summary, descriptor }
+}
+
+function _looksLikeResidualOverlayShape(shape) {
+  const { descriptor } = _summarizeShape(shape)
+  if (!descriptor) return false
+
+  if (descriptor.includes('arrow_up') || descriptor.includes('arrow_down')) return true
+  if (descriptor.includes('arrowup') || descriptor.includes('arrowdown')) return true
+
+  if (!descriptor.includes('text')) return false
+
+  return /\b(open|close)\b/.test(descriptor)
+    || /\b[oOcC]\s+\d/.test(descriptor)
+    || descriptor.includes('@')
+}
+
+function _removeLikelyResidualOverlayShapes(chart) {
+  const allShapes = _getChartShapes(chart)
+  const candidates = allShapes.filter(_looksLikeResidualOverlayShape)
+  const candidateIds = candidates.map((shape) => shape?.id).filter(Boolean)
+  const removal = _removeTrackedShapeIds(chart, candidateIds, 'residual-overlay')
+
+  return {
+    candidateCount: candidates.length,
+    removedCount: removal.removedCount,
+    failedCount: removal.failedCount,
+    errorSamples: removal.errors,
+    shapeSamples: candidates.slice(0, 8).map((shape) => _summarizeShape(shape).summary),
   }
 }
 
@@ -1437,15 +1528,27 @@ function _redrawArrows(chart) {
 function clearDetailShapes(chart) {
   // Remove only the SL/TP detail shapes that were individually tracked.
   // Entry arrows are managed separately and are NOT touched here.
-  _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
-  _detailOrderLines.forEach(ol => { try { ol.remove() } catch {} })
-  _detailOrderLines = []
-  _detailShapes = []
+  const detailResult = _removeTrackedShapeIds(chart, _detailShapes, 'detail')
+  const failedOrderLines = []
+  _detailOrderLines.forEach((orderLine) => {
+    try {
+      orderLine.remove()
+    } catch {
+      failedOrderLines.push(orderLine)
+    }
+  })
+  _detailOrderLines = failedOrderLines
+  _detailShapes = detailResult.failedIds
+
+  return {
+    ...detailResult,
+    detailOrderLinesAttempted: detailResult.attemptedCount,
+    orderLinesFailedCount: failedOrderLines.length,
+  }
 }
 
 function clearOverlayShapes(chart) {
   _hideOverlayTooltip()
-  const baseShapeIds = _overlayBaseShapeIds
 
   // Increment generation FIRST so any in-flight createShape() Promises
   // (from the previous draw) self-delete when they resolve instead of
@@ -1454,25 +1557,45 @@ function clearOverlayShapes(chart) {
 
   // Remove only the shapes that belong to our overlay. Bulk chart-level clears
   // also delete user-authored drawings such as trend lines.
-  _detailShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
-  _detailOrderLines.forEach(ol => { try { ol.remove() } catch { /* */ } })
-  _detailOrderLines = []
-  _detailShapes = []
+  const detailResult = clearDetailShapes(chart)
+  const overlayResult = _removeTrackedShapeIds(chart, _drawnShapes, 'overlay')
+  const residualResult = _removeLikelyResidualOverlayShapes(chart)
 
-  _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
+  _drawnShapes = overlayResult.failedIds
+  _cachedSignals = []
+  _overlayShapeSignals = new Map(
+    _drawnShapes
+      .map((id) => [id, _overlayShapeSignals.get(id)])
+      .filter((entry) => Boolean(entry[1]))
+  )
+  _overlayBaseShapeIds = _getChartShapeIdSet(chart)
 
-  const currentShapeIds = _getChartShapeIdSet(chart)
-  if (baseShapeIds && currentShapeIds) {
-    for (const id of currentShapeIds) {
-      if (baseShapeIds.has(id)) continue
-      try { chart.removeEntity(id) } catch { /* already gone */ }
-    }
+  const result = {
+    detailAttemptedCount: detailResult.attemptedCount,
+    detailRemovedCount: detailResult.removedCount,
+    detailFailedCount: detailResult.failedCount,
+    detailErrorSamples: detailResult.errors,
+    overlayAttemptedCount: overlayResult.attemptedCount,
+    overlayRemovedCount: overlayResult.removedCount,
+    overlayFailedCount: overlayResult.failedCount,
+    overlayErrorSamples: overlayResult.errors,
+    residualCandidateCount: residualResult.candidateCount,
+    residualRemovedCount: residualResult.removedCount,
+    residualFailedCount: residualResult.failedCount,
+    residualErrorSamples: residualResult.errorSamples,
+    residualShapeSamples: residualResult.shapeSamples,
+    remainingTrackedShapeCount: _drawnShapes.length,
+    remainingDetailShapeCount: _detailShapes.length,
+    remainingOrderLineCount: _detailOrderLines.length,
   }
 
-  _drawnShapes = []
-  _cachedSignals = []
-  _overlayShapeSignals = new Map()
-  _overlayBaseShapeIds = _getChartShapeIdSet(chart)
+  if (result.overlayFailedCount > 0 || result.detailFailedCount > 0 || result.remainingOrderLineCount > 0) {
+    _logOverlayToMain('warn', 'clearOverlayShapes partial failure', result)
+  } else {
+    _logOverlayToMain('info', 'clearOverlayShapes completed', result)
+  }
+
+  return result
 }
 
 function _getOverlayDebugState() {
@@ -1590,6 +1713,41 @@ function _getActiveOverlayChart() {
   return _tvChart
 }
 
+function _clearOverlayOnKnownCharts() {
+  const charts = []
+  const freshChart = findTvChart()
+  if (freshChart) charts.push(freshChart)
+  if (_tvChart && !charts.includes(_tvChart)) charts.push(_tvChart)
+
+  let clearedCount = 0
+  const clearResults = []
+  for (const chart of charts) {
+    try {
+      clearResults.push(clearOverlayShapes(chart))
+      clearedCount += 1
+    } catch (error) {
+      clearResults.push({
+        overlayAttemptedCount: _drawnShapes.length,
+        overlayRemovedCount: 0,
+        overlayFailedCount: _drawnShapes.length,
+        overlayErrorSamples: [error instanceof Error ? error.message : String(error)],
+      })
+      // Ignore per-chart clear failures so other chart refs can still be cleared.
+    }
+  }
+
+  _tvChart = freshChart || _tvChart || null
+  const summary = {
+    chartCount: charts.length,
+    clearedCount,
+    freshChartFound: Boolean(freshChart),
+    cachedChartFound: Boolean(_tvChart),
+    clearResults,
+  }
+  _logOverlayToMain('info', 'clear overlay on known charts', summary)
+  return summary
+}
+
 /**
  * Wait until the TV chart is showing a symbol that contains `expectedPair`.
  * After a pushState symbol switch the chart re-mounts asynchronously; we must
@@ -1642,6 +1800,11 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
   const messageVersion = ++_overlayMessageVersion
   if (locale) _uiLocale = locale
   if (!signals || signals.length === 0) return
+  _logOverlayToMain('info', 'overlay-signals received', {
+    signalCount: Array.isArray(signals) ? signals.length : 0,
+    locale: locale || null,
+    path: window.location.pathname,
+  })
 
   // After a pushState symbol switch, wait for the chart to display the correct
   // symbol before drawing.  Infer the expected pair from the current URL path.
@@ -1677,6 +1840,11 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
       return
     }
     drawSignalsOnChart(_tvChart, signals)
+    _logOverlayToMain('info', 'overlay-signals drawn', {
+      signalCount: signals.length,
+      trackedShapeCount: _drawnShapes.length,
+      cachedSignalCount: _cachedSignals.length,
+    })
     ipcRenderer.send('overlay-status', { ok: true, count: signals.length })
   } catch (err) {
     // Chart reference may have gone stale (e.g. symbol change); reset and retry once
@@ -1692,6 +1860,11 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
         return
       }
       drawSignalsOnChart(fresh, signals)
+      _logOverlayToMain('info', 'overlay-signals drawn after retry', {
+        signalCount: signals.length,
+        trackedShapeCount: _drawnShapes.length,
+        cachedSignalCount: _cachedSignals.length,
+      })
       ipcRenderer.send('overlay-status', { ok: true, count: signals.length, retried: true })
     } else {
       ipcRenderer.send('overlay-status', { ok: false, reason: 'stale_chart' })
@@ -1702,26 +1875,21 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 // IPC: clear all drawn shapes
 ipcRenderer.on('overlay-clear', async () => {
   _overlayMessageVersion += 1
-  const chart = _getActiveOverlayChart()
-  if (chart) {
-    clearOverlayShapes(chart)
-  }
+  _clearOverlayOnKnownCharts()
 })
 
 ipcRenderer.on('overlay-clear-debug', async () => {
   _overlayMessageVersion += 1
   const before = _getOverlayDebugState()
-  const chart = _getActiveOverlayChart()
-  if (chart) {
-    clearOverlayShapes(chart)
-  }
+  const clearResult = _clearOverlayOnKnownCharts()
   const after = _getOverlayDebugState()
   ipcRenderer.send('overlay-status', {
     action: 'clear-debug',
-    ok: Boolean(chart),
-    reason: chart ? 'cleared' : 'tv_chart_not_found',
+    ok: clearResult.clearedCount > 0,
+    reason: clearResult.clearedCount > 0 ? 'cleared' : 'tv_chart_not_found',
     before,
     after,
+    clearResult,
   })
 })
 

@@ -27,7 +27,7 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
   const close = () => window.electronAPI?.closeWindow()
 
   const debugClearLabel = locale === 'zh-CN' ? '清箭头' : 'Clear Arrows'
-  const showDebugClearButton = true
+  const showDebugClearButton = false
   const showDebugDialog = false
 
   React.useEffect(() => {

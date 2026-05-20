@@ -363,14 +363,34 @@ export function useMarketData() {
         const markers = await api.getOrderMarkers({ symbol, limit: 200 })
         if (!alive || currentRequest !== requestSequence) return
 
+        window.electronAPI?.logToMain?.('info', 'chart order markers fetched', {
+          symbol,
+          chartInterval,
+          markerCount: markers.length,
+          labelsVisible: chartOrderMarkerLabelsVisible,
+          markersVisible: chartOrderMarkersVisible,
+        })
+
         const signals = mapOrderMarkersToOverlaySignals(markers, chartOrderMarkerLabelsVisible)
         if (signals.length === 0) {
+          window.electronAPI?.logToMain?.('info', 'chart order markers mapped to empty overlay signals', {
+            symbol,
+            chartInterval,
+            markerCount: markers.length,
+          })
           await clearOverlay()
           return
         }
 
         const locale = useUiPreferencesStore.getState().locale
-        await window.electronAPI?.setChartOverlaySignals?.(signals, locale)
+        const overlayResult = await window.electronAPI?.setChartOverlaySignals?.(signals, locale)
+        window.electronAPI?.logToMain?.('info', 'chart overlay signals sent', {
+          symbol,
+          chartInterval,
+          signalCount: signals.length,
+          locale,
+          overlayResult: overlayResult ?? null,
+        })
       } catch (error) {
         if (!alive || currentRequest !== requestSequence) return
         window.electronAPI?.logToMain?.('warn', 'load chart order markers failed', {

@@ -247,6 +247,7 @@ function waitForOverlayStatus(action, timeoutMs = 4000) {
       if (settled) return
       settled = true
       cleanup()
+      logger.info('[OVERLAY_IPC] phase=status', { action, payload })
       resolve(payload)
     }
 
@@ -257,6 +258,7 @@ function waitForOverlayStatus(action, timeoutMs = 4000) {
     }
 
     const timer = setTimeout(() => {
+      logger.warn('[OVERLAY_IPC] phase=timeout', { action, timeoutMs })
       finish({ action, ok: false, reason: 'timeout' })
     }, timeoutMs)
 
@@ -664,9 +666,11 @@ ipcMain.handle('set-chart-overlay-signals', async (_event, signals, locale) => {
   if (!binanceView) return { ok: false, reason: 'no_view' }
   const normalizedSignals = Array.isArray(signals) ? signals : []
   try {
+    logger.info('[OVERLAY_IPC] phase=send', { action: 'signals', count: normalizedSignals.length, locale: locale || null })
     binanceView.webContents.send('overlay-signals', normalizedSignals, locale)
     return { ok: true, count: normalizedSignals.length }
   } catch (error) {
+    logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'signals', reason: error?.message || 'overlay_send_failed' })
     return { ok: false, reason: error?.message || 'overlay_send_failed' }
   }
 })
@@ -674,9 +678,11 @@ ipcMain.handle('set-chart-overlay-signals', async (_event, signals, locale) => {
 ipcMain.handle('clear-chart-overlay-signals', async () => {
   if (!binanceView) return { ok: false, reason: 'no_view' }
   try {
+    logger.info('[OVERLAY_IPC] phase=send', { action: 'clear' })
     binanceView.webContents.send('overlay-clear')
     return { ok: true }
   } catch (error) {
+    logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'clear', reason: error?.message || 'overlay_clear_failed' })
     return { ok: false, reason: error?.message || 'overlay_clear_failed' }
   }
 })
@@ -684,10 +690,12 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
 ipcMain.handle('debug-probe-chart-overlay', async () => {
   if (!binanceView) return { action: 'probe', ok: false, reason: 'no_view' }
   try {
+    logger.info('[OVERLAY_IPC] phase=send', { action: 'probe' })
     const waitResult = waitForOverlayStatus('probe')
     binanceView.webContents.send('overlay-probe')
     return await waitResult
   } catch (error) {
+    logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'probe', reason: error?.message || 'probe_failed' })
     return { action: 'probe', ok: false, reason: error?.message || 'probe_failed' }
   }
 })
@@ -695,10 +703,12 @@ ipcMain.handle('debug-probe-chart-overlay', async () => {
 ipcMain.handle('debug-clear-chart-overlay-signals', async () => {
   if (!binanceView) return { action: 'clear-debug', ok: false, reason: 'no_view' }
   try {
+    logger.info('[OVERLAY_IPC] phase=send', { action: 'clear-debug' })
     const waitResult = waitForOverlayStatus('clear-debug')
     binanceView.webContents.send('overlay-clear-debug')
     return await waitResult
   } catch (error) {
+    logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'clear-debug', reason: error?.message || 'clear_debug_failed' })
     return { action: 'clear-debug', ok: false, reason: error?.message || 'clear_debug_failed' }
   }
 })
