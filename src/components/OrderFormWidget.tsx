@@ -20,6 +20,7 @@ interface AccountSummary {
   base_asset?: string | null
   quote_asset?: string | null
   position_mode?: string | null
+  leverage?: number | null
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null
@@ -287,6 +288,7 @@ export function OrderFormWidget({
       symbol,
       base_asset: baseAsset,
       quote_asset: quoteAsset,
+      leverage: null,
       configured_leverage: null,
       long_position_qty: null,
       short_position_qty: null,
@@ -538,13 +540,13 @@ export function OrderFormWidget({
   }, [user?.username, symbol])
 
   useEffect(() => {
-    if (accountSummary?.configured_leverage && accountSummary.configured_leverage !== leverage) {
-      if (user?.username) {
-        writeStoredLeverage(user.username, symbol, accountSummary.configured_leverage)
-      }
-      setLeverage(accountSummary.configured_leverage)
+    const preferredLeverage = accountSummary?.leverage ?? accountSummary?.configured_leverage ?? null
+    if (!preferredLeverage || preferredLeverage === leverage) return
+    if (user?.username) {
+      writeStoredLeverage(user.username, symbol, preferredLeverage)
     }
-  }, [accountSummary?.configured_leverage, leverage, symbol, user?.username])
+    setLeverage(preferredLeverage)
+  }, [accountSummary?.leverage, accountSummary?.configured_leverage, leverage, symbol, user?.username])
 
   useEffect(() => {
     if (!user?.username) return
@@ -602,7 +604,7 @@ export function OrderFormWidget({
         leverage: nextLeverage,
       })
       writeStoredLeverage(user.username, symbol, nextLeverage)
-      setAccountSummary((current) => current ? { ...current, configured_leverage: nextLeverage } : current)
+      setAccountSummary((current) => current ? { ...current, leverage: nextLeverage, configured_leverage: nextLeverage } : current)
     } catch (error) {
       setLeverage(previousLeverage)
       writeStoredLeverage(user.username, symbol, previousLeverage)

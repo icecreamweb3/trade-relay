@@ -1237,6 +1237,7 @@ def init_db() -> None:
                     base_asset           VARCHAR(16)   DEFAULT NULL,
                     quote_asset          VARCHAR(16)   DEFAULT NULL,
                     position_mode        VARCHAR(16)   DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
+                    leverage             INT           DEFAULT NULL COMMENT '用户最近设置的杠杆',
                     configured_leverage  INT           DEFAULT NULL,
                     long_position_qty    DECIMAL(30,10) DEFAULT NULL,
                     short_position_qty   DECIMAL(30,10) DEFAULT NULL,
@@ -1277,6 +1278,10 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE account_summary ADD COLUMN position_mode VARCHAR(16) DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER quote_asset")
             except Exception:
                 pass
+            try:
+                cur.execute("ALTER TABLE account_summary ADD COLUMN leverage INT DEFAULT NULL COMMENT '用户最近设置的杠杆' AFTER position_mode")
+            except Exception:
+                pass
 
         conn.commit()
     finally:
@@ -1288,7 +1293,7 @@ def init_db() -> None:
 # ──────────────────────────────────────────────
 
 _ACCOUNT_SUMMARY_COLUMNS = (
-    "user_id", "symbol", "base_asset", "quote_asset", "position_mode",
+    "user_id", "symbol", "base_asset", "quote_asset", "position_mode", "leverage",
     "configured_leverage", "long_position_qty", "short_position_qty",
     "long_position_value", "short_position_value", "rest_mark_price",
     "available_balance", "margin_ratio", "risk_rate", "maint_margin",

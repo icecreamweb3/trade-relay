@@ -159,6 +159,7 @@ interface ApiAccountSummary {
   base_asset?: string | null
   quote_asset?: string | null
   position_mode?: string | null
+  leverage?: number | null
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null

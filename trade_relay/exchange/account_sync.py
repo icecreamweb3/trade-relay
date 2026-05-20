@@ -30,6 +30,9 @@ _ENV_SYMBOL = os.environ.get("BINANCE_SYMBOL", "BTCUSDC").upper()
 
 QUOTE_ASSETS = ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH")
 
+if TYPE_CHECKING:
+    from backend.routers.account import AccountSummaryOut
+
 
 def _split_symbol(symbol: str | None) -> tuple[str | None, str | None]:
     if not symbol:
@@ -71,9 +74,12 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
         return
 
     try:
+        persisted_summary = db_module.get_account_summary_from_db(user_id, normalized) or {}
         client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
         account = client.get_account_info() or {}
         positions = client.get_position_information(symbol=normalized, recv_window=5000) or []
+        dual_side_position = client.get_position_mode()
+        position_mode = 'DUAL' if dual_side_position is True else 'SINGLE'
 
         assets = account.get("assets", []) or []
         selected_asset = None
@@ -149,6 +155,8 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
             symbol=normalized,
             base_asset=base_asset,
             quote_asset=quote_asset,
+            position_mode=position_mode,
+            leverage=int(persisted_summary["leverage"]) if persisted_summary.get("leverage") is not None else configured_leverage,
             configured_leverage=configured_leverage,
             long_position_qty=long_position_qty,
             short_position_qty=short_position_qty,

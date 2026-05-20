@@ -111,11 +111,19 @@ def _invalidate_account_summary_cache(username: str, symbol: str | None = None) 
         _account_summary_cache.pop(_account_summary_cache_key(username, symbol), None)
 
 
+def _refresh_account_summary_from_exchange(user_id: int, username: str, symbol: str | None) -> dict:
+    from trade_relay.exchange.account_sync import _fetch_and_store
+
+    _fetch_and_store(user_id, username, symbol)
+    return db_module.get_account_summary_from_db(user_id, symbol) or {}
+
+
 class AccountSummaryOut(BaseModel):
     symbol: str | None = None
     base_asset: str | None = None
     quote_asset: str | None = None
     position_mode: str | None = None
+    leverage: int | None = None
     configured_leverage: int | None = None
     long_position_qty: float | None = None
     short_position_qty: float | None = None
@@ -208,6 +216,7 @@ def _admin_account_summary(symbol: str | None) -> AccountSummaryOut:
         base_asset=base_asset,
         quote_asset=quote_asset,
         position_mode=None,
+        leverage=None,
         has_api_credentials=False,
         message=None,
     )
@@ -305,6 +314,7 @@ def get_account_summary(
     testnet = cfg_module.is_testnet(username)
     try:
         _log.info("[ACCOUNT_SUMMARY] phase=binance_fetch username=%s symbol=%s testnet=%s", username, normalized_symbol, testnet)
+        persisted_summary = db_module.get_account_summary_from_db(user_id, normalized_symbol) or {}
         client = BinanceClient(
             api_key=api_key,
             secret_key=api_secret,
@@ -389,6 +399,7 @@ def get_account_summary(
             base_asset=base_asset,
             quote_asset=quote_asset,
             position_mode=position_mode,
+            leverage=int(persisted_summary["leverage"]) if persisted_summary.get("leverage") is not None else configured_leverage,
             configured_leverage=configured_leverage,
             long_position_qty=long_position_qty,
             short_position_qty=short_position_qty,
@@ -452,9 +463,25 @@ def update_account_leverage(
             testnet=cfg_module.is_testnet(username),
         )
         result = client.set_leverage(symbol, leverage)
-        _invalidate_account_summary_cache(username, symbol)
+        existing_summary = db_module.get_account_summary_from_db(int(user["sub"]), symbol) or {}
+        merged_summary = {
+            **existing_summary,
+            "symbol": symbol,
+            "leverage": leverage,
+        }
+        user_id = int(user["sub"])
+        db_module.upsert_account_summary(user_id, symbol, merged_summary)
+        refreshed_summary = _refresh_account_summary_from_exchange(user_id, username, symbol)
+        _invalidate_account_summary_cache(username, None)
         _log.info("[ACCOUNT_SUMMARY] phase=leverage_update user=%s symbol=%s leverage=%s", username, symbol, leverage)
-        return {"ok": True, "symbol": symbol, "leverage": leverage, "exchange": result}
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "leverage": refreshed_summary.get("leverage", leverage),
+            "configured_leverage": refreshed_summary.get("configured_leverage"),
+            "position_mode": refreshed_summary.get("position_mode"),
+            "exchange": result,
+        }
     except HTTPException:
         raise
     except Exception as exc:
@@ -487,10 +514,18 @@ def update_account_position_mode(
         )
         hedge_mode = position_mode == 'DUAL'
         result = client.set_position_mode(hedge_mode)
-        _invalidate_account_summary_cache(username, symbol)
+        user_id = int(user["sub"])
+        refreshed_summary = _refresh_account_summary_from_exchange(user_id, username, symbol)
         _invalidate_account_summary_cache(username, None)
         _log.info("[ACCOUNT_SUMMARY] phase=position_mode_update user=%s symbol=%s position_mode=%s", username, symbol, position_mode)
-        return {"ok": True, "symbol": symbol, "position_mode": position_mode, "exchange": result}
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "position_mode": refreshed_summary.get("position_mode", position_mode),
+            "leverage": refreshed_summary.get("leverage"),
+            "configured_leverage": refreshed_summary.get("configured_leverage"),
+            "exchange": result,
+        }
     except HTTPException:
         raise
     except Exception as exc:

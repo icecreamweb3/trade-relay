@@ -166,6 +166,7 @@ CREATE TABLE account_summary (
     symbol               VARCHAR(32)     DEFAULT NULL COMMENT '交易对（NULL 表示全局）',
     base_asset           VARCHAR(16)     DEFAULT NULL,
     quote_asset          VARCHAR(16)     DEFAULT NULL,
+    leverage             INT             DEFAULT NULL COMMENT '用户最近设置的杠杆',
     configured_leverage  INT             DEFAULT NULL,
     long_position_qty    DECIMAL(30,10)  DEFAULT NULL,
     short_position_qty   DECIMAL(30,10)  DEFAULT NULL,
@@ -274,4 +275,5 @@ ALTER TABLE daily_profile ADD INDEX idx_username (username);
 ALTER TABLE account_summary DROP KEY IF EXISTS uk_user_symbol;
 ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS user_id BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id;
 ALTER TABLE account_summary DROP COLUMN IF EXISTS username;
+ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS leverage INT DEFAULT NULL COMMENT '用户最近设置的杠杆' AFTER quote_asset;
 ALTER TABLE account_summary ADD UNIQUE KEY uk_user_symbol (user_id, symbol);
