@@ -41,6 +41,14 @@ interface PositionHistory {
   realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; updated_at?: string | null
 }
 
+interface PositionsWsMessage {
+  type?: string
+  event?: string
+  positions?: Position[]
+  open_orders?: Order[]
+  conditional_orders?: ApiConditionalOrder[]
+}
+
 interface MarketCloseConfirm {
   position: Position
   quantity: number
@@ -202,18 +210,30 @@ export function PositionsPanel({
 
       socket.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data as string) as { type?: string; event?: string }
+          const data = JSON.parse(event.data as string) as PositionsWsMessage
+          const hasSnapshot = Array.isArray(data.positions) || Array.isArray(data.open_orders) || Array.isArray(data.conditional_orders)
+
+          if (Array.isArray(data.positions)) {
+            setPositions(data.positions)
+          }
+          if (Array.isArray(data.open_orders)) {
+            setOpenOrders(data.open_orders)
+          }
+          if (Array.isArray(data.conditional_orders)) {
+            setConditionalOrders(data.conditional_orders)
+          }
+
           if (data.type === 'account_update') {
-            // Positions are already written to DB before this message is sent.
-            // loadPositionsRef always fetches positions regardless of which tab is active.
-            void loadPositionsRef.current()
-            // Also reload whatever tab is currently shown (e.g. open orders).
-            scheduleReload()
-          } else if (data.type === 'order_update') {
-            scheduleReload()
-            // For poll-based or REST-sync updates, positions are already updated in DB.
-            if (data.event === 'POLL' || data.event === 'SYNC' || data.event === 'REST_SYNC') {
+            if (!hasSnapshot) {
               void loadPositionsRef.current()
+              scheduleReload()
+            }
+          } else if (data.type === 'order_update') {
+            if (!hasSnapshot) {
+              scheduleReload()
+              if (data.event === 'POLL' || data.event === 'SYNC' || data.event === 'REST_SYNC') {
+                void loadPositionsRef.current()
+              }
             }
           }
         } catch {

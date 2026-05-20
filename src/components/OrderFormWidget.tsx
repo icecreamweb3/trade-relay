@@ -48,6 +48,23 @@ interface PositionSnapshot {
   unrealized_pnl: number | null
 }
 
+interface LiveOrderSnapshot {
+  symbol: string
+  side: string
+  quantity: number
+  filled_qty?: number
+  trade_direction?: string | null
+  reduce_only?: boolean
+}
+
+interface PositionsWsMessage {
+  type?: string
+  event?: string
+  positions?: PositionSnapshot[]
+  open_orders?: LiveOrderSnapshot[]
+  account_summary?: AccountSummary
+}
+
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 
 function splitTradingSymbol(symbol: string) {
@@ -123,6 +140,45 @@ function getConditionalSubTypeStorageKey(username: string, symbol: string) {
 
 function getAdvancedOrderTypeStorageKey(username: string, symbol: string) {
   return `trade-relay:advanced-order-type:${username}:${symbol.toUpperCase()}`
+}
+
+function applyLiveSymbolSnapshot(
+  symbol: string,
+  positions: PositionSnapshot[],
+  openOrders: LiveOrderSnapshot[],
+  setLiveSymbolPositions: (positions: PositionSnapshot[]) => void,
+  setPositionLongQty: (quantity: number) => void,
+  setPositionShortQty: (quantity: number) => void,
+  setPendingLongCloseQty: (quantity: number) => void,
+  setPendingShortCloseQty: (quantity: number) => void,
+) {
+  const normalizedSymbol = symbol.toUpperCase()
+  const nextPositions = positions.filter((position) => position.symbol.toUpperCase() === normalizedSymbol)
+
+  let longQty = 0
+  let shortQty = 0
+  for (const position of nextPositions) {
+    if (position.side === 'LONG') longQty += position.quantity
+    else if (position.side === 'SHORT') shortQty += position.quantity
+  }
+
+  let pendingLong = 0
+  let pendingShort = 0
+  for (const order of openOrders) {
+    if (order.symbol.toUpperCase() !== normalizedSymbol) continue
+    const isClose = String(order.trade_direction ?? '').toUpperCase() === 'CLOSE' || Boolean(order.reduce_only)
+    if (!isClose) continue
+    const remaining = order.quantity - (order.filled_qty ?? 0)
+    if (remaining <= 0) continue
+    if (String(order.side).toUpperCase() === 'SELL') pendingLong += remaining
+    else if (String(order.side).toUpperCase() === 'BUY') pendingShort += remaining
+  }
+
+  setLiveSymbolPositions(nextPositions)
+  setPositionLongQty(longQty)
+  setPositionShortQty(shortQty)
+  setPendingLongCloseQty(pendingLong)
+  setPendingShortCloseQty(pendingShort)
 }
 
 function readStoredLeverage(username: string, symbol: string): number | null {
@@ -451,15 +507,37 @@ export function OrderFormWidget({
 
       const wsUrl = new URL(getBackendWebSocketUrl('/api/positions/ws'))
       wsUrl.searchParams.set('token', token)
+      wsUrl.searchParams.set('symbol', symbol)
       socket = new WebSocket(wsUrl.toString())
 
       socket.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data as string) as { type?: string; event?: string }
+          const data = JSON.parse(event.data as string) as PositionsWsMessage
+          const hasSnapshot = Array.isArray(data.positions) && Array.isArray(data.open_orders)
+          const hasAccountSummary = Boolean(data.account_summary)
+
+          if (hasSnapshot) {
+            applyLiveSymbolSnapshot(
+              symbol,
+              data.positions ?? [],
+              data.open_orders ?? [],
+              setLiveSymbolPositions,
+              setPositionLongQty,
+              setPositionShortQty,
+              setPendingLongCloseQty,
+              setPendingShortCloseQty,
+            )
+          }
+          if (data.account_summary) {
+            setAccountSummary(data.account_summary)
+          }
+
           if (data.type === 'account_update') {
-            scheduleReload()
+            if (!hasSnapshot) scheduleReload()
+            if (!hasAccountSummary) void loadAccountSummaryRef.current?.()
           } else if (data.type === 'order_update' && (data.event === 'POLL' || data.event === 'SYNC' || data.event === 'REST_SYNC')) {
-            scheduleReload()
+            if (!hasSnapshot) scheduleReload()
+            if (!hasAccountSummary) void loadAccountSummaryRef.current?.()
           }
         } catch {
           // ignore malformed messages
@@ -486,7 +564,7 @@ export function OrderFormWidget({
       if (reconnectTimer) clearTimeout(reconnectTimer)
       socket?.close()
     }
-  }, [isActive, user?.username, isAdminAccount])
+  }, [isActive, user?.username, isAdminAccount, symbol])
 
   const baseTicker = baseAsset
 

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from trade_relay import database as db_module
 from trade_relay import config as cfg_module
@@ -187,6 +187,184 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
     return positions
 
 
+def _position_out_to_dict(position: PositionOut) -> dict[str, Any]:
+    if hasattr(position, "model_dump"):
+        return position.model_dump()
+    return position.dict()
+
+
+def _active_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
+    if user_id is not None:
+        return db_module.get_active_orders(user_id=user_id)
+
+    rows = db_module.query_orders(username=username, limit=500)
+    return [
+        row for row in rows
+        if str(row.get("order_category") or "Basic") == "Basic"
+        and str(row.get("status") or "").upper() in {"NEW", "PARTIALLY_FILLED", "PENDING", "PENDING_CANCEL"}
+    ]
+
+
+def _conditional_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
+    rows = db_module.query_orders(user_id=user_id, username=username, limit=500)
+    active_statuses = {"NEW", "PARTIALLY_FILLED", "PENDING", "PENDING_CANCEL"}
+    return [
+        row for row in rows
+        if str(row.get("order_category") or "Basic") == "Conditional"
+        and str(row.get("status") or "").upper() in active_statuses
+    ]
+
+
+def _serialize_open_orders_snapshot(user_id: int | None, username: str) -> list[dict[str, Any]]:
+    rows = _active_order_rows_for_user(user_id, username)
+    return [
+        {
+            "id": int(row["id"]),
+            "username": str(row.get("username") or username),
+            "symbol": str(row.get("symbol") or "").upper(),
+            "side": str(row.get("side") or "").upper(),
+            "order_type": str(row.get("order_type") or "").upper(),
+            "trade_direction": str(row.get("trade_direction") or "").upper() if row.get("trade_direction") else None,
+            "quantity": float(row.get("quantity") or 0),
+            "filled_qty": float(row.get("filled_qty") or 0),
+            "price": float(row["price"]) if row.get("price") is not None else None,
+            "avg_price": float(row["avg_price"]) if row.get("avg_price") is not None else None,
+            "stop_price": float(row["stop_price"]) if row.get("stop_price") is not None else None,
+            "reduce_only": bool(row.get("reduce_only") or False),
+            "post_only": bool(row.get("post_only") or False),
+            "commission": float(row["commission"]) if row.get("commission") is not None else None,
+            "commission_asset": str(row["commission_asset"]) if row.get("commission_asset") is not None else None,
+            "status": str(row.get("status") or "NEW").upper(),
+            "exchange_order_id": str(row.get("exchange_order_id") or "") or None,
+            "created_at": serialize_utc_timestamp_required(row.get("created_at")),
+            "updated_at": serialize_utc_timestamp(row.get("updated_at")),
+        }
+        for row in rows
+    ]
+
+
+def _serialize_conditional_orders_snapshot(user_id: int | None, username: str) -> list[dict[str, Any]]:
+    rows = _conditional_order_rows_for_user(user_id, username)
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        algo_id_raw = str(row.get("algo_id") or "").strip()
+        if not algo_id_raw:
+            continue
+        try:
+            algo_id = int(algo_id_raw)
+        except ValueError:
+            continue
+
+        order_type = str(row.get("order_type") or "").upper()
+        if order_type == "TAKE_PROFIT_MARKET":
+            trigger_price = float(row["price"]) if row.get("price") is not None else 0.0
+        else:
+            trigger_price = float(row["stop_price"]) if row.get("stop_price") is not None else 0.0
+
+        payload.append({
+            "algo_id": algo_id,
+            "algo_client_id": str(row.get("algo_client_id") or "") or None,
+            "symbol": str(row.get("symbol") or "").upper(),
+            "side": str(row.get("side") or "").upper(),
+            "position_side": _derive_conditional_position_side(
+                str(row.get("side") or ""),
+                str(row.get("trade_direction") or ""),
+            ),
+            "order_type": order_type,
+            "quantity": float(row.get("quantity") or 0),
+            "trigger_price": trigger_price,
+            "status": str(row.get("status") or "NEW").upper(),
+            "created_at": serialize_utc_timestamp_required(row.get("created_at")),
+            "trade_direction": str(row.get("trade_direction") or "").upper() if row.get("trade_direction") else None,
+            "exchange_order_id": str(row.get("exchange_order_id") or "") or None,
+            "client_order_id": str(row.get("client_order_id") or "") or None,
+        })
+    return payload
+
+
+def _build_positions_ws_payload(user_id: int | None, username: str, event: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(event)
+    payload["positions"] = [_position_out_to_dict(position) for position in _db_positions(user_id)]
+    payload["open_orders"] = _serialize_open_orders_snapshot(user_id, username)
+    payload["conditional_orders"] = _serialize_conditional_orders_snapshot(user_id, username)
+    return payload
+
+
+def _load_account_summary_snapshot(
+    user_id: int | None,
+    username: str,
+    symbol: str | None,
+    *,
+    refresh: bool,
+) -> dict[str, Any] | None:
+    normalized_symbol = str(symbol or "").strip().upper() or None
+    if user_id is None or not normalized_symbol:
+        return None
+
+    if refresh:
+        try:
+            from backend.routers.account import _refresh_account_summary_from_exchange
+
+            row = _refresh_account_summary_from_exchange(user_id, username, normalized_symbol) or {}
+        except Exception:
+            _log.exception(
+                "[POSITION_SYNC] phase=account_summary_refresh_error username=%s symbol=%s",
+                username,
+                normalized_symbol,
+            )
+            row = db_module.get_account_summary_from_db(user_id, normalized_symbol) or {}
+    else:
+        row = db_module.get_account_summary_from_db(user_id, normalized_symbol) or {}
+
+    if not row:
+        return None
+
+    return {
+        "symbol": row.get("symbol"),
+        "base_asset": row.get("base_asset"),
+        "quote_asset": row.get("quote_asset"),
+        "position_mode": row.get("position_mode"),
+        "leverage": int(row["leverage"]) if row.get("leverage") is not None else None,
+        "configured_leverage": int(row["configured_leverage"]) if row.get("configured_leverage") is not None else None,
+        "long_position_qty": float(row["long_position_qty"]) if row.get("long_position_qty") is not None else None,
+        "short_position_qty": float(row["short_position_qty"]) if row.get("short_position_qty") is not None else None,
+        "long_position_value": float(row["long_position_value"]) if row.get("long_position_value") is not None else None,
+        "short_position_value": float(row["short_position_value"]) if row.get("short_position_value") is not None else None,
+        "rest_mark_price": float(row["rest_mark_price"]) if row.get("rest_mark_price") is not None else None,
+        "available_balance": float(row["available_balance"]) if row.get("available_balance") is not None else None,
+        "margin_ratio": float(row["margin_ratio"]) if row.get("margin_ratio") is not None else None,
+        "risk_rate": float(row["risk_rate"]) if row.get("risk_rate") is not None else None,
+        "maint_margin": float(row["maint_margin"]) if row.get("maint_margin") is not None else None,
+        "total_equity": float(row["total_equity"]) if row.get("total_equity") is not None else None,
+        "position_value": float(row["position_value"]) if row.get("position_value") is not None else None,
+        "actual_leverage": float(row["actual_leverage"]) if row.get("actual_leverage") is not None else None,
+        "unrealized_pnl": float(row["unrealized_pnl"]) if row.get("unrealized_pnl") is not None else None,
+        "wallet_balance": float(row["wallet_balance"]) if row.get("wallet_balance") is not None else None,
+        "has_api_credentials": bool(row.get("has_api_credentials") or False),
+        "message": row.get("message"),
+    }
+
+
+def _build_positions_ws_payload_for_symbol(
+    user_id: int | None,
+    username: str,
+    event: dict[str, Any],
+    summary_symbol: str | None,
+    *,
+    refresh_account_summary: bool,
+) -> dict[str, Any]:
+    payload = _build_positions_ws_payload(user_id, username, event)
+    account_summary = _load_account_summary_snapshot(
+        user_id,
+        username,
+        summary_symbol,
+        refresh=refresh_account_summary,
+    )
+    if account_summary is not None:
+        payload["account_summary"] = account_summary
+    return payload
+
+
 @router.post("/sync", response_model=list[PositionOut])
 def sync_positions(user: dict = Depends(get_current_user)):
     """从 Binance 拉取最新持仓，写入数据库，并返回更新后的持仓列表。"""
@@ -315,6 +493,11 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
 
     username = str(user.get("username") or "")
     user_id = int(user["sub"]) if user.get("role") != "admin" else None
+    summary_symbol = None
+    try:
+        summary_symbol = websocket.query_params.get("symbol")
+    except Exception:
+        summary_symbol = None
     if not username:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token payload")
         return
@@ -338,7 +521,15 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
     register_user_stream_listener(username, listener)
 
     try:
-        await websocket.send_json({"type": "connected"})
+        await websocket.send_json(
+            _build_positions_ws_payload_for_symbol(
+                user_id,
+                username,
+                {"type": "connected"},
+                summary_symbol,
+                refresh_account_summary=False,
+            )
+        )
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=3.0)
@@ -346,7 +537,15 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
                 # Heartbeat every 3s: detects dead connections quickly
                 await websocket.send_json({"type": "ping"})
                 continue
-            await websocket.send_json(event)
+            await websocket.send_json(
+                _build_positions_ws_payload_for_symbol(
+                    user_id,
+                    username,
+                    event,
+                    summary_symbol,
+                    refresh_account_summary=bool(summary_symbol),
+                )
+            )
     except (WebSocketDisconnect, Exception):
         pass
     finally:
