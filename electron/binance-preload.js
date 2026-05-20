@@ -251,7 +251,7 @@ function _ensureTicker24hStream(symbol) {
 
   _ticker24hSymbol = normalized
   _logTicker24h('info', 'subscribe', { symbol: normalized })
-  const ws = new OriginalWebSocket(`wss://fstream.binance.com/ws/${normalized}@ticker`)
+  const ws = new OriginalWebSocket(`wss://fstream.binance.com/market/ws/${normalized}@ticker`)
   _ticker24hWs = ws
   let firstMessageLogged = false
 

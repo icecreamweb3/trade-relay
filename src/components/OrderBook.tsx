@@ -165,7 +165,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
   useEffect(() => {
     const sym = symbol.toLowerCase()
-    const wsUrl = `wss://fstream.binance.com/ws/${sym}@depth@100ms`
+    const wsUrl = `wss://fstream.binance.com/public/ws/${sym}@depth@100ms`
 
     let alive = true
     let ws: WebSocket | null = null

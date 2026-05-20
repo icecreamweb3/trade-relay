@@ -11,9 +11,11 @@ from typing import Callable, Optional
 
 import websocket
 
+from trade_relay.exchange.ws_proxy import get_proxy_config
+
 logger = logging.getLogger(__name__)
 
-WS_MARKET_URL = "wss://fstream.binance.com/ws/"
+WS_MARKET_URL = "wss://fstream.binance.com/market/ws/"
 
 TickerListener = Callable[[dict], None]
 
@@ -28,9 +30,7 @@ class PublicTicker24hStream:
         self.lock = threading.Lock()
         self.listeners: set[TickerListener] = set()
         self.last_payload: Optional[dict] = None
-        self.use_proxy = False
-        self.proxy_host = None
-        self.proxy_port = None
+        self.use_proxy, self.proxy_host, self.proxy_port = get_proxy_config()
         self.running = False
         self.connected = False
         self.reconnecting = False

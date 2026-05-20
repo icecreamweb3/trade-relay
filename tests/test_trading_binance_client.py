@@ -231,6 +231,18 @@ def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
     }]
 
 
+def test_order_status_stream_uses_binance_private_ws_url_for_mainnet():
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    stream.listen_key = "listen-key-123"
+
+    assert stream.ws_url == (
+        "wss://fstream.binance.com/private/ws"
+        "?listenKey=listen-key-123&events=ORDER_TRADE_UPDATE%2FACCOUNT_UPDATE"
+    )
+
+
 def test_order_status_stream_skips_close_tpsl_quantity_refresh_for_single_mode(monkeypatch):
     from trade_relay.trading import order_status_stream
 

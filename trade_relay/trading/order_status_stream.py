@@ -8,6 +8,7 @@ import ssl
 import threading
 import time
 from typing import Callable, Optional
+from urllib.parse import urlencode
 from urllib.parse import urlparse
 
 import websocket
@@ -38,8 +39,9 @@ def _normalize_position_mode(value: str | None) -> str:
         return "SINGLE"
     return "UNKNOWN"
 
-MAINNET_WS_URL = "wss://fstream.binance.com/ws/"
+MAINNET_PRIVATE_WS_URL = "wss://fstream.binance.com/private/ws"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/ws/"
+PRIVATE_WS_EVENTS = ("ORDER_TRADE_UPDATE", "ACCOUNT_UPDATE")
 
 
 class UserOrderStatusStream:
@@ -189,8 +191,13 @@ class UserOrderStatusStream:
 
     @property
     def ws_url(self) -> str:
-        base = TESTNET_WS_URL if self.testnet else MAINNET_WS_URL
-        return f"{base}{self.listen_key}"
+        if self.testnet:
+            return f"{TESTNET_WS_URL}{self.listen_key}"
+        query = urlencode({
+            "listenKey": self.listen_key or "",
+            "events": "/".join(PRIVATE_WS_EVENTS),
+        })
+        return f"{MAINNET_PRIVATE_WS_URL}?{query}"
 
     def start(self) -> None:
         if self.running and self.ws_thread and self.ws_thread.is_alive():

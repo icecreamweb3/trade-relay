@@ -18,6 +18,7 @@ import platform
 import copy
 from typing import Dict, Optional, Callable
 from datetime import datetime
+from urllib.parse import urlencode
 
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,8 @@ class OrdersMonitor:
     """
     
     # Binance Futures User Data Stream WebSocket URL
-    WS_USER_DATA_STREAM_URL = "wss://fstream.binance.com/ws/"
+    WS_USER_DATA_STREAM_URL = "wss://fstream.binance.com/private/ws"
+    PRIVATE_WS_EVENTS = ('ORDER_TRADE_UPDATE', 'ACCOUNT_UPDATE', 'ALGO_UPDATE', 'listenKeyExpired')
     
     def __init__(self, binance_client, on_order_filled_callback: Optional[Callable] = None, live_trading_manager=None):
         """
@@ -373,7 +375,7 @@ class OrdersMonitor:
         logger.info(f"✅ 获取listenKey成功: {self.listen_key[:20]}...")
         
         # 构建WebSocket URL并保存
-        self.user_data_stream_url = f"{self.WS_USER_DATA_STREAM_URL}{self.listen_key}"
+        self.user_data_stream_url = f"{self.WS_USER_DATA_STREAM_URL}?{urlencode({'listenKey': self.listen_key, 'events': '/'.join(self.PRIVATE_WS_EVENTS)})}"
         
         logger.info(f"🔗 连接User Data Stream WebSocket: {self.user_data_stream_url[:50]}...")
         
@@ -1454,7 +1456,7 @@ class OrdersMonitor:
                                 continue
                             
                             # ✅ 更新 WebSocket URL（使用新的 listenKey）
-                            self.user_data_stream_url = f"{self.WS_USER_DATA_STREAM_URL}{self.listen_key}"
+                            self.user_data_stream_url = f"{self.WS_USER_DATA_STREAM_URL}?{urlencode({'listenKey': self.listen_key, 'events': '/'.join(self.PRIVATE_WS_EVENTS)})}"
                             
                             # 判断是否获取到新的listenKey
                             is_same = (old_listen_key == self.listen_key)

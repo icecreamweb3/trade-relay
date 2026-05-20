@@ -15,7 +15,7 @@ from trade_relay.exchange.ws_proxy import get_proxy_config
 
 logger = logging.getLogger(__name__)
 
-WS_MARKET_URL = "wss://fstream.binance.com/ws/"
+WS_MARKET_URL = "wss://fstream.binance.com/market/ws/"
 
 MarkPriceListener = Callable[[dict], None]
 
