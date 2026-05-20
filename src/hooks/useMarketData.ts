@@ -6,10 +6,9 @@ import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { parseUtcTimestamp } from '../utils/datetime'
 
 // ── Direct Binance Futures WebSocket subscription ─────────────────────────────
-// One direct connection is kept here for kline + trade data.
-// Mark price / funding REST polling was removed to reduce extra Binance requests.
+// Use Binance's migrated /market websocket base for regular market streams.
 
-const FSTREAM_BASE = 'wss://fstream.binance.com'
+const FSTREAM_MARKET_BASE = 'wss://fstream.binance.com/market'
 
 interface ChartOverlaySignal {
   direction: 'LONG' | 'SHORT'
@@ -153,7 +152,7 @@ export function useMarketData() {
   // Stable ref so WS callbacks always call the latest action without re-running effects
   const processRef = useRef(processMarketEvent)
   useEffect(() => { processRef.current = processMarketEvent })
-  const baselineLoggedSymbolRef = useRef<string | null>(null)
+  const tickerStreamLoggedSymbolRef = useRef<string | null>(null)
   const derivedLoggedSymbolRef = useRef<string | null>(null)
 
   const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
@@ -204,7 +203,7 @@ export function useMarketData() {
       `${s}@aggTrade`,
       `${s}@depth20@100ms`,   // keep-alive: 10 msgs/sec forces proxy flush
     ].join('/')
-    const url = `${FSTREAM_BASE}/stream?streams=${streams}`
+    const url = `${FSTREAM_MARKET_BASE}/stream?streams=${streams}`
 
     const cleanup = makeWs(url, (raw) => {
       const envelope = raw as Record<string, unknown>
@@ -245,28 +244,45 @@ export function useMarketData() {
     }
   }, [symbol, chartInterval])
 
-  // ── 24h ticker REST hydration ────────────────────────────────────────────
-  // Use REST to get the 24h open price once on symbol change. Real-time 24h
-  // change values are then derived from live currentPrice updates locally.
+  // ── markPrice + 24h ticker: direct market websocket push ────────────────
   useEffect(() => {
-    let alive = true
-    baselineLoggedSymbolRef.current = null
+    tickerStreamLoggedSymbolRef.current = null
     derivedLoggedSymbolRef.current = null
 
-    const loadTicker24h = async () => {
-      try {
-        const response = await fetch(`https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${symbol.toUpperCase()}`)
-        if (!response.ok) return
-        const data = await response.json() as Record<string, unknown>
-        if (!alive || String(data.symbol || '').toUpperCase() !== symbol.toUpperCase()) return
+    const s = symbol.toLowerCase()
+    const streams = [
+      `${s}@markPrice@1s`,
+      `${s}@ticker`,
+    ].join('/')
+    const url = `${FSTREAM_MARKET_BASE}/stream?streams=${streams}`
 
-        const openPrice = parseFloat(String(data.openPrice ?? '0'))
-        const lastPrice = parseFloat(String(data.lastPrice ?? '0'))
-        if (baselineLoggedSymbolRef.current !== symbol.toUpperCase()) {
-          baselineLoggedSymbolRef.current = symbol.toUpperCase()
-          window.electronAPI?.logToMain?.('info', '24h auto-calc baseline loaded', {
-            symbol: symbol.toUpperCase(),
-            source: 'rest-24hr',
+    const cleanup = makeWs(url, (raw) => {
+      const envelope = raw as Record<string, unknown>
+      const data = (envelope.data ?? envelope) as Record<string, unknown>
+      if (!data?.e) return
+
+      if (data.e === 'markPriceUpdate') {
+        processRef.current({
+          type: 'markPrice',
+          symbol: data.s as string,
+          markPrice: parseFloat(data.p as string),
+          indexPrice: parseFloat(data.i as string),
+          fundingRate: parseFloat(data.r as string),
+          nextFundingTime: Number(data.T as number),
+          timestamp: Number(data.E as number),
+        })
+        return
+      }
+
+      if (data.e === '24hrTicker') {
+        const normalizedSymbol = String(data.s || symbol).toUpperCase()
+        const openPrice = parseFloat(String(data.o ?? '0'))
+        const lastPrice = parseFloat(String(data.c ?? '0'))
+        if (tickerStreamLoggedSymbolRef.current !== normalizedSymbol) {
+          tickerStreamLoggedSymbolRef.current = normalizedSymbol
+          window.electronAPI?.logToMain?.('info', '24h ticker stream initialized', {
+            symbol: normalizedSymbol,
+            source: 'ws-ticker',
             openPrice,
             lastPrice,
           })
@@ -274,28 +290,24 @@ export function useMarketData() {
 
         processRef.current({
           type: 'ticker24h',
-          symbol: String(data.symbol || symbol),
+          symbol: String(data.s || symbol),
           lastPrice,
-          priceChange: parseFloat(String(data.priceChange ?? '0')),
-          priceChangePercent: parseFloat(String(data.priceChangePercent ?? '0')),
+          priceChange: parseFloat(String(data.p ?? '0')),
+          priceChangePercent: parseFloat(String(data.P ?? '0')),
           openPrice,
-          highPrice: parseFloat(String(data.highPrice ?? '0')),
-          lowPrice: parseFloat(String(data.lowPrice ?? '0')),
-          volume: parseFloat(String(data.volume ?? '0')),
-          quoteVolume: parseFloat(String(data.quoteVolume ?? '0')),
-          openTime: Number(data.openTime ?? 0),
-          closeTime: Number(data.closeTime ?? 0),
-          eventTime: Date.now(),
+          highPrice: parseFloat(String(data.h ?? '0')),
+          lowPrice: parseFloat(String(data.l ?? '0')),
+          volume: parseFloat(String(data.v ?? '0')),
+          quoteVolume: parseFloat(String(data.q ?? '0')),
+          openTime: Number(data.O ?? 0),
+          closeTime: Number(data.C ?? 0),
+          eventTime: Number(data.E ?? Date.now()),
         })
-      } catch {
-        // Ignore fallback fetch failures; live price updates may still arrive.
       }
-    }
-
-    void loadTicker24h()
+    }, `mark+ticker24h(${symbol})`)
 
     return () => {
-      alive = false
+      cleanup()
     }
   }, [symbol])
 
