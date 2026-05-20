@@ -11,13 +11,16 @@
 import json
 import time
 import threading
+import logging
 import websocket
 import ssl
 import platform
 import copy
 from typing import Dict, Optional, Callable
 from datetime import datetime
-from loguru import logger
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_default_proxy_port() -> int:

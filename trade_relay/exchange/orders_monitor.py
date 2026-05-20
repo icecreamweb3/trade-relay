@@ -11,13 +11,16 @@
 import json
 import time
 import threading
+import logging
 import websocket
 import ssl
 import copy
 from typing import Dict, Optional, Callable
 from datetime import datetime
-from loguru import logger
 from trade_relay.exchange.ws_proxy import get_proxy_config
+
+
+logger = logging.getLogger(__name__)
 
 
 class OrdersMonitor:
