@@ -967,7 +967,14 @@ def init_db() -> None:
                                       ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (id),
                     KEY idx_user_status (user_id, status),
+                    KEY idx_user_created_at (user_id, created_at),
                     KEY idx_status_created (status, created_at),
+                    KEY idx_category_status_created (order_category, status, created_at),
+                    KEY idx_user_category_status_created (user_id, order_category, status, created_at),
+                    KEY idx_username_status_created (username, status, created_at),
+                    KEY idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at),
+                    KEY idx_username_exchange_order (username, exchange_order_id),
+                    KEY idx_username_algo_id (username, algo_id),
                     KEY idx_created_at (created_at DESC),
                     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -995,6 +1002,19 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE orders ADD INDEX idx_status_created (status, created_at)")
             except Exception:
                 pass  # index already exists
+            for _index_ddl in [
+                "ALTER TABLE orders ADD INDEX idx_user_created_at (user_id, created_at)",
+                "ALTER TABLE orders ADD INDEX idx_category_status_created (order_category, status, created_at)",
+                "ALTER TABLE orders ADD INDEX idx_user_category_status_created (user_id, order_category, status, created_at)",
+                "ALTER TABLE orders ADD INDEX idx_username_status_created (username, status, created_at)",
+                "ALTER TABLE orders ADD INDEX idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at)",
+                "ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id)",
+                "ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id)",
+            ]:
+                try:
+                    cur.execute(_index_ddl)
+                except Exception:
+                    pass  # index already exists
             try:
                 cur.execute("ALTER TABLE orders MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类'")
             except Exception:
@@ -2183,13 +2203,13 @@ def get_user_filled_order_markers(
                 SELECT id, user_id, username, symbol, side, trade_direction,
                        order_type, order_category, filled_qty, avg_price,
                       created_at, updated_at, filled_at
-                FROM orders
+                                FROM orders FORCE INDEX (idx_user_symbol_status_filled_at)
                 WHERE user_id = %s
-                  AND UPPER(symbol) = %s
+                                    AND symbol = %s
                   AND status = 'FILLED'
                   AND filled_qty > 0
                   AND avg_price IS NOT NULL
-                  ORDER BY COALESCE(filled_at, created_at, updated_at) DESC
+                                    ORDER BY filled_at DESC
                 LIMIT %s
                 """,
                 (user_id, normalized_symbol, safe_limit),

@@ -31,6 +31,7 @@ CREATE TABLE orders (
     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
     avg_price         DECIMAL(20,8)   DEFAULT NULL COMMENT '成交均价',
+    filled_at         DATETIME        DEFAULT NULL COMMENT '实际成交时间',
     realized_pnl      DECIMAL(30,10)  DEFAULT NULL COMMENT '已实现盈亏',
     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
@@ -43,7 +44,14 @@ CREATE TABLE orders (
     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_user_status (user_id, status),
+    KEY idx_user_created_at (user_id, created_at),
     KEY idx_status_created (status, created_at),
+    KEY idx_category_status_created (order_category, status, created_at),
+    KEY idx_user_category_status_created (user_id, order_category, status, created_at),
+    KEY idx_username_status_created (username, status, created_at),
+    KEY idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at),
+    KEY idx_username_exchange_order (username, exchange_order_id),
+    KEY idx_username_algo_id (username, algo_id),
     KEY idx_created_at (created_at DESC),
     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -194,6 +202,7 @@ ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id,
     ADD COLUMN IF NOT EXISTS tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price,
     ADD COLUMN IF NOT EXISTS sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price,
+    ADD COLUMN IF NOT EXISTS filled_at DATETIME DEFAULT NULL COMMENT '实际成交时间' AFTER avg_price,
     ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price;
 
 ALTER TABLE orders
@@ -217,6 +226,14 @@ WHERE order_category = 'Conditional'
 
 ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';
+
+ALTER TABLE orders ADD INDEX idx_user_created_at (user_id, created_at);
+ALTER TABLE orders ADD INDEX idx_category_status_created (order_category, status, created_at);
+ALTER TABLE orders ADD INDEX idx_user_category_status_created (user_id, order_category, status, created_at);
+ALTER TABLE orders ADD INDEX idx_username_status_created (username, status, created_at);
+ALTER TABLE orders ADD INDEX idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at);
+ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id);
+ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id);
 
 ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id,
