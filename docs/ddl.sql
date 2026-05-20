@@ -63,6 +63,7 @@ CREATE TABLE positions (
     exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
     symbol          VARCHAR(32)     NOT NULL,
     position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
+    position_mode   VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
     quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
     avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
     liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
@@ -91,6 +92,7 @@ CREATE TABLE position_history (
     username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
     symbol        VARCHAR(32)     NOT NULL COMMENT '交易对',
     side          VARCHAR(8)      NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT',
+    position_mode VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
     entry_price   DECIMAL(30,10)  NOT NULL COMMENT '开仓均价',
     close_price   DECIMAL(30,10)  NOT NULL COMMENT '平仓价格',
     quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
@@ -239,6 +241,7 @@ ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id,
     ADD COLUMN IF NOT EXISTS username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id,
     ADD COLUMN IF NOT EXISTS side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol,
+    ADD COLUMN IF NOT EXISTS position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER side,
     ADD COLUMN IF NOT EXISTS commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission,
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission,
     ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at;

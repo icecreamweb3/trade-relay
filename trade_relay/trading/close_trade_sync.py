@@ -98,6 +98,7 @@ def _create_missing_position_history_from_close_order(
         commission=total_commission,
         commission_asset=commission_asset,
         position_id=int(order_row["position_id"]) if order_row.get("position_id") else None,
+        position_mode=str(order_row.get("position_mode") or "UNKNOWN").upper(),
     )
     logger.info(
         "[ORDER_FLOW] phase=position_history_backfilled_from_close_order order_id=%s exchange_order_id=%s user_id=%s symbol=%s side=%s qty=%s entry=%s close=%s",

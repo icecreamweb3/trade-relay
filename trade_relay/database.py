@@ -773,6 +773,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
             symbol          VARCHAR(32)     NOT NULL,
             position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
+            position_mode   VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
             quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
             avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
             liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
@@ -799,8 +800,17 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
     if "liquidation_price" not in existing_columns:
         cur.execute("ALTER TABLE positions ADD COLUMN liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价' AFTER avg_entry_price")
         existing_columns.add("liquidation_price")
+    if "position_mode" not in existing_columns:
+        cur.execute("ALTER TABLE positions ADD COLUMN position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER position_side")
+        cur.execute(
+            "UPDATE positions SET position_mode = CASE "
+            "WHEN UPPER(COALESCE(position_side, '')) = 'BOTH' THEN 'SINGLE' "
+            "WHEN UPPER(COALESCE(position_side, '')) IN ('LONG', 'SHORT') THEN 'DUAL' "
+            "ELSE 'UNKNOWN' END"
+        )
+        existing_columns.add("position_mode")
     required_columns = {
-        "id", "user_id", "username", "exchange", "symbol", "position_side",
+        "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode",
         "quantity", "avg_entry_price", "liquidation_price", "unrealized_pnl", "realized_pnl",
         "leverage", "margin_type", "updated_at",
     }
@@ -871,10 +881,10 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
 
         cur.execute(
             """INSERT INTO positions
-               (id, user_id, username, exchange, symbol, position_side,
+               (id, user_id, username, exchange, symbol, position_side, position_mode,
                 quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                 leverage, margin_type, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 legacy_position_id,
                 owner_info["user_id"],
@@ -882,6 +892,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
                 "binance",
                 row.get("symbol"),
                 position_side,
+                "SINGLE" if position_side == "BOTH" else "DUAL",
                 row.get("quantity") or 0,
                 row.get("avg_entry_price") if "avg_entry_price" in row else row.get("entry_price"),
                 row.get("liquidation_price"),
@@ -965,6 +976,7 @@ def init_db() -> None:
                     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
                     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
                     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
+                    position_mode     VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
                     reduce_only       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只减仓',
                     post_only         TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只做Maker',
                     position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
@@ -991,6 +1003,7 @@ def init_db() -> None:
             # Migration: add columns that may be missing in older deployments
             for _col, _ddl in [
                 ("trade_direction", "ALTER TABLE orders ADD COLUMN trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset"),
+                ("position_mode",  "ALTER TABLE orders ADD COLUMN position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER trade_direction"),
                 ("position_id",     "ALTER TABLE orders ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction"),
                 ("reduce_only",     "ALTER TABLE orders ADD COLUMN reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction"),
                 ("post_only",       "ALTER TABLE orders ADD COLUMN post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only"),
@@ -1082,6 +1095,7 @@ def init_db() -> None:
                     username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
                     symbol        VARCHAR(32)     NOT NULL COMMENT '交易对',
                     side          VARCHAR(8)      NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT',
+                    position_mode VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
                     entry_price   DECIMAL(30,10)  NOT NULL COMMENT '开仓均价',
                     close_price   DECIMAL(30,10)  NOT NULL COMMENT '平仓价格',
                     quantity      DECIMAL(30,10)  NOT NULL COMMENT '成交数量',
@@ -1116,6 +1130,7 @@ def init_db() -> None:
                 ("user_id",     "ALTER TABLE position_history ADD COLUMN user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id"),
                 ("username",    "ALTER TABLE position_history ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT '' COMMENT '用户名' AFTER user_id"),
                 ("side",        "ALTER TABLE position_history ADD COLUMN side VARCHAR(8) NOT NULL DEFAULT 'LONG' COMMENT '方向 LONG/SHORT' AFTER symbol"),
+                ("position_mode", "ALTER TABLE position_history ADD COLUMN position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER side"),
                 ("commission_asset", "ALTER TABLE position_history ADD COLUMN commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission"),
                 ("position_id", "ALTER TABLE position_history ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission"),
                 ("updated_at",  "ALTER TABLE position_history ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at"),
@@ -1221,6 +1236,7 @@ def init_db() -> None:
                     symbol               VARCHAR(32)   DEFAULT NULL COMMENT '交易对（NULL 表示全局）',
                     base_asset           VARCHAR(16)   DEFAULT NULL,
                     quote_asset          VARCHAR(16)   DEFAULT NULL,
+                    position_mode        VARCHAR(16)   DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
                     configured_leverage  INT           DEFAULT NULL,
                     long_position_qty    DECIMAL(30,10) DEFAULT NULL,
                     short_position_qty   DECIMAL(30,10) DEFAULT NULL,
@@ -1257,6 +1273,10 @@ def init_db() -> None:
                     "ALTER TABLE account_summary "
                     "ADD UNIQUE KEY uk_user_symbol (user_id, symbol)"
                 )
+            try:
+                cur.execute("ALTER TABLE account_summary ADD COLUMN position_mode VARCHAR(16) DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER quote_asset")
+            except Exception:
+                pass
 
         conn.commit()
     finally:
@@ -1268,7 +1288,7 @@ def init_db() -> None:
 # ──────────────────────────────────────────────
 
 _ACCOUNT_SUMMARY_COLUMNS = (
-    "user_id", "symbol", "base_asset", "quote_asset",
+    "user_id", "symbol", "base_asset", "quote_asset", "position_mode",
     "configured_leverage", "long_position_qty", "short_position_qty",
     "long_position_value", "short_position_value", "rest_mark_price",
     "available_balance", "margin_ratio", "risk_rate", "maint_margin",
@@ -1574,6 +1594,7 @@ def create_order(
     sl_price: Optional[float] = None,
     client_order_id: Optional[str] = None,
     trade_direction: Optional[str] = None,     # OPEN | CLOSE
+    position_mode: Optional[str] = None,       # SINGLE | DUAL | UNKNOWN
     position_id: Optional[int] = None,         # 关联持仓ID
     realized_pnl: Optional[float] = None,
     reduce_only: bool = False,
@@ -1617,6 +1638,7 @@ def create_order(
                     "client_order_id": normalized_client_order_id,
                     "realized_pnl": realized_pnl,
                     "trade_direction": trade_direction,
+                    "position_mode": position_mode,
                     "reduce_only": int(reduce_only),
                     "post_only": int(post_only),
                     "position_id": position_id,
@@ -1629,13 +1651,13 @@ def create_order(
                    (user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     algo_id, algo_client_id, exchange_order_id, client_order_id,
-                    trade_direction, reduce_only, post_only, position_id, realized_pnl, order_category, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    trade_direction, position_mode, reduce_only, post_only, position_id, realized_pnl, order_category, error_message)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id, username, exchange, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     normalized_algo_id, normalized_algo_client_id, normalized_exchange_order_id, normalized_client_order_id,
-                    trade_direction, int(reduce_only), int(post_only), position_id, realized_pnl, normalized_order_category, error_message,
+                    trade_direction, position_mode, int(reduce_only), int(post_only), position_id, realized_pnl, normalized_order_category, error_message,
                 ),
             )
             conn.commit()
@@ -2379,6 +2401,7 @@ def upsert_position(
     leverage: int = 1,
     margin_type: str = "CROSS",
     position_side: str = "BOTH",
+    position_mode: str = "UNKNOWN",
     exchange: str = "binance",
 ) -> None:
     """插入或更新当前统一结构的持仓记录。"""
@@ -2391,6 +2414,7 @@ def upsert_position(
             "exchange": exchange,
             "symbol": symbol,
             "position_side": position_side,
+            "position_mode": position_mode,
             "quantity": quantity,
             "avg_entry_price": avg_entry_price,
             "liquidation_price": liquidation_price,
@@ -2405,10 +2429,10 @@ def upsert_position(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO positions
-                   (user_id, username, exchange, symbol, position_side,
+                   (user_id, username, exchange, symbol, position_side, position_mode,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
                        quantity        = VALUES(quantity),
                        avg_entry_price = VALUES(avg_entry_price),
@@ -2416,10 +2440,11 @@ def upsert_position(
                        unrealized_pnl  = VALUES(unrealized_pnl),
                        realized_pnl    = VALUES(realized_pnl),
                        leverage        = VALUES(leverage),
+                       position_mode   = VALUES(position_mode),
                        margin_type     = VALUES(margin_type),
                        updated_at      = CURRENT_TIMESTAMP""",
                 (
-                    user_id, username, exchange, symbol, position_side,
+                    user_id, username, exchange, symbol, position_side, position_mode,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type,
                 ),
@@ -2616,6 +2641,7 @@ def add_position_history(
     commission: float = 0.0,
     commission_asset: Optional[str] = None,
     position_id: Optional[int] = None,
+    position_mode: str = "UNKNOWN",
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
     created_at = _utc_now_naive()
@@ -2627,6 +2653,7 @@ def add_position_history(
             "username": username,
             "symbol": symbol,
             "side": side.upper(),
+            "position_mode": position_mode,
             "entry_price": entry_price,
             "close_price": close_price,
             "quantity": quantity,
@@ -2642,13 +2669,14 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                         (user_id, username, symbol, side, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                         (user_id, username, symbol, side, position_mode, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id,
                     username,
                     symbol,
                     side.upper(),
+                    position_mode,
                     entry_price,
                     close_price,
                     quantity,
@@ -2768,7 +2796,7 @@ def get_position(user_id: int, symbol: str, position_side: str, exchange: str = 
 def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> list:
     """返回持仓历史记录。user_id=None 时返回所有用户。"""
     params: list = []
-    sql = """SELECT id, user_id, username, symbol, side, entry_price, close_price,
+    sql = """SELECT id, user_id, username, symbol, side, position_mode, entry_price, close_price,
                     quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at
              FROM position_history"""
     if user_id is not None:

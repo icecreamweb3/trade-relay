@@ -13,11 +13,13 @@ type AdvancedOrderType = 'CONDITIONAL' | 'POST_ONLY'
 type CondSubType = 'LIMIT' | 'MARKET'
 type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
+type PositionMode = 'SINGLE' | 'DUAL'
 
 interface AccountSummary {
   symbol?: string | null
   base_asset?: string | null
   quote_asset?: string | null
+  position_mode?: string | null
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null
@@ -247,6 +249,7 @@ export function OrderFormWidget({
 
   const [side, setSide] = useState<Side>('BUY')
   const [marginType, setMarginType] = useState<MarginType>('CROSS')
+  const [positionMode, setPositionMode] = useState<PositionMode>('DUAL')
   const [posDir, setPosDir] = useState<PositionDir>('OPEN')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
   const [lastAdvancedOrderType, setLastAdvancedOrderType] = useState<AdvancedOrderType>('CONDITIONAL')
@@ -260,6 +263,7 @@ export function OrderFormWidget({
   const [showTpSl, setShowTpSl] = useState(false)
   const [leverage, setLeverage] = useState(10)
   const [leverageUpdating, setLeverageUpdating] = useState(false)
+  const [positionModeUpdating, setPositionModeUpdating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
   const [accountLoading, setAccountLoading] = useState(false)
@@ -558,6 +562,13 @@ export function OrderFormWidget({
   }, [lastAdvancedOrderType, symbol, user?.username])
 
   useEffect(() => {
+    const nextMode = String(accountSummary?.position_mode || '').toUpperCase()
+    if (nextMode === 'SINGLE' || nextMode === 'DUAL') {
+      setPositionMode(nextMode)
+    }
+  }, [accountSummary?.position_mode])
+
+  useEffect(() => {
     if (posDir !== 'CLOSE') return
     setShowTpSl(false)
     setTp('')
@@ -607,6 +618,38 @@ export function OrderFormWidget({
       showToast('error', msg)
     } finally {
       setLeverageUpdating(false)
+    }
+  }
+
+  const handlePositionModeChange = async (nextMode: PositionMode) => {
+    const previousMode = positionMode
+    setPositionMode(nextMode)
+
+    if (!user?.username) return
+
+    setPositionModeUpdating(true)
+    try {
+      await api.setAccountPositionMode(symbol, nextMode)
+      window.electronAPI?.logToMain?.('info', 'account position mode updated', {
+        username: user.username,
+        symbol,
+        positionMode: nextMode,
+      })
+      setAccountSummary((current) => current ? { ...current, position_mode: nextMode } : current)
+    } catch (error) {
+      setPositionMode(previousMode)
+      window.electronAPI?.logToMain?.('error', 'account position mode update failed', {
+        username: user?.username ?? null,
+        symbol,
+        positionMode: nextMode,
+        error: describeRequestError(error),
+      })
+      const msg =
+        (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        (error as { message?: string })?.message || t('order.error.failed')
+      showToast('error', msg)
+    } finally {
+      setPositionModeUpdating(false)
     }
   }
 
@@ -925,6 +968,7 @@ export function OrderFormWidget({
       leverage,
       margin_type: marginType,
       position_direction: posDir,
+      position_mode: positionMode,
       post_only: isPostOnly,
     }
     if ((orderType === 'LIMIT' || orderType === 'POST_ONLY' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
@@ -1064,6 +1108,18 @@ export function OrderFormWidget({
               {m === 'CROSS' ? t('order.margin.cross') : t('order.margin.isolated')}
             </button>
           ))}
+        </div>
+        <div className="ml-1 flex items-center gap-1.5">
+          <span className="text-[10px] text-[#848E9C]">{t('order.positionMode')}</span>
+          <select
+            value={positionMode}
+            onChange={e => { void handlePositionModeChange(e.target.value as PositionMode) }}
+            disabled={positionModeUpdating}
+            className="bg-[#1E2026] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded px-1.5 py-0.5 outline-none cursor-pointer"
+          >
+            <option value="SINGLE">{t('order.positionMode.single')}</option>
+            <option value="DUAL">{t('order.positionMode.dual')}</option>
+          </select>
         </div>
         {/* Leverage */}
         <div className="ml-auto flex items-center gap-1.5">

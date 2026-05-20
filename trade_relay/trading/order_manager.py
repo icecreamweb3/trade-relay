@@ -16,6 +16,17 @@ from trade_relay.i18n import t
 _log = logging.getLogger(__name__)
 
 
+def _normalize_position_mode(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or '').strip().upper()
+    if not normalized:
+        return None
+    if normalized in ('DUAL', 'HEDGE'):
+        return 'DUAL'
+    if normalized in ('SINGLE', 'ONE_WAY', 'ONEWAY'):
+        return 'SINGLE'
+    return None
+
+
 class OrderResult:
     def __init__(self, success: bool, message: str, order_id: Optional[int] = None):
         self.success = success
@@ -36,6 +47,7 @@ async def submit_order(
     post_only: bool = False,
     leverage: int = 10,
     position_direction: str = 'OPEN',
+    position_mode: Optional[str] = None,
 ) -> OrderResult:
     """
     Validate, place, and record an order for the given session user.
@@ -65,6 +77,8 @@ async def submit_order(
         return OrderResult(False, t("field_required", "stop_price"))
     if leverage <= 0:
         return OrderResult(False, "Invalid leverage")
+
+    normalized_position_mode = _normalize_position_mode(position_mode)
 
     username = session.username
     _log.info(
@@ -111,6 +125,7 @@ async def submit_order(
             leverage=leverage,
             testnet=testnet,
             position_direction=position_direction,
+            position_mode=normalized_position_mode,
         )
 
     # When closing a position, look up the matching DB position to record position_id
@@ -122,6 +137,8 @@ async def submit_order(
             pos_row = db.get_position(session.user_id, symbol, closing_position_side)
             if pos_row:
                 position_id = int(pos_row["id"])
+                if normalized_position_mode is None:
+                    normalized_position_mode = _normalize_position_mode(pos_row.get("position_mode"))
         except Exception:
             pass  # non-critical; proceed without position_id
 
@@ -146,6 +163,7 @@ async def submit_order(
         client_order_id=result.client_order_id,
         error_message=result.error,
         trade_direction=position_direction.upper() if position_direction else None,
+        position_mode=normalized_position_mode or "UNKNOWN",
         position_id=position_id,
         reduce_only=(position_direction or "").upper() == "CLOSE",
         post_only=post_only,

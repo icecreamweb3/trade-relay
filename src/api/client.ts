@@ -52,6 +52,7 @@ interface ApiPosition {
   id: number
   symbol: string
   side: string
+  position_mode: string
   quantity: number
   entry_price: number
   liquidation_price: number
@@ -142,6 +143,7 @@ interface ApiPositionHistory {
   username: string
   symbol: string
   side: string
+  position_mode: string
   entry_price: number
   close_price: number
   quantity: number
@@ -156,6 +158,7 @@ interface ApiAccountSummary {
   symbol?: string | null
   base_asset?: string | null
   quote_asset?: string | null
+  position_mode?: string | null
   configured_leverage?: number | null
   long_position_qty?: number | null
   short_position_qty?: number | null
@@ -329,7 +332,7 @@ export const api = {
     price?: number; stop_price?: number; tp_price?: number; sl_price?: number
     post_only?: boolean
     leverage?: number
-    margin_type: string; position_direction: string
+    margin_type: string; position_direction: string; position_mode?: string
   }): Promise<ApiResult> {
     return request<ApiResult>('POST', '/api/orders', { body: order })
   },
@@ -430,6 +433,15 @@ export const api = {
       body: {
         symbol,
         leverage,
+      },
+    })
+  },
+
+  async setAccountPositionMode(symbol: string, positionMode: string): Promise<ApiResult> {
+    return request<ApiResult>('POST', '/api/account/position-mode', {
+      body: {
+        symbol,
+        position_mode: positionMode,
       },
     })
   },

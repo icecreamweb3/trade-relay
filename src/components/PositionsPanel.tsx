@@ -14,6 +14,7 @@ const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
+  position_mode: string
   entry_price: number | null; liquidation_price: number | null; unrealized_pnl: number | null
   leverage: number; margin_type: string; margin: number | null
   tp_price?: number | null; sl_price?: number | null
@@ -35,6 +36,7 @@ interface Trade {
 
 interface PositionHistory {
   id: number; username: string; symbol: string; side: string
+  position_mode: string
   entry_price: number; close_price: number; quantity: number
   realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; updated_at?: string | null
 }
@@ -389,6 +391,7 @@ export function PositionsPanel({
         leverage: readStoredLeverage(currentUser.username, position.symbol) ?? position.leverage ?? 10,
         margin_type: position.margin_type,
         position_direction: 'CLOSE',
+        position_mode: position.position_mode,
       })
       showToast('success', t('pos.marketClose.success'))
       setPositions(prev => prev.filter((item) => item.id !== position.id))
@@ -442,17 +445,18 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th>
-              <th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
+              <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
                     <td className="font-mono">{formatPositionSize(p, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
                     <td className="font-mono">{p.entry_price != null ? p.entry_price.toFixed(2) : '-'}</td>
+                    <td className="text-[#858585]">{formatPositionMode(p.position_mode, t)}</td>
                     <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
                     <td className={`font-mono font-semibold ${(getLiveUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice) ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
                       {formatUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice)}
@@ -657,17 +661,18 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th>
-              <th>{t('pos.size')}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
+              <th>{t('pos.positionMode')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
               <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th>
             </tr></thead>
             <tbody>
               {positionHistory.length === 0
-                ? <tr><td colSpan={9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positionHistory.map(ph => (
                   <tr key={ph.id}>
                     <td className="text-[#858585]">{formatTimestamp(ph.updated_at || ph.created_at)}</td>
                     <td className="font-semibold">{ph.symbol}</td>
                     <td className={ph.side === 'LONG' ? 'text-buy' : 'text-sell'}>{ph.side}</td>
+                    <td className="text-[#858585]">{formatPositionMode(ph.position_mode, t)}</td>
                     <td className="font-mono">{ph.quantity}</td>
                     <td className="font-mono">{ph.entry_price.toFixed(2)}</td>
                     <td className="font-mono">{ph.close_price.toFixed(2)}</td>
@@ -1316,6 +1321,12 @@ function formatMarginType(marginType: string, t: (key: string) => string) {
   if (marginType === 'CROSS') return t('pos.marginType.cross')
   if (marginType === 'ISOLATED') return t('pos.marginType.isolated')
   return marginType
+}
+
+function formatPositionMode(positionMode: string, t: (key: string) => string) {
+  if (positionMode === 'SINGLE') return t('pos.positionMode.single')
+  if (positionMode === 'DUAL') return t('pos.positionMode.dual')
+  return positionMode || '-'
 }
 
 function splitTradingSymbol(symbol: string) {

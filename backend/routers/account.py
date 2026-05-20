@@ -115,6 +115,7 @@ class AccountSummaryOut(BaseModel):
     symbol: str | None = None
     base_asset: str | None = None
     quote_asset: str | None = None
+    position_mode: str | None = None
     configured_leverage: int | None = None
     long_position_qty: float | None = None
     short_position_qty: float | None = None
@@ -180,6 +181,20 @@ class LeverageUpdateIn(BaseModel):
     leverage: int
 
 
+class PositionModeUpdateIn(BaseModel):
+    symbol: str
+    position_mode: str
+
+
+def _normalize_position_mode(value: str | None) -> str:
+    normalized = str(value or '').strip().upper()
+    if normalized in {'DUAL', 'HEDGE'}:
+        return 'DUAL'
+    if normalized in {'SINGLE', 'ONE_WAY', 'ONEWAY'}:
+        return 'SINGLE'
+    raise HTTPException(status_code=400, detail='Position mode must be SINGLE or DUAL')
+
+
 class OrderBookDepthOut(BaseModel):
     lastUpdateId: int | None = None
     bids: list[list[str]] = []
@@ -192,6 +207,7 @@ def _admin_account_summary(symbol: str | None) -> AccountSummaryOut:
         symbol=symbol,
         base_asset=base_asset,
         quote_asset=quote_asset,
+        position_mode=None,
         has_api_credentials=False,
         message=None,
     )
@@ -296,6 +312,8 @@ def get_account_summary(
         )
         account = client.get_account_info() or {}
         positions = client.get_position_information(symbol=normalized_symbol, recv_window=5000) or []
+        dual_side_position = client.get_position_mode()
+        position_mode = 'DUAL' if dual_side_position is True else 'SINGLE'
 
         assets = account.get("assets", []) or []
         selected_asset = None
@@ -370,6 +388,7 @@ def get_account_summary(
             symbol=normalized_symbol,
             base_asset=base_asset,
             quote_asset=quote_asset,
+            position_mode=position_mode,
             configured_leverage=configured_leverage,
             long_position_qty=long_position_qty,
             short_position_qty=short_position_qty,
@@ -440,6 +459,42 @@ def update_account_leverage(
         raise
     except Exception as exc:
         _log.exception("[ACCOUNT_SUMMARY] phase=leverage_update_error user=%s symbol=%s leverage=%s", username, symbol, leverage)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/position-mode")
+def update_account_position_mode(
+    body: PositionModeUpdateIn,
+    user: dict = Depends(get_current_user),
+):
+    username = user["username"]
+    symbol = body.symbol.strip().upper()
+    position_mode = _normalize_position_mode(body.position_mode)
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+
+    api_key = cfg_module.get_api_key(username)
+    api_secret = cfg_module.get_api_secret(username)
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="No API key configured for this account")
+
+    try:
+        client = BinanceClient(
+            api_key=api_key,
+            secret_key=api_secret,
+            testnet=cfg_module.is_testnet(username),
+        )
+        hedge_mode = position_mode == 'DUAL'
+        result = client.set_position_mode(hedge_mode)
+        _invalidate_account_summary_cache(username, symbol)
+        _invalidate_account_summary_cache(username, None)
+        _log.info("[ACCOUNT_SUMMARY] phase=position_mode_update user=%s symbol=%s position_mode=%s", username, symbol, position_mode)
+        return {"ok": True, "symbol": symbol, "position_mode": position_mode, "exchange": result}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("[ACCOUNT_SUMMARY] phase=position_mode_update_error user=%s symbol=%s position_mode=%s", username, symbol, position_mode)
         raise HTTPException(status_code=400, detail=str(exc))
 
 

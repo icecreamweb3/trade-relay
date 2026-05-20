@@ -42,6 +42,7 @@ class OrderRequest(BaseModel):
     post_only: bool = False
     leverage: int = 10
     position_direction: str = 'OPEN'  # OPEN | CLOSE
+    position_mode: Optional[str] = None  # SINGLE | DUAL
 
 class OrderOut(BaseModel):
     id: int
@@ -211,6 +212,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         body.post_only,
         body.leverage,
         body.position_direction,
+        body.position_mode,
     )
     if not result.success:
         _log.warning("[ORDER_FLOW] phase=failed username=%s reason=%s", user["username"], result.message)
@@ -624,6 +626,7 @@ def _record_close_fill_history_from_conditional(row: dict, filled_qty: float, av
         realized_pnl=realized_pnl,
         commission=0.0,
         position_id=position_id,
+        position_mode=str(row.get("position_mode") or "UNKNOWN").upper(),
     )
     _log.info(
         "[ORDER_FLOW] phase=conditional_fill_history_created order_id=%s symbol=%s side=%s qty=%s entry=%s close=%s",

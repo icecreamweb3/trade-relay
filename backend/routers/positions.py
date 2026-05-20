@@ -32,6 +32,7 @@ class PositionHistoryOut(BaseModel):
     username: str
     symbol: str
     side: str
+    position_mode: str
     entry_price: float
     close_price: float
     quantity: float
@@ -78,6 +79,7 @@ class PositionOut(BaseModel):
     id: int
     symbol: str
     side: str
+    position_mode: str
     quantity: float
     entry_price: Optional[float]
     liquidation_price: Optional[float]
@@ -170,6 +172,7 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
                 id=pos_id,
                 symbol=symbol,
                 side=side,
+                position_mode=str(row.get("position_mode", "") or "UNKNOWN").upper(),
                 quantity=float(row["quantity"]),
                 entry_price=float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None,
                 liquidation_price=float(row["liquidation_price"]) if row.get("liquidation_price") is not None else None,
@@ -253,6 +256,7 @@ def set_position_tpsl(
 
     symbol = str(position_row.get("symbol", "") or "").upper()
     position_side = str(position_row.get("position_side", "") or "").upper()  # LONG or SHORT
+    position_mode = str(position_row.get("position_mode", "") or "UNKNOWN").upper()
     quantity = float(position_row.get("quantity") or 0)
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
 
@@ -280,6 +284,7 @@ def set_position_tpsl(
         tp_price=body.tp_price,
         sl_price=body.sl_price,
         position_id=position_id,
+        position_mode=position_mode,
     )
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
@@ -358,6 +363,7 @@ def get_position_history(user: dict = Depends(get_current_user)):
             username=str(r["username"]),
             symbol=str(r["symbol"]),
             side=str(r["side"]),
+            position_mode=str(r.get("position_mode") or "UNKNOWN").upper(),
             entry_price=float(r["entry_price"]),
             close_price=float(r["close_price"]),
             quantity=float(r["quantity"]),
@@ -387,6 +393,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         realized_pnl=body.realized_pnl,
         commission=body.commission,
         commission_asset=body.commission_asset,
+        position_mode=body.position_mode,
     )
     rows = db_module.get_position_history(user_id=user_id, limit=1)
     r = next((x for x in rows if x["id"] == new_id), rows[0])
@@ -395,6 +402,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         username=str(r["username"]),
         symbol=str(r["symbol"]),
         side=str(r["side"]),
+        position_mode=str(r.get("position_mode") or "UNKNOWN").upper(),
         entry_price=float(r["entry_price"]),
         close_price=float(r["close_price"]),
         quantity=float(r["quantity"]),

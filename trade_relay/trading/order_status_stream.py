@@ -20,6 +20,15 @@ from trade_relay.trading.tpsl_service import cancel_close_tp_sl_orders, place_tp
 
 logger = logging.getLogger(__name__)
 
+
+def _derive_position_mode_from_position_side(raw_position_side: str | None) -> str:
+    normalized = str(raw_position_side or "").upper()
+    if normalized in ("LONG", "SHORT"):
+        return "DUAL"
+    if normalized == "BOTH":
+        return "SINGLE"
+    return "UNKNOWN"
+
 MAINNET_WS_URL = "wss://fstream.binance.com/ws/"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/ws/"
 
@@ -133,6 +142,7 @@ class UserOrderStatusStream:
             tp_price=tp_price,
             sl_price=sl_price,
             position_id=position_id,
+            position_mode=str((position or {}).get("position_mode") or "UNKNOWN").upper(),
         )
         if errors:
             logger.warning(
@@ -247,12 +257,14 @@ class UserOrderStatusStream:
                     if not already_handled:
                         # Derive position_side from positionSide field (REST format) or order side
                         position_side = str(order.get("positionSide") or "BOTH").upper()
+                        position_mode = _derive_position_mode_from_position_side(position_side)
                         if position_side not in ("LONG", "SHORT"):
                             order_side = str(order.get("side") or "").upper()
                             position_side = "SHORT" if order_side == "BUY" else "LONG"
                         self._create_position_history_from_poll(
                             symbol=symbol,
                             position_side=position_side,
+                            position_mode=position_mode,
                             fill_qty=executed_qty,
                             fill_price=avg_price,
                         )
@@ -598,6 +610,7 @@ class UserOrderStatusStream:
         self,
         symbol: str,
         position_side: str,
+        position_mode: str,
         fill_qty: float,
         fill_price: float,
     ) -> None:
@@ -661,6 +674,7 @@ class UserOrderStatusStream:
                 commission=0.0,  # commission not available from poll; WS path has it
                 commission_asset=None,
                 position_id=position_id,
+                position_mode=position_mode,
             )
             logger.info(
                 "position_history (poll) created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "
@@ -846,6 +860,7 @@ class UserOrderStatusStream:
                 commission=commission,
                 commission_asset=str(commission_asset) if commission_asset else None,
                 position_id=position_id,
+                position_mode=str(db_order.get("position_mode") or _derive_position_mode_from_position_side(order.get("ps") or order.get("positionSide"))).upper(),
             )
             logger.info(
                 "position_history created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "
@@ -940,6 +955,7 @@ class UserOrderStatusStream:
             tp_price=tp_price,
             sl_price=sl_price,
             position_id=position_id,
+            position_mode=str((position or {}).get("position_mode") or "UNKNOWN").upper(),
         )
         if errors:
             logger.warning(
@@ -988,6 +1004,7 @@ class UserOrderStatusStream:
             unrealized_pnl = _safe_float(position.get("up") or position.get("unrealizedProfit"))
             realized_pnl = _safe_float(position.get("cr") or position.get("realizedPnl")) or 0.0
             margin_type = str(position.get("mt") or position.get("marginType") or "CROSS").upper()
+            position_mode = _derive_position_mode_from_position_side(raw_side)
 
             normalized_side = raw_side
             if normalized_side not in ("LONG", "SHORT"):
@@ -1047,6 +1064,7 @@ class UserOrderStatusStream:
                 leverage=leverage,
                 margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
                 position_side=normalized_side,
+                position_mode=position_mode,
             )
             self._sync_close_tpsl_quantity(
                 user_id=user_id,

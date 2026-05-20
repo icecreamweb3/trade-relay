@@ -43,6 +43,7 @@ async def place_order(
     leverage: int = 10,
     testnet: bool = False,
     position_direction: str = 'OPEN',
+    position_mode: Optional[str] = None,
 ) -> BinanceOrderResult:
     """
     Place a real order on Binance (or testnet).
@@ -54,6 +55,20 @@ async def place_order(
             secret_key=api_secret,
             testnet=testnet,
         )
+
+        requested_hedge_mode: Optional[bool] = None
+        normalized_position_mode = str(position_mode or '').strip().upper()
+        if normalized_position_mode in ('DUAL', 'HEDGE'):
+            requested_hedge_mode = True
+        elif normalized_position_mode in ('SINGLE', 'ONE_WAY', 'ONEWAY'):
+            requested_hedge_mode = False
+
+        if requested_hedge_mode is not None:
+            current_position_mode = await asyncio.to_thread(client.get_position_mode)
+            if current_position_mode is None or current_position_mode != requested_hedge_mode:
+                updated = await asyncio.to_thread(client.set_position_mode, requested_hedge_mode)
+                if not updated:
+                    return BinanceOrderResult(success=False, error=f"Failed to switch position mode to {normalized_position_mode}")
 
         await asyncio.to_thread(client.set_leverage, symbol, leverage)
 
