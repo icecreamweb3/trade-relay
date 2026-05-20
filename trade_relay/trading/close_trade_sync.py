@@ -291,6 +291,7 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
     total_qty = sum(abs(_safe_float(trade.get("qty"))) for trade in trades)
     total_commission = sum(abs(_safe_float(trade.get("commission"))) for trade in trades)
     total_realized_pnl = sum(_safe_float(trade.get("realizedPnl")) for trade in trades)
+    fill_times = [int(trade.get("time")) for trade in trades if trade.get("time") not in (None, "")]
     commission_assets = sorted({
         str(trade.get("commissionAsset") or "").strip()
         for trade in trades
@@ -306,6 +307,7 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
         "filled_qty": total_qty if total_qty > 0 else None,
         "commission": total_commission,
         "commission_asset": commission_asset,
+        "filled_at": max(fill_times) if fill_times else None,
     }
     if trade_direction == "CLOSE":
         update_kwargs["realized_pnl"] = total_realized_pnl

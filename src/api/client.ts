@@ -134,6 +134,7 @@ export interface ApiOrderMarker {
   avg_price: number
   created_at: string
   updated_at?: string | null
+  filled_at?: string | null
 }
 
 interface ApiPositionHistory {

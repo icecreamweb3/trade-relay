@@ -41,18 +41,24 @@ function formatLocalMarkerTime(timestamp?: string | null): string | undefined {
   return `${hours}:${minutes}`
 }
 
+function resolveMarkerTimestamp(marker: ApiOrderMarker): string | undefined {
+  if (marker.filled_at) return marker.filled_at
+  if (String(marker.order_category).toLowerCase() === 'conditional' && marker.updated_at) return marker.updated_at
+  return marker.created_at || marker.updated_at || undefined
+}
+
 function mapOrderMarkersToOverlaySignals(markers: ApiOrderMarker[], showLabels: boolean): ChartOverlaySignal[] {
   return markers
-    .filter((marker) => Number.isFinite(marker.avg_price) && marker.avg_price > 0 && Boolean(marker.updated_at || marker.created_at))
-    .sort((left, right) => Date.parse(left.updated_at || left.created_at) - Date.parse(right.updated_at || right.created_at))
+    .filter((marker) => Number.isFinite(marker.avg_price) && marker.avg_price > 0 && Boolean(resolveMarkerTimestamp(marker)))
+    .sort((left, right) => Date.parse(resolveMarkerTimestamp(left) || '') - Date.parse(resolveMarkerTimestamp(right) || ''))
     .map((marker) => {
-      const markerTimestamp = marker.updated_at || marker.created_at
+      const markerTimestamp = resolveMarkerTimestamp(marker) || marker.created_at
 
       return {
         direction: String(marker.side).toUpperCase() === 'SELL' ? 'SHORT' : 'LONG',
         trade_action: String(marker.trade_direction).toUpperCase() === 'CLOSE' ? 'CLOSE' : 'OPEN',
         show_label: showLabels,
-        // Use updated_at as the effective fill time for all orders.
+        // Prefer stable filled_at. Fall back conservatively for older rows.
         timestamp: markerTimestamp,
         _overlayBarTimeSec: toLocalChartBarTimeSec(markerTimestamp),
         display_time: formatLocalMarkerTime(markerTimestamp),

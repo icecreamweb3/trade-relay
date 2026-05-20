@@ -87,6 +87,7 @@ class OrderMarkerOut(BaseModel):
     avg_price: float
     created_at: str
     updated_at: Optional[str] = None
+    filled_at: Optional[str] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -167,6 +168,7 @@ def _row_to_marker_out(r: dict) -> OrderMarkerOut:
         avg_price=float(r.get("avg_price") or 0),
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
         updated_at=serialize_utc_timestamp_required(r.get("updated_at")) if r.get("updated_at") else None,
+        filled_at=serialize_utc_timestamp(r.get("filled_at")) if r.get("filled_at") else None,
     )
 
 

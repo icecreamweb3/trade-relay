@@ -450,6 +450,7 @@ class UserOrderStatusStream:
                     status=new_status,
                     filled_qty=executed_qty if executed_qty else None,
                     avg_price=avg_price,
+                    filled_at=result.get("updateTime") if new_status == "FILLED" else None,
                 )
                 notify_needed = True
                 if new_status in ("FILLED", "PARTIALLY_FILLED") and executed_qty > 0:
@@ -826,6 +827,7 @@ class UserOrderStatusStream:
             status=order_status,
             filled_qty=cumulative_filled_qty if cumulative_filled_qty > 0 else None,
             avg_price=cumulative_avg_price if cumulative_avg_price > 0 else None,
+            filled_at=order.get("T") if order_status == "FILLED" else None,
             realized_pnl=accumulated_realized_pnl,
             commission=accumulated_commission,
             commission_asset=str(accumulated_commission_asset) if accumulated_commission_asset else None,
@@ -1080,6 +1082,7 @@ class UserOrderStatusStream:
             status=status or "NEW",
             filled_qty=filled_qty,
             avg_price=avg_price,
+            filled_at=(order.get("T") or order.get("updateTime")) if status == "FILLED" else None,
             commission=commission,
             commission_asset=commission_asset,
             error_message=error_message,
@@ -1235,6 +1238,7 @@ def sync_active_orders_on_startup() -> None:
                     status=new_status,
                     filled_qty=executed_qty if executed_qty else None,
                     avg_price=avg_price,
+                    filled_at=result.get("updateTime") if new_status == "FILLED" else None,
                 )
                 if updated:
                     logger.info(

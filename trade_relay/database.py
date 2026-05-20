@@ -250,6 +250,33 @@ def _coerce_utc_date(value) -> date:
     raise TypeError(f"Unsupported date value: {value!r}")
 
 
+def _coerce_utc_naive_datetime(value) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if abs(timestamp) >= 1e11:
+            timestamp /= 1000.0
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        normalized = trimmed[:-1] + "+00:00" if trimmed.endswith("Z") else trimmed
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    return None
+
+
 def _get_profile_day_bounds(profile_date: date) -> tuple[datetime, datetime]:
     start_at = datetime.combine(profile_date, time.min)
     return start_at, start_at + timedelta(days=1)
@@ -925,6 +952,7 @@ def init_db() -> None:
                     client_order_id   VARCHAR(64)     DEFAULT NULL COMMENT '客户端订单ID',
                     filled_qty        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已成交数量',
                     avg_price         DECIMAL(20,8)   DEFAULT NULL COMMENT '成交均价',
+                    filled_at         DATETIME        DEFAULT NULL COMMENT '实际成交时间',
                     realized_pnl      DECIMAL(30,10)  DEFAULT NULL COMMENT '已实现盈亏',
                     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
                     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
@@ -954,6 +982,7 @@ def init_db() -> None:
                 ("order_category",  "ALTER TABLE orders ADD COLUMN order_category ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类' AFTER position_id"),
                 ("tp_price",        "ALTER TABLE orders ADD COLUMN tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price"),
                 ("sl_price",        "ALTER TABLE orders ADD COLUMN sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price"),
+                ("filled_at",       "ALTER TABLE orders ADD COLUMN filled_at DATETIME DEFAULT NULL COMMENT '实际成交时间' AFTER avg_price"),
                 ("realized_pnl",    "ALTER TABLE orders ADD COLUMN realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price"),
                 ("algo_id",         "ALTER TABLE orders ADD COLUMN algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status"),
                 ("algo_client_id",  "ALTER TABLE orders ADD COLUMN algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id"),
@@ -1604,6 +1633,7 @@ def update_order_status(
     status: str,
     filled_qty: Optional[float] = None,
     avg_price: Optional[float] = None,
+    filled_at = None,
     realized_pnl: Optional[float] = None,
     commission: Optional[float] = None,
     commission_asset: Optional[str] = None,
@@ -1616,6 +1646,9 @@ def update_order_status(
         fields.append("filled_qty = %s"); params.append(filled_qty)
     if avg_price is not None:
         fields.append("avg_price = %s"); params.append(avg_price)
+    normalized_filled_at = _coerce_utc_naive_datetime(filled_at)
+    if normalized_filled_at is not None:
+        fields.append("filled_at = %s"); params.append(normalized_filled_at)
     if realized_pnl is not None:
         fields.append("realized_pnl = %s"); params.append(realized_pnl)
     if commission is not None:
@@ -1634,6 +1667,7 @@ def update_order_status(
             "status": status,
             "filled_qty": filled_qty,
             "avg_price": avg_price,
+            "filled_at": normalized_filled_at,
             "realized_pnl": realized_pnl,
             "commission": commission,
             "commission_asset": commission_asset,
@@ -1697,6 +1731,7 @@ def update_order_status_by_exchange_id(
     status: str,
     filled_qty: Optional[float] = None,
     avg_price: Optional[float] = None,
+    filled_at = None,
     realized_pnl: Optional[float] = None,
     commission: Optional[float] = None,
     commission_asset: Optional[str] = None,
@@ -1709,6 +1744,9 @@ def update_order_status_by_exchange_id(
         fields.append("filled_qty = %s"); params.append(filled_qty)
     if avg_price is not None:
         fields.append("avg_price = %s"); params.append(avg_price)
+    normalized_filled_at = _coerce_utc_naive_datetime(filled_at)
+    if normalized_filled_at is not None:
+        fields.append("filled_at = %s"); params.append(normalized_filled_at)
     if realized_pnl is not None:
         fields.append("realized_pnl = %s"); params.append(realized_pnl)
     if commission is not None:
@@ -1728,6 +1766,7 @@ def update_order_status_by_exchange_id(
             "status": status,
             "filled_qty": filled_qty,
             "avg_price": avg_price,
+            "filled_at": normalized_filled_at,
             "realized_pnl": realized_pnl,
             "commission": commission,
             "commission_asset": commission_asset,
@@ -2143,14 +2182,14 @@ def get_user_filled_order_markers(
                 """
                 SELECT id, user_id, username, symbol, side, trade_direction,
                        order_type, order_category, filled_qty, avg_price,
-                       created_at, updated_at
+                      created_at, updated_at, filled_at
                 FROM orders
                 WHERE user_id = %s
                   AND UPPER(symbol) = %s
                   AND status = 'FILLED'
                   AND filled_qty > 0
                   AND avg_price IS NOT NULL
-                ORDER BY created_at DESC
+                  ORDER BY COALESCE(filled_at, created_at, updated_at) DESC
                 LIMIT %s
                 """,
                 (user_id, normalized_symbol, safe_limit),
