@@ -1421,6 +1421,16 @@ function clearOverlayShapes(chart) {
   _overlayShapeSignals = new Map()
 }
 
+function _getOverlayDebugState() {
+  return {
+    chartFound: Boolean(_tvChart || findTvChart()),
+    drawnShapeCount: _drawnShapes.length,
+    detailShapeCount: _detailShapes.length,
+    detailOrderLineCount: _detailOrderLines.length,
+    cachedSignalCount: _cachedSignals.length,
+  }
+}
+
 /** Parse a bare "YYYY-MM-DD HH:MM:SS" timestamp from the backend as UTC. */
 function _parseTsUtcSec(tsStr) {
   if (!tsStr) return null
@@ -1560,8 +1570,10 @@ function waitForChartSymbol(expectedPair, maxMs = 8000) {
 }
 
 let _uiLocale = 'en'
+let _overlayMessageVersion = 0
 
 ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
+  const messageVersion = ++_overlayMessageVersion
   if (locale) _uiLocale = locale
   if (!signals || signals.length === 0) return
 
@@ -1584,6 +1596,10 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
     _tvChart = await waitForTvChart(15000)
   }
 
+  if (messageVersion !== _overlayMessageVersion) {
+    return
+  }
+
   if (!_tvChart) {
     ipcRenderer.send('overlay-status', { ok: false, reason: 'tv_chart_not_found' })
     return
@@ -1591,15 +1607,24 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 
   try {
     _syncOverlayDrawingEvents()
+    if (messageVersion !== _overlayMessageVersion) {
+      return
+    }
     drawSignalsOnChart(_tvChart, signals)
     ipcRenderer.send('overlay-status', { ok: true, count: signals.length })
   } catch (err) {
     // Chart reference may have gone stale (e.g. symbol change); reset and retry once
     _tvChart = null
     const fresh = await waitForTvChart(8000)
+    if (messageVersion !== _overlayMessageVersion) {
+      return
+    }
     if (fresh) {
       _tvChart = fresh
       _syncOverlayDrawingEvents()
+      if (messageVersion !== _overlayMessageVersion) {
+        return
+      }
       drawSignalsOnChart(fresh, signals)
       ipcRenderer.send('overlay-status', { ok: true, count: signals.length, retried: true })
     } else {
@@ -1610,10 +1635,28 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 
 // IPC: clear all drawn shapes
 ipcRenderer.on('overlay-clear', async () => {
+  _overlayMessageVersion += 1
   const chart = _tvChart || findTvChart()
   if (chart) {
     clearOverlayShapes(chart)
   }
+})
+
+ipcRenderer.on('overlay-clear-debug', async () => {
+  _overlayMessageVersion += 1
+  const before = _getOverlayDebugState()
+  const chart = _tvChart || findTvChart()
+  if (chart) {
+    clearOverlayShapes(chart)
+  }
+  const after = _getOverlayDebugState()
+  ipcRenderer.send('overlay-status', {
+    action: 'clear-debug',
+    ok: Boolean(chart),
+    reason: chart ? 'cleared' : 'tv_chart_not_found',
+    before,
+    after,
+  })
 })
 
 // IPC: show SL/TP detail for a clicked/replayed signal
@@ -1626,8 +1669,10 @@ ipcRenderer.on('overlay-signal-detail', (event, sig) => {
 ipcRenderer.on('overlay-probe', async () => {
   const chart = findTvChart()
   ipcRenderer.send('overlay-status', {
+    action: 'probe',
     ok: !!chart,
     reason: chart ? 'chart_found' : 'not_found',
+    state: _getOverlayDebugState(),
   })
 })
 

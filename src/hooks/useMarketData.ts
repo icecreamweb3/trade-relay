@@ -24,12 +24,11 @@ interface ChartOverlaySignal {
   bar_high: number
 }
 
-function toLocalChartBarTimeSec(timestamp?: string | null): number | undefined {
+function toChartBarTimeSec(timestamp?: string | null): number | undefined {
   const parsed = parseUtcTimestamp(timestamp)
   if (!parsed) return undefined
 
-  const localTimeMs = parsed.getTime() - parsed.getTimezoneOffset() * 60_000
-  return Math.floor(localTimeMs / 1000)
+  return Math.floor(parsed.getTime() / 1000)
 }
 
 function formatLocalMarkerTime(timestamp?: string | null): string | undefined {
@@ -60,7 +59,7 @@ function mapOrderMarkersToOverlaySignals(markers: ApiOrderMarker[], showLabels: 
         show_label: showLabels,
         // Prefer stable filled_at. Fall back conservatively for older rows.
         timestamp: markerTimestamp,
-        _overlayBarTimeSec: toLocalChartBarTimeSec(markerTimestamp),
+        _overlayBarTimeSec: toChartBarTimeSec(markerTimestamp),
         display_time: formatLocalMarkerTime(markerTimestamp),
         entry_price: Number(marker.avg_price),
         quantity: Number(marker.filled_qty),

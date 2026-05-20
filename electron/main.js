@@ -221,6 +221,42 @@ function buildBackendPath(pathname, query) {
   return suffix ? `${pathname}?${suffix}` : pathname
 }
 
+function waitForOverlayStatus(action, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (!binanceView) {
+      resolve({ action, ok: false, reason: 'no_view' })
+      return
+    }
+
+    const targetWebContents = binanceView.webContents
+    let settled = false
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      ipcMain.removeListener('overlay-status', handler)
+    }
+
+    const finish = (payload) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(payload)
+    }
+
+    const handler = (event, payload) => {
+      if (event.sender !== targetWebContents) return
+      if (!payload || payload.action !== action) return
+      finish(payload)
+    }
+
+    const timer = setTimeout(() => {
+      finish({ action, ok: false, reason: 'timeout' })
+    }, timeoutMs)
+
+    ipcMain.on('overlay-status', handler)
+  })
+}
+
 // ── Retryable load ────────────────────────────────────────────────────────────
 const RETRYABLE_ERRORS = new Set([-21, -2, -7, -100, -101, -102, -105, -106])
 
@@ -573,6 +609,28 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
     return { ok: true }
   } catch (error) {
     return { ok: false, reason: error?.message || 'overlay_clear_failed' }
+  }
+})
+
+ipcMain.handle('debug-probe-chart-overlay', async () => {
+  if (!binanceView) return { action: 'probe', ok: false, reason: 'no_view' }
+  try {
+    const waitResult = waitForOverlayStatus('probe')
+    binanceView.webContents.send('overlay-probe')
+    return await waitResult
+  } catch (error) {
+    return { action: 'probe', ok: false, reason: error?.message || 'probe_failed' }
+  }
+})
+
+ipcMain.handle('debug-clear-chart-overlay-signals', async () => {
+  if (!binanceView) return { action: 'clear-debug', ok: false, reason: 'no_view' }
+  try {
+    const waitResult = waitForOverlayStatus('clear-debug')
+    binanceView.webContents.send('overlay-clear-debug')
+    return await waitResult
+  } catch (error) {
+    return { action: 'clear-debug', ok: false, reason: error?.message || 'clear_debug_failed' }
   }
 })
 
