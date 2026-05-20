@@ -8,7 +8,7 @@ import asyncio
 import time
 from threading import Lock
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from trade_relay import database as db_module
@@ -229,6 +229,7 @@ def list_orders(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     status: Optional[str] = None,
+    trade_direction: Optional[str] = Query(None, pattern="^(OPEN|CLOSE)$"),
     user: dict = Depends(get_current_user),
 ):
     rows = db_module.query_orders(
@@ -239,6 +240,7 @@ def list_orders(
         start_time=start_time,
         end_time=end_time,
         status=status,
+        trade_direction=trade_direction,
     )
     return [_row_to_out(r) for r in rows]
 
@@ -261,9 +263,12 @@ def get_active_orders(user: dict = Depends(get_current_user)):
 
 
 @router.get("/history", response_model=list[OrderOut])
-def get_order_history(user: dict = Depends(get_current_user)):
+def get_order_history(
+    trade_direction: Optional[str] = Query(None, pattern="^(OPEN|CLOSE)$"),
+    user: dict = Depends(get_current_user),
+):
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    rows = db_module.get_order_history(user_id=user_id)
+    rows = db_module.get_order_history(user_id=user_id, trade_direction=trade_direction)
     return [_row_to_out(r) for r in rows]
 
 

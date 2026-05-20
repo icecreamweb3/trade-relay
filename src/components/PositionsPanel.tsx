@@ -24,6 +24,7 @@ interface Order {
   id: number; symbol: string; side: string; order_type: string
   quantity: number; filled_qty?: number; price: number; stop_price?: number | null
   reduce_only?: boolean; post_only?: boolean
+  trade_direction?: string | null
   commission?: number | null; commission_asset?: string | null
   status: string; username?: string; created_at?: string; updated_at?: string | null; exchange_order_id?: string
 }
@@ -60,6 +61,8 @@ interface AmendOrderDraft {
   position: Position | null
 }
 
+type HistoryDirectionFilter = 'ALL' | 'OPEN' | 'CLOSE'
+
 export function PositionsPanel({
   refreshTrigger,
   isActive = true,
@@ -88,6 +91,7 @@ export function PositionsPanel({
   const [cancellingId, setCancellingId] = useState<number | null>(null)
   const [amendingId, setAmendingId] = useState<number | null>(null)
   const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
+  const [historyDirectionFilter, setHistoryDirectionFilter] = useState<HistoryDirectionFilter>('ALL')
   const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
   const [bulkCancelling, setBulkCancelling] = useState<'basic' | 'conditional' | null>(null)
   const [bulkCancelConfirm, setBulkCancelConfirm] = useState<'basic' | 'conditional' | null>(null)
@@ -132,7 +136,9 @@ export function PositionsPanel({
         setOpenOrders(basic)
         setConditionalOrders(conditional)
       }
-      else if (tab === 'history') setHistory(await api.getOrderHistory())
+      else if (tab === 'history') {
+        setHistory(await api.getOrderHistory(historyDirectionFilter === 'ALL' ? undefined : historyDirectionFilter))
+      }
       else if (tab === 'tradeHistory') setPositionHistory(await api.getPositionHistory())
     } catch (error: unknown) {
       const msg =
@@ -146,7 +152,7 @@ export function PositionsPanel({
       _positionsFirstLoadDone.current = true
       perfSignalDone('positions panel: first load done')
     }
-  }, [isActive, isAuthenticated, showToast, t, tab])
+  }, [historyDirectionFilter, isActive, isAuthenticated, showToast, t, tab])
 
   useEffect(() => {
     loadRef.current = load
@@ -550,10 +556,32 @@ export function PositionsPanel({
               </button>
             </div>
           )}
+          {tab === 'history' && (
+            <div className="flex gap-1 border-b border-[#3e3e42] bg-[#252526] px-2 py-1">
+              {([
+                ['ALL', t('log.filter.allDirections')],
+                ['OPEN', t('order.open')],
+                ['CLOSE', t('order.close')],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setHistoryDirectionFilter(value)}
+                  className={`px-3 py-1 text-[11px] font-medium border rounded transition-colors ${
+                    historyDirectionFilter === value
+                      ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
+                      : 'border-[#3e3e42] text-[#858585] hover:text-[#cccccc]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {(tab === 'history' || openOrdersSubTab === 'basic') && (
             <table className="trade-table w-full">
               <thead><tr>
                 <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
+                {tab === 'history' && <th>{t('log.dir')}</th>}
                 <th>{t('log.qty')}</th><th>{t('log.price')}</th>
                 {tab === 'history' && <th>{t('trade.commission')}</th>}
                 {tab === 'history' && <th>{t('trade.commissionAsset')}</th>}
@@ -566,13 +594,14 @@ export function PositionsPanel({
               </tr></thead>
               <tbody>
                 {(tab === 'openOrders' ? openOrders : history).length === 0
-                  ? <tr><td colSpan={tab === 'openOrders' ? 12 : 9} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                  ? <tr><td colSpan={tab === 'openOrders' ? 12 : 10} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                   : (tab === 'openOrders' ? openOrders : history).map(o => (
                     <tr key={o.id}>
                       <td className="text-[#858585]">{formatTimestamp(tab === 'history' ? (o.updated_at || o.created_at) : o.created_at)}</td>
                       <td className="font-semibold">{o.symbol}</td>
                       <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
+                      {tab === 'history' && <td className="text-[#858585]">{formatTradeDirection(o.trade_direction, t)}</td>}
                       <td className="font-mono">{o.quantity}</td>
                       <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                       {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission != null ? o.commission.toFixed(4) : '—'}</td>}
@@ -809,6 +838,13 @@ function getRequestErrorMessage(error: unknown, fallback: string): string {
   }
   const message = (error as { message?: unknown })?.message
   return typeof message === 'string' && message ? message : fallback
+}
+
+function formatTradeDirection(value: string | null | undefined, t: (key: string) => string): string {
+  const normalized = String(value || '').toUpperCase()
+  if (normalized === 'OPEN') return t('order.open')
+  if (normalized === 'CLOSE') return t('order.close')
+  return '—'
 }
 
 function formatTpSl(tp?: number | null, sl?: number | null): string {

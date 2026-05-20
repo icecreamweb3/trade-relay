@@ -168,6 +168,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     // Order log
     'log.title': '订单记录',
     'log.time': '时间',
+    'log.createdAt': '创建时间',
+    'log.updatedAt': '更新时间',
     'log.user': '用户',
     'log.symbol': '交易对',
     'log.side': '方向',
@@ -196,6 +198,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.filter.search': '查询',
     'log.filter.clear': '清空',
     'log.filter.allStatus': '全部状态',
+    'log.filter.allDirections': '全部开平',
 
     // Status
     'status.filled': '已成交',
@@ -522,6 +525,8 @@ export const translations: Record<Locale, Record<string, string>> = {
 
     'log.title': 'Order Log',
     'log.time': 'Time',
+    'log.createdAt': 'Created At',
+    'log.updatedAt': 'Updated At',
     'log.user': 'User',
     'log.symbol': 'Symbol',
     'log.side': 'Side',
@@ -550,6 +555,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.filter.search': 'Search',
     'log.filter.clear': 'Clear',
     'log.filter.allStatus': 'All Status',
+    'log.filter.allDirections': 'All Directions',
 
     'status.filled': 'FILLED',
     'status.pending': 'PENDING',

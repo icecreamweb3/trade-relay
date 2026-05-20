@@ -340,7 +340,7 @@ export const api = {
 
   async getOrders(params?: {
     limit?: number; user_id?: number; username?: string; order_id?: string
-    start_time?: string; end_time?: string; status?: string
+    start_time?: string; end_time?: string; status?: string; trade_direction?: 'OPEN' | 'CLOSE'
   }): Promise<ApiOrder[]> {
     return request<ApiOrder[]>('GET', '/api/orders', { params })
   },
@@ -397,8 +397,10 @@ export const api = {
     })
   },
 
-  async getOrderHistory(): Promise<ApiOrder[]> {
-    return request<ApiOrder[]>('GET', '/api/orders/history')
+  async getOrderHistory(tradeDirection?: 'OPEN' | 'CLOSE'): Promise<ApiOrder[]> {
+    const params: Record<string, string> = {}
+    if (tradeDirection) params.trade_direction = tradeDirection
+    return request<ApiOrder[]>('GET', '/api/orders/history', { params })
   },
 
   async getTradeHistory(): Promise<ApiTrade[]> {

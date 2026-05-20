@@ -2110,7 +2110,11 @@ def get_all_active_usernames() -> list[str]:
         conn.close()
 
 
-def get_order_history(user_id: Optional[int] = None, limit: int = 200) -> list:
+def get_order_history(
+    user_id: Optional[int] = None,
+    limit: int = 200,
+    trade_direction: Optional[str] = None,
+) -> list:
     """返回历史订单（已完结：FILLED / CANCELED / EXPIRED / REJECTED / FAILED / ERROR）。"""
     placeholders = ", ".join(["%s"] * len(ACTIVE_STATUSES))
     params: list = list(ACTIVE_STATUSES)
@@ -2119,7 +2123,10 @@ def get_order_history(user_id: Optional[int] = None, limit: int = 200) -> list:
     if user_id is not None:
         sql += " AND user_id = %s"
         params.append(user_id)
-    sql += " ORDER BY created_at DESC LIMIT %s"
+    if trade_direction:
+        sql += " AND trade_direction = %s"
+        params.append(trade_direction.upper())
+    sql += " ORDER BY updated_at DESC, created_at DESC LIMIT %s"
     params.append(limit)
 
     conn = get_connection()
@@ -2140,6 +2147,7 @@ def query_orders(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     status: Optional[str] = None,
+    trade_direction: Optional[str] = None,
 ) -> list:
     """Return orders with optional filters for user, order id, time range, and status."""
     sql = "SELECT * FROM orders WHERE 1 = 1"
@@ -2170,7 +2178,11 @@ def query_orders(
         sql += " AND status = %s"
         params.append(status)
 
-    sql += " ORDER BY created_at DESC LIMIT %s"
+    if trade_direction:
+        sql += " AND trade_direction = %s"
+        params.append(trade_direction.upper())
+
+    sql += " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT %s"
     params.append(limit)
 
     conn = get_connection()

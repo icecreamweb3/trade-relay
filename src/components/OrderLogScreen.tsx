@@ -22,10 +22,6 @@ interface Order {
   exchange_order_id?: string; created_at?: string; updated_at?: string | null; error_message?: string
 }
 
-function getEffectiveOrderTimestamp(order: Pick<Order, 'filled_qty' | 'updated_at' | 'created_at'>): string | undefined {
-  return (Number(order.filled_qty) > 0 && order.updated_at) ? order.updated_at : order.created_at
-}
-
 interface UserOption {
   id: number
   username: string
@@ -37,6 +33,7 @@ interface OrderFilters {
   startTime: string
   endTime: string
   status: string
+  tradeDirection: '' | 'OPEN' | 'CLOSE'
 }
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string
@@ -47,6 +44,7 @@ const INITIAL_FILTERS: OrderFilters = {
   startTime: '',
   endTime: '',
   status: '',
+  tradeDirection: '',
 }
 
 const STATUS_OPTIONS = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED', 'ERROR', 'MOCK', 'PENDING'] as const
@@ -71,6 +69,7 @@ export function OrderLogScreen() {
         start_time: toBackendDateTime(nextFilters.startTime),
         end_time: toBackendDateTime(nextFilters.endTime),
         status: nextFilters.status || undefined,
+        trade_direction: nextFilters.tradeDirection || undefined,
       })
       setOrders(data)
     } catch { /* ignore */ }
@@ -185,6 +184,20 @@ export function OrderLogScreen() {
             </select>
           </div>
         </FilterField>
+        <FilterField label={t('log.dir')} className="w-[160px]">
+          <select
+            value={filters.tradeDirection}
+            onChange={(event) => setFilters((current) => ({
+              ...current,
+              tradeDirection: event.target.value as '' | 'OPEN' | 'CLOSE',
+            }))}
+            className={INPUT_CLS}
+          >
+            <option value="">{t('log.filter.allDirections')}</option>
+            <option value="OPEN">{t('order.open')}</option>
+            <option value="CLOSE">{t('order.close')}</option>
+          </select>
+        </FilterField>
         <div className="flex items-end gap-2">
           <button type="submit" className="h-9 rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
             {t('log.filter.search')}
@@ -197,18 +210,19 @@ export function OrderLogScreen() {
       <div className="flex-1 overflow-auto">
         <table className="trade-table w-full">
           <thead><tr>
-            <th>{t('log.index')}</th><th>{t('log.time')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
-            <th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th className="min-w-[180px]">{t('pos.triggerConditions')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
+            <th>{t('log.index')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
+            <th>{t('log.createdAt')}</th><th>{t('log.updatedAt')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th className="min-w-[180px]">{t('pos.triggerConditions')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
-              <tr><td colSpan={19} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
+              <tr><td colSpan={20} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
-                <td className="text-[#858585]">{formatLogTimestamp(getEffectiveOrderTimestamp(o))}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">{o.symbol}</td>
+                <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.created_at)}</td>
+                <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.updated_at || undefined)}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>
                 <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                 <td className="font-mono">{o.quantity}</td>
