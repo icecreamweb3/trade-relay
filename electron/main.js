@@ -50,6 +50,11 @@ let _splitRatio = 0.60   // default left panel 60% horizontal
 let _chartRatio = 0.65   // default chart 65% vertical within left panel
 let _binanceViewVisible = true
 let _binanceViewAttached = false
+let _lastBinanceViewBoundsKey = null
+
+function logBinanceView(action, extra = undefined) {
+  logger.info(`[BINANCE_VIEW] action=${action}`, extra)
+}
 
 // Map TRADE_RELAY_LANG (zh|en) → Binance locale path segment
 const _trLang = (process.env.TRADE_RELAY_LANG || '').toLowerCase()
@@ -418,29 +423,31 @@ function createBinanceView() {
 
 function ensureBinanceViewAttached() {
   if (!binanceView || !mainWindow || _binanceViewAttached) return
-  logger.info('[BINANCE_VIEW] action=attach')
+  logBinanceView('attach')
   mainWindow.addBrowserView(binanceView)
   _binanceViewAttached = true
 }
 
 function detachBinanceView() {
   if (!binanceView || !mainWindow || !_binanceViewAttached) return
-  logger.info('[BINANCE_VIEW] action=detach')
+  logBinanceView('detach')
   mainWindow.removeBrowserView(binanceView)
   _binanceViewAttached = false
 }
 
 function hideBinanceView() {
   if (!binanceView) return
-  logger.info('[BINANCE_VIEW] action=hide visible=%s attached=%s', _binanceViewVisible, _binanceViewAttached)
+  if (_binanceViewAttached) {
+    logBinanceView('hide', { visible: _binanceViewVisible, attached: _binanceViewAttached })
+  }
   binanceView.setBounds({ x: -9999, y: -9999, width: 1, height: 1 })
+  _lastBinanceViewBoundsKey = null
   detachBinanceView()
 }
 
 function updateBinanceViewBounds() {
   if (!binanceView || !mainWindow) return
   if (!_binanceViewVisible) {
-    logger.info('[BINANCE_VIEW] action=update-bounds skipped=hidden splitRatio=%s chartRatio=%s', _splitRatio, _chartRatio)
     hideBinanceView()
     return
   }
@@ -451,17 +458,25 @@ function updateBinanceViewBounds() {
   const panelWidth = Math.floor(bounds.width * _splitRatio)
   const chartHeight = Math.floor(availH * _chartRatio)
   ensureBinanceViewAttached()
-  logger.info('[BINANCE_VIEW] action=update-bounds visible=true window=%o bounds=%o splitRatio=%s chartRatio=%s', bounds, {
+  const nextBounds = {
     x: 0,
     y: TITLEBAR_H,
     width: panelWidth,
     height: chartHeight,
-  }, _splitRatio, _chartRatio)
+  }
+  const boundsKey = JSON.stringify(nextBounds)
+  if (_lastBinanceViewBoundsKey !== boundsKey) {
+    logBinanceView('update-bounds', {
+      visible: true,
+      windowBounds: bounds,
+      viewBounds: nextBounds,
+      splitRatio: _splitRatio,
+      chartRatio: _chartRatio,
+    })
+    _lastBinanceViewBoundsKey = boundsKey
+  }
   binanceView.setBounds({
-    x: 0,
-    y: TITLEBAR_H,
-    width: panelWidth,
-    height: chartHeight,
+    ...nextBounds,
   })
 }
 
@@ -522,7 +537,6 @@ ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
 ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
-  logger.info('[BINANCE_VIEW] action=resize-request splitRatio=%s chartRatio=%s visible=%s', splitRatio, chartRatio, _binanceViewVisible)
   if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(0.95, chartRatio))
   if (splitRatio === 0) {
     // Hide BrowserView by moving it off-screen
@@ -554,10 +568,20 @@ ipcMain.handle('binance-go-forward', () => { if (binanceView?.webContents.canGoF
 ipcMain.handle('binance-reload', () => { binanceView?.webContents.reload() })
 
 ipcMain.handle('set-binance-view-visible', (_event, visible) => {
-  logger.info('[BINANCE_VIEW] action=set-visible from=%s to=%s hasView=%s', _binanceViewVisible, Boolean(visible), Boolean(binanceView))
-  _binanceViewVisible = Boolean(visible)
+  const nextVisible = Boolean(visible)
+  const isNoOp = nextVisible === _binanceViewVisible
+    && ((nextVisible && _binanceViewAttached) || (!nextVisible && !_binanceViewAttached))
+  if (isNoOp) return
+
+  logBinanceView('set-visible', {
+    from: _binanceViewVisible,
+    to: nextVisible,
+    hasView: Boolean(binanceView),
+    attached: _binanceViewAttached,
+  })
+  _binanceViewVisible = nextVisible
   if (!binanceView || !mainWindow) return
-  if (visible) {
+  if (nextVisible) {
     updateBinanceViewBounds()
   } else {
     // Move off-screen to hide without destroying the view
