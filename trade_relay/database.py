@@ -391,7 +391,15 @@ def _refresh_daily_profile_for_user_date(
     win_count = int(row.get("win_count") or 0)
     win_rate = (win_count / trade_count * 100.0) if trade_count > 0 else 0.0
     resolved_username = str(row.get("latest_username") or username or "")
-    account_balance = _fetch_live_wallet_balance(resolved_username)
+    if profile_date == _utc_now_naive().date():
+        account_balance = _fetch_live_wallet_balance(resolved_username)
+    else:
+        cur.execute(
+            "SELECT account_balance FROM daily_profile WHERE user_id = %s AND profile_date = %s LIMIT 1",
+            (user_id, profile_date),
+        )
+        existing_row = cur.fetchone() or {}
+        account_balance = existing_row.get("account_balance")
     cur.execute(
         """
         INSERT INTO daily_profile

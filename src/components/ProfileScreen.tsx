@@ -4,6 +4,8 @@ import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { useAuthStore } from '../store/authStore'
 
+const PROFILE_ACCOUNT_ASSET = 'USDC'
+
 interface Stats {
   total_pnl: number; win_rate: number; total_trades: number; total_commission: number; account_balance: number | null
   total_commission_by_asset: Array<{ asset: string; total: number }>
@@ -58,12 +60,12 @@ function formatCommissionByAsset(items: Array<{ asset: string; total: number }>)
 
 function formatAccountBalance(value: number | null | undefined) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '—'
-  return `${value.toFixed(4)} USDT`
+  return `${value.toFixed(4)} ${PROFILE_ACCOUNT_ASSET}`
 }
 
 function formatCompactBalance(value: number) {
   if (!Number.isFinite(value)) return '—'
-  return `${value.toFixed(2)} USDT`
+  return `${value.toFixed(2)} ${PROFILE_ACCOUNT_ASSET}`
 }
 
 function getNetProfit(pnl: number, commission: number) {
@@ -186,7 +188,7 @@ export function ProfileScreen() {
           {stats && (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
               <StatCard label={t('profile.accountBalance')} value={formatAccountBalance(stats.account_balance)} />
-              <StatCard label={t('profile.totalPnl')} value={`${formatSignedAmount(stats.total_pnl, 2)} USDT`}
+              <StatCard label={t('profile.totalPnl')} value={`${formatSignedAmount(stats.total_pnl, 2)} ${PROFILE_ACCOUNT_ASSET}`}
                 color={stats.total_pnl >= 0 ? 'text-buy' : 'text-sell'} />
               <StatCard label={t('profile.winRate')} value={`${stats.win_rate.toFixed(1)}%`} />
               <StatCard label={t('profile.trades')} value={String(stats.total_trades)} />

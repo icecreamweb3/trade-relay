@@ -1,6 +1,7 @@
 """
 Profile router: trading stats and daily PnL for the current user.
 """
+from datetime import datetime, timezone
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -58,10 +59,55 @@ class ProfileOverview(BaseModel):
     all_time_days: int | None
 
 
+def _get_today_utc_date_string() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _build_daily_leaderboard_rows() -> list[dict]:
+    leaderboard_rows = list(db_module.get_daily_profile_leaderboard())
+    users = db_module.get_all_active_users_with_api_keys()
+    existing_usernames = {
+        str(row.get("username") or "").strip().lower()
+        for row in leaderboard_rows
+        if str(row.get("username") or "").strip()
+    }
+    leaderboard_date = str(leaderboard_rows[0].get("date")) if leaderboard_rows else _get_today_utc_date_string()
+
+    for user in users:
+        username = str(user.get("username") or "").strip()
+        if not username or username.lower() in existing_usernames:
+            continue
+        user_id = int(user.get("id") or 0)
+        account_summary = db_module.get_account_summary_from_db(user_id, None) if user_id > 0 else None
+        account_balance_raw = (account_summary or {}).get("wallet_balance")
+        leaderboard_rows.append(
+            {
+                "username": username,
+                "date": leaderboard_date,
+                "pnl": 0,
+                "account_balance": float(account_balance_raw) if account_balance_raw is not None else None,
+                "trades": 0,
+                "win_rate": 0,
+                "commission": 0,
+            }
+        )
+        existing_usernames.add(username.lower())
+
+    leaderboard_rows.sort(
+        key=lambda row: (
+            -float(row.get("pnl") or 0),
+            -float(row.get("win_rate") or 0),
+            -int(row.get("trades") or 0),
+            str(row.get("username") or ""),
+        )
+    )
+    return leaderboard_rows[:10]
+
+
 def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> ProfileOverview:
     rows = db_module.get_daily_pnl(user_id)
     commission_rows = db_module.get_total_commission_by_asset(user_id)
-    leaderboard_rows = db_module.get_daily_profile_leaderboard()
+    leaderboard_rows = _build_daily_leaderboard_rows()
     all_time_leaderboard_rows = db_module.get_all_time_profile_leaderboard_for_days(days=all_time_days)
     account_summary = db_module.get_account_summary_from_db(user_id, None) or {}
     daily_pnl = [

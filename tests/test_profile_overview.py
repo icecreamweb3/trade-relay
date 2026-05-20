@@ -92,6 +92,7 @@ def test_build_profile_overview_preserves_leaderboard_order(monkeypatch):
     monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
+    monkeypatch.setattr(profile_router.db_module, "get_all_active_users_with_api_keys", lambda: [])
     monkeypatch.setattr(profile_router.db_module, "get_all_time_profile_leaderboard_for_days", lambda *, days=None, limit=20: [])
     monkeypatch.setattr(
         profile_router.db_module,
@@ -113,6 +114,7 @@ def test_build_profile_overview_preserves_all_time_leaderboard_order(monkeypatch
     monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
+    monkeypatch.setattr(profile_router.db_module, "get_all_active_users_with_api_keys", lambda: [])
     monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
     monkeypatch.setattr(
         profile_router.db_module,
@@ -135,6 +137,7 @@ def test_build_profile_overview_passes_all_time_days_filter(monkeypatch):
     monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
     monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_all_active_users_with_api_keys", lambda: [])
     monkeypatch.setattr(profile_router.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
 
     def fake_all_time_leaderboard_for_days(*, days=None, limit=20):
@@ -152,3 +155,57 @@ def test_build_profile_overview_passes_all_time_days_filter(monkeypatch):
 
     assert overview.all_time_days == 7
     assert captured == {"days": 7, "limit": 20}
+
+
+def test_build_profile_overview_supplements_daily_leaderboard_with_active_users(monkeypatch):
+    monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_daily_profile_leaderboard",
+        lambda: [
+            {"username": "alice", "date": "2026-05-20", "pnl": 8.0, "account_balance": 108.0, "trades": 2, "win_rate": 50.0, "commission": 0.2},
+        ],
+    )
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_all_active_users_with_api_keys",
+        lambda: [{"id": 1, "username": "alice"}, {"id": 2, "username": "bob"}],
+    )
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_account_summary_from_db",
+        lambda user_id, symbol: {"wallet_balance": 205.5} if user_id == 2 and symbol is None else None,
+    )
+    monkeypatch.setattr(profile_router.db_module, "get_all_time_profile_leaderboard_for_days", lambda *, days=None, limit=20: [])
+
+    overview = profile_router._build_profile_overview(5)
+
+    assert [entry.username for entry in overview.daily_leaderboard] == ["alice", "bob"]
+    assert [entry.rank for entry in overview.daily_leaderboard] == [1, 2]
+    assert overview.daily_leaderboard[1].trades == 0
+    assert overview.daily_leaderboard[1].account_balance == 205.5
+
+
+def test_build_profile_overview_supplemented_users_are_sorted_and_limited(monkeypatch):
+    monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_all_active_users_with_api_keys",
+        lambda: [{"id": index, "username": f"user{index:02d}"} for index in range(1, 13)],
+    )
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_account_summary_from_db",
+        lambda user_id, symbol: {"wallet_balance": 100 + user_id} if symbol is None else None,
+    )
+    monkeypatch.setattr(profile_router.db_module, "get_all_time_profile_leaderboard_for_days", lambda *, days=None, limit=20: [])
+
+    overview = profile_router._build_profile_overview(5)
+
+    assert len(overview.daily_leaderboard) == 10
+    assert [entry.username for entry in overview.daily_leaderboard] == [
+        "user01", "user02", "user03", "user04", "user05", "user06", "user07", "user08", "user09", "user10",
+    ]

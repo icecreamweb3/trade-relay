@@ -48,6 +48,7 @@ let binanceView = null
 let _autoExpandDone = false
 let _splitRatio = 0.60   // default left panel 60% horizontal
 let _chartRatio = 0.65   // default chart 65% vertical within left panel
+let _binanceViewVisible = true
 
 // Map TRADE_RELAY_LANG (zh|en) → Binance locale path segment
 const _trLang = (process.env.TRADE_RELAY_LANG || '').toLowerCase()
@@ -409,14 +410,31 @@ function createBinanceView() {
   })
 }
 
+function hideBinanceView() {
+  if (!binanceView) return
+  logger.info('[BINANCE_VIEW] action=hide bounds=offscreen visible=%s', _binanceViewVisible)
+  binanceView.setBounds({ x: -9999, y: -9999, width: 1, height: 1 })
+}
+
 function updateBinanceViewBounds() {
   if (!binanceView || !mainWindow) return
+  if (!_binanceViewVisible) {
+    logger.info('[BINANCE_VIEW] action=update-bounds skipped=hidden splitRatio=%s chartRatio=%s', _splitRatio, _chartRatio)
+    hideBinanceView()
+    return
+  }
   const bounds = mainWindow.getBounds()
   const TITLEBAR_H = 36
   const STATUSBAR_H = 24
   const availH = bounds.height - TITLEBAR_H - STATUSBAR_H
   const panelWidth = Math.floor(bounds.width * _splitRatio)
   const chartHeight = Math.floor(availH * _chartRatio)
+  logger.info('[BINANCE_VIEW] action=update-bounds visible=true window=%o bounds=%o splitRatio=%s chartRatio=%s', bounds, {
+    x: 0,
+    y: TITLEBAR_H,
+    width: panelWidth,
+    height: chartHeight,
+  }, _splitRatio, _chartRatio)
   binanceView.setBounds({
     x: 0,
     y: TITLEBAR_H,
@@ -482,9 +500,10 @@ ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
 ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
+  logger.info('[BINANCE_VIEW] action=resize-request splitRatio=%s chartRatio=%s visible=%s', splitRatio, chartRatio, _binanceViewVisible)
   if (splitRatio === 0) {
     // Hide BrowserView by moving it off-screen
-    if (binanceView) binanceView.setBounds({ x: -9999, y: -9999, width: 1, height: 1 })
+    hideBinanceView()
     return
   }
   _splitRatio = Math.max(0.1, Math.min(0.95, splitRatio))
@@ -512,11 +531,13 @@ ipcMain.handle('binance-reload', () => { binanceView?.webContents.reload() })
 
 ipcMain.handle('set-binance-view-visible', (_event, visible) => {
   if (!binanceView || !mainWindow) return
+  logger.info('[BINANCE_VIEW] action=set-visible from=%s to=%s', _binanceViewVisible, Boolean(visible))
+  _binanceViewVisible = Boolean(visible)
   if (visible) {
     updateBinanceViewBounds()
   } else {
     // Move off-screen to hide without destroying the view
-    binanceView.setBounds({ x: -9999, y: -9999, width: 1, height: 1 })
+    hideBinanceView()
   }
 })
 
