@@ -1,5 +1,5 @@
 import React from 'react'
-import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Eraser } from 'lucide-react'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -15,6 +15,7 @@ interface TitleBarProps {
 
 export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarProps) {
   const locale = useUiPreferencesStore((state) => state.locale)
+  const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
   const { t } = useTranslation(locale)
   const { symbol, isConnected, isChartExpanded, setChartExpanded } = useMarketStore()
   const { user, logout } = useAuthStore()
@@ -26,18 +27,19 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
   const close = () => window.electronAPI?.closeWindow()
 
   const debugClearLabel = locale === 'zh-CN' ? '清箭头' : 'Clear Arrows'
-  const debugDialogCloseLabel = locale === 'zh-CN' ? '关闭' : 'Close'
-  const showDebugClearButton = false
+  const showDebugClearButton = true
+  const showDebugDialog = false
 
   React.useEffect(() => {
-    const shouldShowBinanceView = activeScreen === 'trade' && !debugDialog
+    const shouldShowBinanceView = activeScreen === 'trade' && (!showDebugDialog || !debugDialog)
     window.electronAPI?.setBinanceViewVisible?.(shouldShowBinanceView)
-  }, [activeScreen, debugDialog])
+  }, [activeScreen, debugDialog, showDebugDialog])
 
   const handleDebugClearArrows = async () => {
     if (isDebugClearing) return
 
     setIsDebugClearing(true)
+    setChartOrderMarkersVisible(false)
     try {
       const probeResult = await window.electronAPI?.debugProbeChartOverlay?.()
       const clearResult = await window.electronAPI?.debugClearChartOverlaySignals?.()
@@ -87,6 +89,15 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
             >
               {isChartExpanded ? <Shrink size={11} /> : <Expand size={11} />}
             </NavBtn>
+            {showDebugClearButton && (
+              <NavBtn
+                onClick={handleDebugClearArrows}
+                title={debugClearLabel}
+                active={isDebugClearing}
+              >
+                {isDebugClearing ? '...' : <Eraser size={11} />}
+              </NavBtn>
+            )}
           </div>
 
           <div className="flex items-center gap-0.5 ml-3">
@@ -117,15 +128,6 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
               {t('nav.login')}
             </button>
           )}
-          {showDebugClearButton && (
-            <button
-              onClick={handleDebugClearArrows}
-              disabled={isDebugClearing}
-              className="px-2.5 h-6 rounded bg-[#5b3a12] text-[#f7d9a8] text-[11px] font-medium hover:bg-[#714816] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-            >
-              {isDebugClearing ? '...' : debugClearLabel}
-            </button>
-          )}
           <div className="w-px h-4 bg-[#3e3e42] mx-1" />
           <WinBtn onClick={minimize} cls="hover:bg-[#3e3e42]">─</WinBtn>
           <WinBtn onClick={maximize} cls="hover:bg-[#3e3e42]">□</WinBtn>
@@ -133,7 +135,8 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
         </div>
       </div>
 
-      {debugDialog && (
+      {/* Debug dialog is kept here for future troubleshooting, but hidden in normal use.
+      {showDebugDialog && debugDialog && (
         <div className="fixed inset-0 z-[10020] flex items-center justify-center bg-black/55 px-4" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <div className="w-full max-w-[720px] rounded-xl border border-[#3a4048] bg-[#1c2027] shadow-[0_24px_60px_rgba(0,0,0,0.45)]">
             <div className="flex items-center justify-between border-b border-[#313741] px-4 py-3">
@@ -153,6 +156,7 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
           </div>
         </div>
       )}
+      */}
     </>
   )
 }
