@@ -27,6 +27,7 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
 
   const debugClearLabel = locale === 'zh-CN' ? '清箭头' : 'Clear Arrows'
   const debugDialogCloseLabel = locale === 'zh-CN' ? '关闭' : 'Close'
+  const showDebugClearButton = false
 
   React.useEffect(() => {
     const shouldHideBinanceView = Boolean(debugDialog) && activeScreen === 'trade'
@@ -120,13 +121,15 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
               {t('nav.login')}
             </button>
           )}
-          <button
-            onClick={handleDebugClearArrows}
-            disabled={isDebugClearing}
-            className="px-2.5 h-6 rounded bg-[#5b3a12] text-[#f7d9a8] text-[11px] font-medium hover:bg-[#714816] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-          >
-            {isDebugClearing ? '...' : debugClearLabel}
-          </button>
+          {showDebugClearButton && (
+            <button
+              onClick={handleDebugClearArrows}
+              disabled={isDebugClearing}
+              className="px-2.5 h-6 rounded bg-[#5b3a12] text-[#f7d9a8] text-[11px] font-medium hover:bg-[#714816] disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {isDebugClearing ? '...' : debugClearLabel}
+            </button>
+          )}
           <div className="w-px h-4 bg-[#3e3e42] mx-1" />
           <WinBtn onClick={minimize} cls="hover:bg-[#3e3e42]">─</WinBtn>
           <WinBtn onClick={maximize} cls="hover:bg-[#3e3e42]">□</WinBtn>
