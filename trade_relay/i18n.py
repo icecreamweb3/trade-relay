@@ -206,6 +206,13 @@ TRANSLATIONS = {
         "acct_actual_leverage": "Actual Leverage",
         "acct_combined_margin": "Combined Margin",
         "acct_wallet_balance":  "Wallet Balance",
+        "position_mode_invalid": "Position mode must be SINGLE or DUAL",
+        "position_mode_switch_blocked": (
+            "Cannot switch position mode while open positions or orders exist. "
+            "Close all positions and cancel all open orders first. "
+            "positions={} open_orders={} open_algo_orders={}"
+        ),
+        "position_mode_switch_failed": "Failed to set position mode to {}",
     },
     "zh": {
         # App
@@ -401,6 +408,13 @@ TRANSLATIONS = {
         "acct_actual_leverage": "实际杠杆",
         "acct_combined_margin": "联合保证金",
         "acct_wallet_balance":  "钉包余额",
+        "position_mode_invalid": "持仓模式必须是 SINGLE 或 DUAL",
+        "position_mode_switch_blocked": (
+            "当前存在持仓或委托，无法切换持仓模式。"
+            "请先平掉全部持仓并取消全部挂单。"
+            "positions={} open_orders={} open_algo_orders={}"
+        ),
+        "position_mode_switch_failed": "切换持仓模式到 {} 失败",
     },
 }
 

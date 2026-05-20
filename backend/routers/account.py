@@ -20,6 +20,7 @@ from trade_relay import config as cfg_module
 from trade_relay import database as db_module
 from trade_relay.exchange.binance_client import BinanceClient
 from trade_relay.exchange.public_ticker_stream import register_public_ticker_listener, unregister_public_ticker_listener
+from trade_relay.i18n import t
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 _log = get_logger(__name__)
@@ -200,7 +201,24 @@ def _normalize_position_mode(value: str | None) -> str:
         return 'DUAL'
     if normalized in {'SINGLE', 'ONE_WAY', 'ONEWAY'}:
         return 'SINGLE'
-    raise HTTPException(status_code=400, detail='Position mode must be SINGLE or DUAL')
+    raise HTTPException(status_code=400, detail=t('position_mode_invalid'))
+
+
+def _ensure_position_mode_switchable(client: BinanceClient) -> None:
+    open_positions = client.get_positions()
+    open_orders = client.get_open_orders()
+    open_algo_orders = client.get_open_algo_orders()
+
+    if open_positions or open_orders or open_algo_orders:
+        raise HTTPException(
+            status_code=400,
+            detail=t(
+                'position_mode_switch_blocked',
+                len(open_positions),
+                len(open_orders),
+                len(open_algo_orders),
+            ),
+        )
 
 
 class OrderBookDepthOut(BaseModel):
@@ -512,8 +530,11 @@ def update_account_position_mode(
             secret_key=api_secret,
             testnet=cfg_module.is_testnet(username),
         )
+        _ensure_position_mode_switchable(client)
         hedge_mode = position_mode == 'DUAL'
         result = client.set_position_mode(hedge_mode)
+        if result is not True:
+            raise HTTPException(status_code=400, detail=t('position_mode_switch_failed', position_mode))
         user_id = int(user["sub"])
         refreshed_summary = _refresh_account_summary_from_exchange(user_id, username, symbol)
         _invalidate_account_summary_cache(username, None)

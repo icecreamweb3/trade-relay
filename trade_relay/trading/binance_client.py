@@ -72,19 +72,27 @@ async def place_order(
 
         await asyncio.to_thread(client.set_leverage, symbol, leverage)
 
-        # Derive positionSide for hedge mode:
+        is_close = position_direction.upper() == 'CLOSE'
+        current_position_mode = requested_hedge_mode
+        if current_position_mode is None and hasattr(client, 'get_position_mode'):
+            current_position_mode = await asyncio.to_thread(client.get_position_mode)
+
+        # Derive positionSide only for hedge mode:
         # OPEN  + BUY  -> LONG  (open long)
         # OPEN  + SELL -> SHORT (open short)
         # CLOSE + SELL -> LONG  (sell to close long)
         # CLOSE + BUY  -> SHORT (buy to close short)
-        is_close = position_direction.upper() == 'CLOSE'
-        if is_close:
-            position_side = 'LONG' if side.upper() == 'SELL' else 'SHORT'
-        else:
-            position_side = 'LONG' if side.upper() == 'BUY' else 'SHORT'
+        position_side: Optional[str] = None
+        if current_position_mode is True:
+            if is_close:
+                position_side = 'LONG' if side.upper() == 'SELL' else 'SHORT'
+            else:
+                position_side = 'LONG' if side.upper() == 'BUY' else 'SHORT'
+
+        reduce_only = current_position_mode is False and is_close
         logger.info(
-            'place_order: symbol=%s side=%s pos_dir=%s -> positionSide=%s type=%s qty=%s price=%s',
-            symbol, side, position_direction, position_side, order_type, quantity, price,
+            'place_order: symbol=%s side=%s pos_dir=%s position_mode=%s -> positionSide=%s reduceOnly=%s type=%s qty=%s price=%s',
+            symbol, side, position_direction, current_position_mode, position_side, reduce_only, order_type, quantity, price,
         )
 
         if order_type == "LIMIT":
@@ -102,11 +110,13 @@ async def place_order(
                 price,
                 position_side,
                 post_only,
+                None,
+                reduce_only,
             )
         elif order_type == "MARKET":
             logger.info(
-                'binance request | MARKET order | symbol=%s side=%s positionSide=%s qty=%s testnet=%s',
-                symbol, side, position_side, quantity, testnet,
+                'binance request | MARKET order | symbol=%s side=%s positionSide=%s reduceOnly=%s qty=%s testnet=%s',
+                symbol, side, position_side, reduce_only, quantity, testnet,
             )
             response = await asyncio.to_thread(
                 client.place_market_order,
@@ -114,6 +124,7 @@ async def place_order(
                 side,
                 quantity,
                 position_side,
+                reduce_only,
             )
         elif order_type == "STOP":
             # Trigger-limit conditional order: needs both stop_price (trigger) and price (limit)
@@ -127,7 +138,7 @@ async def place_order(
             )
             response = await asyncio.to_thread(
                 client.place_conditional_order,
-                symbol, side, quantity, stop_price, price, position_side,
+                symbol, side, quantity, stop_price, price, position_side, reduce_only,
             )
         elif order_type == "STOP_MARKET":
             # Trigger-market conditional order: only stop_price (trigger), no limit price
@@ -139,7 +150,7 @@ async def place_order(
             )
             response = await asyncio.to_thread(
                 client.place_stop_loss_order,
-                symbol, side, stop_price, quantity, position_side,
+                symbol, side, stop_price, quantity, position_side, reduce_only,
             )
         else:
             return BinanceOrderResult(success=False, error=f"Unsupported order type: {order_type}")

@@ -4,9 +4,169 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trade_relay.trading import binance_client as trading_binance_client
+
+
+@pytest.fixture
+def restore_backend_locale():
+    from trade_relay.i18n import current_locale, set_locale
+
+    original_locale = current_locale()
+    try:
+        yield set_locale
+    finally:
+        set_locale(original_locale)
+
+
+def test_set_position_mode_surfaces_exchange_error(monkeypatch):
+    from trade_relay.exchange.binance_client import BinanceClient
+
+    class StubRawClient:
+        def futures_change_position_mode(self, dualSidePosition):
+            raise Exception("APIError(code=-4067): Position mode cannot be changed while positions or open orders exist.")
+
+    client = BinanceClient.__new__(BinanceClient)
+    client.client = StubRawClient()
+
+    with pytest.raises(RuntimeError, match="-4067"):
+        client.set_position_mode(False)
+
+
+def test_account_position_mode_update_rejects_failed_exchange_switch(monkeypatch, restore_backend_locale):
+    from fastapi import HTTPException
+    from backend.routers import account
+
+    restore_backend_locale('en')
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_positions(self):
+            return []
+
+        def get_open_orders(self):
+            return []
+
+        def get_open_algo_orders(self):
+            return []
+
+        def set_position_mode(self, hedge_mode=False):
+            return False
+
+    monkeypatch.setattr(account.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(account.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(account.cfg_module, "is_testnet", lambda username: False)
+    monkeypatch.setattr(account, "BinanceClient", StubClient)
+    monkeypatch.setattr(account, "_refresh_account_summary_from_exchange", lambda *args, **kwargs: {})
+    monkeypatch.setattr(account, "_invalidate_account_summary_cache", lambda *args, **kwargs: None)
+
+    with pytest.raises(HTTPException, match="Failed to set position mode to SINGLE"):
+        account.update_account_position_mode(
+            account.PositionModeUpdateIn(symbol="BTCUSDC", position_mode="SINGLE"),
+            {"username": "Will", "sub": "1"},
+        )
+
+
+def test_account_position_mode_update_rejects_when_open_positions_exist(monkeypatch, restore_backend_locale):
+    from fastapi import HTTPException
+    from backend.routers import account
+
+    restore_backend_locale('zh')
+
+    called = {"set_position_mode": False}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_positions(self):
+            return [{"symbol": "BTCUSDC", "positionAmt": "0.01"}]
+
+        def get_open_orders(self):
+            return []
+
+        def get_open_algo_orders(self):
+            return []
+
+        def set_position_mode(self, hedge_mode=False):
+            called["set_position_mode"] = True
+            return True
+
+    monkeypatch.setattr(account.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(account.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(account.cfg_module, "is_testnet", lambda username: False)
+    monkeypatch.setattr(account, "BinanceClient", StubClient)
+
+    with pytest.raises(HTTPException, match="请先平掉全部持仓并取消全部挂单"):
+        account.update_account_position_mode(
+            account.PositionModeUpdateIn(symbol="BTCUSDC", position_mode="SINGLE"),
+            {"username": "Will", "sub": "1"},
+        )
+
+    assert called["set_position_mode"] is False
+
+
+def test_account_position_mode_update_rejects_when_open_orders_exist(monkeypatch, restore_backend_locale):
+    from fastapi import HTTPException
+    from backend.routers import account
+
+    restore_backend_locale('en')
+
+    called = {"set_position_mode": False}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_positions(self):
+            return []
+
+        def get_open_orders(self):
+            return [{"symbol": "BTCUSDC", "orderId": 123}]
+
+        def get_open_algo_orders(self):
+            return [{"symbol": "BTCUSDC", "algoId": 456}]
+
+        def set_position_mode(self, hedge_mode=False):
+            called["set_position_mode"] = True
+            return True
+
+    monkeypatch.setattr(account.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(account.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(account.cfg_module, "is_testnet", lambda username: False)
+    monkeypatch.setattr(account, "BinanceClient", StubClient)
+
+    with pytest.raises(HTTPException, match=r"open_orders=1 open_algo_orders=1"):
+        account.update_account_position_mode(
+            account.PositionModeUpdateIn(symbol="BTCUSDC", position_mode="DUAL"),
+            {"username": "Will", "sub": "1"},
+        )
+
+    assert called["set_position_mode"] is False
+
+
+def test_account_position_mode_update_invalid_mode_is_localized(restore_backend_locale):
+    from fastapi import HTTPException
+    from backend.routers import account
+
+    restore_backend_locale('zh')
+
+    with pytest.raises(HTTPException, match="持仓模式必须是 SINGLE 或 DUAL"):
+        account.update_account_position_mode(
+            account.PositionModeUpdateIn(symbol="BTCUSDC", position_mode="INVALID"),
+            {"username": "Will", "sub": "1"},
+        )
 
 
 def test_place_order_surfaces_stop_market_error(monkeypatch):
@@ -19,7 +179,7 @@ def test_place_order_surfaces_stop_market_error(monkeypatch):
         def set_leverage(self, symbol, leverage):
             return None
 
-        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side, reduce_only=False):
             return {
                 "error": True,
                 "error_message": "APIError(code=-2021): Order would immediately trigger.",
@@ -56,7 +216,7 @@ def test_place_order_accepts_algo_id_for_stop_market(monkeypatch):
         def set_leverage(self, symbol, leverage):
             return None
 
-        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side, reduce_only=False):
             return {
                 "algoId": 987654321,
                 "clientAlgoId": "client-algo-123",
@@ -509,7 +669,7 @@ def test_binance_place_order_forwards_post_only_to_limit_client(monkeypatch):
         def set_leverage(self, symbol, leverage):
             return None
 
-        def place_limit_order(self, symbol, side, quantity, price, position_side, post_only, expire_seconds=None):
+        def place_limit_order(self, symbol, side, quantity, price, position_side, post_only, expire_seconds=None, reduce_only=False):
             captured.update({
                 'symbol': symbol,
                 'side': side,
@@ -518,6 +678,7 @@ def test_binance_place_order_forwards_post_only_to_limit_client(monkeypatch):
                 'position_side': position_side,
                 'post_only': post_only,
                 'expire_seconds': expire_seconds,
+                'reduce_only': reduce_only,
             })
             return {'orderId': '999', 'status': 'NEW'}
 
@@ -541,6 +702,204 @@ def test_binance_place_order_forwards_post_only_to_limit_client(monkeypatch):
 
     assert result.success is True
     assert captured['post_only'] is True
+
+
+def test_place_order_omits_position_side_for_single_mode_limit(monkeypatch):
+    captured: dict = {}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_position_mode(self):
+            return False
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_limit_order(self, symbol, side, quantity, price, position_side, post_only, expire_seconds=None, reduce_only=False):
+            captured.update({
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'price': price,
+                'position_side': position_side,
+                'post_only': post_only,
+                'expire_seconds': expire_seconds,
+                'reduce_only': reduce_only,
+            })
+            return {'orderId': '1001', 'status': 'NEW'}
+
+    monkeypatch.setattr(trading_binance_client, 'FuturesBinanceClient', StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key='key',
+            api_secret='secret',
+            symbol='BTCUSDC',
+            side='BUY',
+            order_type='LIMIT',
+            quantity=0.01,
+            price=77000.0,
+            leverage=20,
+            testnet=False,
+            position_direction='OPEN',
+            position_mode='SINGLE',
+        )
+    )
+
+    assert result.success is True
+    assert captured['position_side'] is None
+    assert captured['reduce_only'] is False
+
+
+def test_place_order_uses_reduce_only_for_single_mode_market_close(monkeypatch):
+    captured: dict = {}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_position_mode(self):
+            return False
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_market_order(self, symbol, side, quantity, position_side=None, reduce_only=False):
+            captured.update({
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'position_side': position_side,
+                'reduce_only': reduce_only,
+            })
+            return {'orderId': '1002', 'status': 'FILLED'}
+
+    monkeypatch.setattr(trading_binance_client, 'FuturesBinanceClient', StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key='key',
+            api_secret='secret',
+            symbol='BTCUSDC',
+            side='SELL',
+            order_type='MARKET',
+            quantity=0.01,
+            leverage=20,
+            testnet=False,
+            position_direction='CLOSE',
+            position_mode='SINGLE',
+        )
+    )
+
+    assert result.success is True
+    assert captured['position_side'] is None
+    assert captured['reduce_only'] is True
+
+
+def test_place_order_uses_reduce_only_for_single_mode_stop_close(monkeypatch):
+    captured: dict = {}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_position_mode(self):
+            return False
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_conditional_order(self, symbol, side, quantity, stop_price, price=None, position_side=None, reduce_only=False):
+            captured.update({
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'stop_price': stop_price,
+                'price': price,
+                'position_side': position_side,
+                'reduce_only': reduce_only,
+            })
+            return {'orderId': '1003', 'status': 'NEW'}
+
+    monkeypatch.setattr(trading_binance_client, 'FuturesBinanceClient', StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key='key',
+            api_secret='secret',
+            symbol='BTCUSDC',
+            side='SELL',
+            order_type='STOP',
+            quantity=0.01,
+            price=76950.0,
+            stop_price=77000.0,
+            leverage=20,
+            testnet=False,
+            position_direction='CLOSE',
+            position_mode='SINGLE',
+        )
+    )
+
+    assert result.success is True
+    assert captured['position_side'] is None
+    assert captured['reduce_only'] is True
+
+
+def test_place_order_omits_reduce_only_for_single_mode_stop_market_open(monkeypatch):
+    captured: dict = {}
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_position_mode(self):
+            return False
+
+        def set_leverage(self, symbol, leverage):
+            return None
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side=None, reduce_only=False):
+            captured.update({
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'stop_price': stop_price,
+                'position_side': position_side,
+                'reduce_only': reduce_only,
+            })
+            return {'algoId': '1004', 'algoStatus': 'NEW'}
+
+    monkeypatch.setattr(trading_binance_client, 'FuturesBinanceClient', StubClient)
+
+    result = asyncio.run(
+        trading_binance_client.place_order(
+            api_key='key',
+            api_secret='secret',
+            symbol='BTCUSDC',
+            side='BUY',
+            order_type='STOP_MARKET',
+            quantity=0.01,
+            stop_price=77000.0,
+            leverage=20,
+            testnet=False,
+            position_direction='OPEN',
+            position_mode='SINGLE',
+        )
+    )
+
+    assert result.success is True
+    assert captured['position_side'] is None
+    assert captured['reduce_only'] is False
 
 
 def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):

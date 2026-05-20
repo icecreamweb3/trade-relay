@@ -979,8 +979,9 @@ class BinanceClient:
             self.client.futures_change_position_mode(dualSidePosition=hedge_mode)
             return True
         except Exception as e:
-            logger.debug(f"Failed to set position mode: {e}")
-            return False
+            error_message = f"Failed to set position mode: {e}"
+            logger.warning(error_message)
+            raise RuntimeError(error_message) from e
     
     def place_market_order(self, symbol: str, side: str, quantity: float, position_side: str = None, reduce_only: bool = False) -> Optional[dict]:
         """Place a market order
@@ -1192,6 +1193,7 @@ class BinanceClient:
         stop_price: float,
         price: Optional[float] = None,
         position_side: str = None,
+        reduce_only: bool = False,
     ) -> Optional[dict]:
         """Place a conditional order via the standard futures /fapi/v1/order endpoint.
 
@@ -1252,7 +1254,8 @@ class BinanceClient:
                     )
                 else:
                     params["positionSide"] = "BOTH"
-                    params["reduceOnly"] = "false"
+                    if reduce_only:
+                        params["reduceOnly"] = "true"
 
                 _sig, request_body = self._generate_signed_request_body(params, debug=False)
 
@@ -1300,7 +1303,7 @@ class BinanceClient:
         logger.error("place_conditional_order: max timestamp retries exceeded symbol=%s", symbol)
         return None
 
-    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None) -> Optional[dict]:
+    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None, reduce_only: bool = False) -> Optional[dict]:
         """Place a limit order
         
         Args:
@@ -1311,6 +1314,7 @@ class BinanceClient:
             position_side: Position side (LONG/SHORT) for hedge mode
             post_only: Whether to submit as maker-only (GTX)
             expire_seconds: Order expiration time in seconds (default: None, means GTC - Good Till Cancel)
+            reduce_only: If True, order will only reduce position (for one-way mode close orders)
         """
         # 实现时间戳错误重试机制
         for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
@@ -1428,14 +1432,10 @@ class BinanceClient:
                         'timeInForce': 'GTX' if post_only else TIME_IN_FORCE_GTC
                     }
                     
-                    # ⚡ 重要：即使检测到单向持仓模式，也要添加 positionSide（双向持仓账户必需）
-                    # 如果账户实际是双向持仓，但 get_position_mode() 检测失败或返回 False，会导致 -4061 错误
                     if position_side:
-                        # 双向持仓模式：必须指定 positionSide
                         order_params['positionSide'] = position_side
-                    else:
-                        # 根据订单方向自动设置
-                        order_params['positionSide'] = 'LONG' if side.upper() == 'BUY' else 'SHORT'
+                    elif reduce_only:
+                        order_params['reduceOnly'] = True
                     
                     # 如果指定了过期时间，尝试添加过期时间参数
                     # 注意：Binance SDK 使用 goodTillDate 参数（不是 expireTime）
@@ -1455,7 +1455,7 @@ class BinanceClient:
                     
                     # 打印下单参数用于调试
                     import json
-                    logger.debug(f"📤 准备下限价单: {symbol}, side={side}, quantity={quantity}, price={price_str}, position_mode={position_mode}, position_side={order_params.get('positionSide', 'N/A')}")
+                    logger.debug(f"📤 准备下限价单: {symbol}, side={side}, quantity={quantity}, price={price_str}, position_mode={position_mode}, position_side={order_params.get('positionSide', 'N/A')}, reduce_only={order_params.get('reduceOnly', False)}")
                     logger.debug(f"   📋 完整订单参数: {json.dumps(order_params, indent=2, default=str)}")
                     
                     # 使用 SDK 的 futures 下单方法
@@ -1782,7 +1782,7 @@ class BinanceClient:
                     result = formatted
             return result
     
-    def place_stop_loss_order(self, symbol: str, side: str, stop_price: float, quantity: float, position_side: str = None) -> Optional[dict]:
+    def place_stop_loss_order(self, symbol: str, side: str, stop_price: float, quantity: float, position_side: str = None, reduce_only: bool = False) -> Optional[dict]:
         """Place a stop-loss order
         
         Args:
@@ -1859,9 +1859,10 @@ class BinanceClient:
                     params['positionSide'] = 'SHORT' if side.upper() == 'BUY' else 'LONG'
                 # Do NOT add reduceOnly or closePosition in hedge mode
             else:
-                # One-way Mode: use BOTH for positionSide, add reduceOnly
+                # One-way Mode: use BOTH for positionSide and only add reduceOnly for close orders
                 params['positionSide'] = 'BOTH'
-                params['reduceOnly'] = 'true'  # Reduce only for stop loss
+                if reduce_only:
+                    params['reduceOnly'] = 'true'
                 # closePosition is optional in one-way mode, but we don't need it since we specify quantity
             
             # Add timestamp (must be string according to Binance docs)
@@ -3142,11 +3143,11 @@ class BinanceClient:
             logger.debug(f"Failed to get open algo orders: {e}")
             return []
 
-    def get_open_orders(self, symbol: str) -> List[dict]:
-        """Get all open orders for a symbol
+    def get_open_orders(self, symbol: str | None = None) -> List[dict]:
+        """Get open orders for a symbol or the entire futures account.
         
         Args:
-            symbol: Trading pair symbol (e.g., 'BTCUSDT')
+            symbol: Optional trading pair symbol (e.g., 'BTCUSDT')
             
         Returns:
             List of open orders, each containing:
@@ -3158,7 +3159,8 @@ class BinanceClient:
             - status: Order status (NEW, PARTIALLY_FILLED, etc.)
         """
         try:
-            orders = self.client.futures_get_open_orders(symbol=symbol)
+            request_kwargs = {"symbol": symbol} if symbol else {}
+            orders = self.client.futures_get_open_orders(**request_kwargs)
             return orders if orders else []
         except Exception as e:
             logger.debug(f"Failed to get open orders for {symbol}: {e}")
