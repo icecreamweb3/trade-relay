@@ -325,8 +325,12 @@ function createBinanceView() {
     },
   })
 
-  mainWindow.addBrowserView(binanceView)
-  _binanceViewAttached = true
+  if (_binanceViewVisible) {
+    mainWindow.addBrowserView(binanceView)
+    _binanceViewAttached = true
+  } else {
+    _binanceViewAttached = false
+  }
   const rawUA = binanceView.webContents.getUserAgent()
   binanceView.webContents.setUserAgent(rawUA.replace(/\s*Electron\/[\d.]+/, ''))
 
@@ -519,13 +523,15 @@ ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   logger.info('[BINANCE_VIEW] action=resize-request splitRatio=%s chartRatio=%s visible=%s', splitRatio, chartRatio, _binanceViewVisible)
+  if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(0.95, chartRatio))
   if (splitRatio === 0) {
     // Hide BrowserView by moving it off-screen
+    _splitRatio = 0
     hideBinanceView()
     return
   }
   _splitRatio = Math.max(0.1, Math.min(0.95, splitRatio))
-  if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(0.95, chartRatio))
+  if (!binanceView || !mainWindow) return
   updateBinanceViewBounds()
 })
 
@@ -548,9 +554,9 @@ ipcMain.handle('binance-go-forward', () => { if (binanceView?.webContents.canGoF
 ipcMain.handle('binance-reload', () => { binanceView?.webContents.reload() })
 
 ipcMain.handle('set-binance-view-visible', (_event, visible) => {
-  if (!binanceView || !mainWindow) return
-  logger.info('[BINANCE_VIEW] action=set-visible from=%s to=%s', _binanceViewVisible, Boolean(visible))
+  logger.info('[BINANCE_VIEW] action=set-visible from=%s to=%s hasView=%s', _binanceViewVisible, Boolean(visible), Boolean(binanceView))
   _binanceViewVisible = Boolean(visible)
+  if (!binanceView || !mainWindow) return
   if (visible) {
     updateBinanceViewBounds()
   } else {

@@ -30,12 +30,8 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
   const showDebugClearButton = false
 
   React.useEffect(() => {
-    const shouldHideBinanceView = Boolean(debugDialog) && activeScreen === 'trade'
-    window.electronAPI?.setBinanceViewVisible?.(!shouldHideBinanceView)
-
-    return () => {
-      window.electronAPI?.setBinanceViewVisible?.(activeScreen === 'trade')
-    }
+    const shouldShowBinanceView = activeScreen === 'trade' && !debugDialog
+    window.electronAPI?.setBinanceViewVisible?.(shouldShowBinanceView)
   }, [activeScreen, debugDialog])
 
   const handleDebugClearArrows = async () => {
