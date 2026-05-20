@@ -839,6 +839,7 @@ let _orderLines     = []    // objects from createOrderLine() — need .remove()
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
 let _overlayShapeSignals = new Map()
+let _overlayBaseShapeIds = null
 let _shapeGeneration = 0   // incremented each redraw; stale promises self-delete
 let _overlayTooltipEl = null
 let _tvWidget = null
@@ -1303,6 +1304,9 @@ function _syncOverlayDrawingEvents() {
 
   _tvWidget = widget
   _overlayDrawingEventHandler = (sourceId, drawingEventType) => {
+    if (sourceId && !_overlayShapeSignals.has(sourceId) && _overlayBaseShapeIds) {
+      _overlayBaseShapeIds.add(sourceId)
+    }
     if (drawingEventType !== 'click') return
     const sig = _overlayShapeSignals.get(sourceId)
     if (!sig) return
@@ -1441,6 +1445,7 @@ function clearDetailShapes(chart) {
 
 function clearOverlayShapes(chart) {
   _hideOverlayTooltip()
+  const baseShapeIds = _overlayBaseShapeIds
 
   // Increment generation FIRST so any in-flight createShape() Promises
   // (from the previous draw) self-delete when they resolve instead of
@@ -1455,9 +1460,19 @@ function clearOverlayShapes(chart) {
   _detailShapes = []
 
   _drawnShapes.forEach(id => { try { chart.removeEntity(id) } catch { /* already gone */ } })
+
+  const currentShapeIds = _getChartShapeIdSet(chart)
+  if (baseShapeIds && currentShapeIds) {
+    for (const id of currentShapeIds) {
+      if (baseShapeIds.has(id)) continue
+      try { chart.removeEntity(id) } catch { /* already gone */ }
+    }
+  }
+
   _drawnShapes = []
   _cachedSignals = []
   _overlayShapeSignals = new Map()
+  _overlayBaseShapeIds = _getChartShapeIdSet(chart)
 }
 
 function _getOverlayDebugState() {
@@ -1542,6 +1557,7 @@ function drawSignalDetail(chart, sig) {
 function drawSignalsOnChart(chart, signals) {
   clearOverlayShapes(chart)
   const baseShapeIds = _getChartShapeIdSet(chart)
+  _overlayBaseShapeIds = baseShapeIds
   _cachedSignals = signals.slice()  // cache for redraw after detail clear
   _lastOverlayVisibleRangeKey = _getOverlayVisibleRangeKey()
   _redrawArrows(chart)
