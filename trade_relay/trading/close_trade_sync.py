@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import time
 from typing import Optional
 
 from trade_relay import database as db
@@ -10,6 +11,7 @@ from trade_relay import database as db
 logger = logging.getLogger(__name__)
 
 _UNASSIGNED_HISTORY_ORDER_WINDOW_SECONDS = 30 * 60
+_TRADE_FILLS_SYNC_RETRY_DELAYS_SECONDS = (0.2, 0.5, 1.0)
 
 
 def _safe_float(value) -> float:
@@ -41,6 +43,33 @@ def _order_close_price(order_row: dict) -> float:
     if close_price > 0:
         return close_price
     return _safe_float(order_row.get("price"))
+
+
+def _get_trade_fills_with_retry(*, client, symbol: str, exchange_order_id: str) -> list[dict]:
+    trades = client.get_trade_fills(symbol, exchange_order_id)
+    if trades:
+        return trades
+
+    for delay_seconds in _TRADE_FILLS_SYNC_RETRY_DELAYS_SECONDS:
+        time.sleep(delay_seconds)
+        trades = client.get_trade_fills(symbol, exchange_order_id)
+        if trades:
+            logger.info(
+                "[ORDER_FLOW] phase=trade_fills_retry_success symbol=%s exchange_order_id=%s delay=%s count=%s",
+                symbol,
+                exchange_order_id,
+                delay_seconds,
+                len(trades),
+            )
+            return trades
+
+    logger.warning(
+        "[ORDER_FLOW] phase=trade_fills_missing_after_retries symbol=%s exchange_order_id=%s attempts=%s",
+        symbol,
+        exchange_order_id,
+        1 + len(_TRADE_FILLS_SYNC_RETRY_DELAYS_SECONDS),
+    )
+    return []
 
 
 def _is_unassigned_history_row_for_order(row: dict, order_row: dict) -> bool:
@@ -285,8 +314,18 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
     if not hasattr(client, "get_trade_fills"):
         return
 
-    trades = client.get_trade_fills(symbol, exchange_order_id)
+    trades = _get_trade_fills_with_retry(
+        client=client,
+        symbol=symbol,
+        exchange_order_id=exchange_order_id,
+    )
     if not trades:
+        if latest_order_row.get("id"):
+            db.schedule_order_trade_details_retry(
+                int(latest_order_row["id"]),
+                delay_seconds=_TRADE_FILLS_SYNC_RETRY_DELAYS_SECONDS[-1],
+                error_message="trade_fills_not_ready",
+            )
         return
 
     total_qty = sum(abs(_safe_float(trade.get("qty"))) for trade in trades)
@@ -318,6 +357,7 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
         str(latest_order_row.get("status") or "FILLED"),
         **update_kwargs,
     )
+    db.clear_order_trade_details_sync_state(int(latest_order_row["id"]))
     if trade_direction == "CLOSE":
         sync_position_history_from_filled_close_order(
             {

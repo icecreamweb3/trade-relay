@@ -37,6 +37,11 @@ FastAPI 应用入口、REST 路由、认证接口、订单接口、持仓接口�
 
 Electron 承载 React 前端。前端通过 IPC 和本地 FastAPI 后端通信，展示登录、下单、持仓、委托、历史等界面。
 
+相关专题文档：
+
+- `docs/chart-overlay-arrow-hide-reference.md`：图表箭头隐藏、残留 overlay 清理、保护 TradingView 原生绘图元素的实现与排查说明。
+- `docs/chart-overlay-history-fill-markers-reference.md`：历史成交箭头标记从数据库查询、前端映射到 TradingView overlay 绘制的实现说明。
+
 ### `trade_relay/`
 
 保留纯 Python 业务逻辑：

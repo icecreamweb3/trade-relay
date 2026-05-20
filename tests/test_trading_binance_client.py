@@ -770,6 +770,7 @@ def test_sync_close_order_trade_details_updates_orders_and_position_history(monk
         "update_order_status",
         lambda order_id, status, **kwargs: order_updates.append((order_id, status, kwargs)) or True,
     )
+    monkeypatch.setattr(close_trade_sync.db, "clear_order_trade_details_sync_state", lambda order_id: True)
     monkeypatch.setattr(
         close_trade_sync.db,
         "get_position_history",
@@ -875,6 +876,7 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
         "update_order_status",
         lambda order_id, status, **kwargs: order_updates.append((order_id, status, kwargs)) or True,
     )
+    monkeypatch.setattr(close_trade_sync.db, "clear_order_trade_details_sync_state", lambda order_id: True)
     monkeypatch.setattr(
         close_trade_sync.db,
         "update_position_history_values",
@@ -903,6 +905,77 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
         },
     )]
     assert history_updates == []
+
+
+def test_sync_filled_order_trade_details_retries_when_trade_fills_lag(monkeypatch):
+    from trade_relay.trading import close_trade_sync
+
+    order_updates = []
+    sleep_calls = []
+    trade_fill_calls = []
+
+    class StubClient:
+        def get_trade_fills(self, symbol, order_id):
+            trade_fill_calls.append((symbol, order_id))
+            if len(trade_fill_calls) == 1:
+                return []
+            return [
+                {
+                    "qty": "0.036",
+                    "commission": "0.4446",
+                    "commissionAsset": "USDC",
+                    "realizedPnl": "-22.248",
+                    "time": 1747751567000,
+                },
+            ]
+
+    latest_order = {
+        "id": 77,
+        "user_id": 1,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "trade_direction": "CLOSE",
+        "position_id": 9,
+        "exchange_order_id": "58727847036",
+        "status": "FILLED",
+    }
+
+    monkeypatch.setattr(close_trade_sync.db, "get_order_by_id", lambda order_id: latest_order if order_id == 77 else None)
+    monkeypatch.setattr(
+        close_trade_sync.db,
+        "update_order_status",
+        lambda order_id, status, **kwargs: order_updates.append((order_id, status, kwargs)) or True,
+    )
+    monkeypatch.setattr(close_trade_sync.db, "clear_order_trade_details_sync_state", lambda order_id: True)
+    monkeypatch.setattr(close_trade_sync.db, "get_position_history", lambda user_id=None, limit=200: [])
+    monkeypatch.setattr(close_trade_sync.db, "add_position_history", lambda **kwargs: 0)
+    monkeypatch.setattr(close_trade_sync.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    close_trade_sync.sync_filled_order_trade_details(
+        username="Will",
+        client=StubClient(),
+        order_row={
+            "id": 77,
+            "trade_direction": "CLOSE",
+            "exchange_order_id": "58727847036",
+            "symbol": "BTCUSDC",
+        },
+    )
+
+    assert trade_fill_calls == [("BTCUSDC", "58727847036"), ("BTCUSDC", "58727847036")]
+    assert sleep_calls == [0.2]
+    assert order_updates == [(
+        77,
+        "FILLED",
+        {
+            "filled_qty": 0.036,
+            "commission": 0.4446,
+            "commission_asset": "USDC",
+            "filled_at": 1747751567000,
+            "realized_pnl": -22.248,
+        },
+    )]
 
 
 def test_sync_position_history_from_filled_close_order_uses_order_totals(monkeypatch):
