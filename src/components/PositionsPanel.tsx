@@ -61,8 +61,6 @@ interface AmendOrderDraft {
   position: Position | null
 }
 
-type HistoryDirectionFilter = 'ALL' | 'OPEN' | 'CLOSE'
-
 export function PositionsPanel({
   refreshTrigger,
   isActive = true,
@@ -91,7 +89,6 @@ export function PositionsPanel({
   const [cancellingId, setCancellingId] = useState<number | null>(null)
   const [amendingId, setAmendingId] = useState<number | null>(null)
   const [conditionalOrders, setConditionalOrders] = useState<ApiConditionalOrder[]>([])
-  const [historyDirectionFilter, setHistoryDirectionFilter] = useState<HistoryDirectionFilter>('ALL')
   const [cancellingAlgoId, setCancellingAlgoId] = useState<number | null>(null)
   const [bulkCancelling, setBulkCancelling] = useState<'basic' | 'conditional' | null>(null)
   const [bulkCancelConfirm, setBulkCancelConfirm] = useState<'basic' | 'conditional' | null>(null)
@@ -136,9 +133,7 @@ export function PositionsPanel({
         setOpenOrders(basic)
         setConditionalOrders(conditional)
       }
-      else if (tab === 'history') {
-        setHistory(await api.getOrderHistory(historyDirectionFilter === 'ALL' ? undefined : historyDirectionFilter))
-      }
+      else if (tab === 'history') setHistory(await api.getOrderHistory())
       else if (tab === 'tradeHistory') setPositionHistory(await api.getPositionHistory())
     } catch (error: unknown) {
       const msg =
@@ -152,7 +147,7 @@ export function PositionsPanel({
       _positionsFirstLoadDone.current = true
       perfSignalDone('positions panel: first load done')
     }
-  }, [historyDirectionFilter, isActive, isAuthenticated, showToast, t, tab])
+  }, [isActive, isAuthenticated, showToast, t, tab])
 
   useEffect(() => {
     loadRef.current = load
@@ -554,27 +549,6 @@ export function PositionsPanel({
               >
                 {bulkCancelling === openOrdersSubTab ? t('pos.cancelAllLoading') : t('pos.cancelAll')}
               </button>
-            </div>
-          )}
-          {tab === 'history' && (
-            <div className="flex gap-1 border-b border-[#3e3e42] bg-[#252526] px-2 py-1">
-              {([
-                ['ALL', t('log.filter.allDirections')],
-                ['OPEN', t('order.open')],
-                ['CLOSE', t('order.close')],
-              ] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setHistoryDirectionFilter(value)}
-                  className={`px-3 py-1 text-[11px] font-medium border rounded transition-colors ${
-                    historyDirectionFilter === value
-                      ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
-                      : 'border-[#3e3e42] text-[#858585] hover:text-[#cccccc]'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
             </div>
           )}
           {(tab === 'history' || openOrdersSubTab === 'basic') && (
