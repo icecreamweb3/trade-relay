@@ -1973,6 +1973,110 @@ class BinanceClient:
                 'symbol': symbol,
                 'side': side,
             }
+
+    def place_close_all_stop_loss_order(self, symbol: str, side: str, stop_price: float) -> Optional[dict]:
+        """Place a one-way close-all STOP_MARKET order via the algo order API."""
+        try:
+            position_mode = self.get_position_mode()
+            if position_mode is True:
+                raise ValueError("closePosition=true STOP_MARKET is only supported by this helper in one-way mode")
+
+            stop_price_str = self.format_price_by_precision(stop_price, symbol)
+            if not stop_price_str or stop_price_str.strip() == '':
+                raise ValueError(f"Formatted stop_price is empty for {symbol} (original: {stop_price})")
+
+            stop_price_validated = float(stop_price_str)
+            if stop_price_validated <= 0:
+                raise ValueError(f"Invalid stop_price: {stop_price_validated} (original: {stop_price})")
+
+            import requests
+            from requests.exceptions import Timeout, ConnectionError, RequestException
+
+            url = f"{self.base_url}/fapi/v1/algoOrder"
+            params = {
+                'algoType': 'CONDITIONAL',
+                'symbol': symbol,
+                'side': side.upper(),
+                'positionSide': 'BOTH',
+                'type': 'STOP_MARKET',
+                'triggerPrice': stop_price_str,
+                'closePosition': 'true',
+                'workingType': 'CONTRACT_PRICE',
+                'timeInForce': 'GTC',
+                'timestamp': str(int(time.time() * 1000)),
+            }
+
+            _, request_body = self._generate_signed_request_body(params, debug=False)
+
+            max_retries = self.MAX_RETRIES
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        url,
+                        headers=self.default_headers,
+                        data=request_body,
+                        proxies=self.proxy_config,
+                        timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT)
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        if attempt > 0:
+                            logger.info(f"✅ 下全仓止损单成功 (重试 {attempt} 次后): {symbol}")
+                        if result is None:
+                            return {
+                                'error': True,
+                                'error_type': 'NoneResult',
+                                'error_message': 'close-all STOP_MARKET algo order returned no JSON body',
+                                'symbol': symbol,
+                                'side': side,
+                            }
+                        return result
+
+                    error_text = response.text
+                    if response.status_code in [500, 502, 503, 504]:
+                        logger.warning(f"⚠️ 下全仓止损单失败 (服务器错误, status={response.status_code}, attempt={attempt + 1}/{max_retries + 1}): {error_text}")
+                        if attempt < max_retries:
+                            wait_time = 2 ** attempt
+                            logger.debug(f"⏳ 等待 {wait_time} 秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+
+                    try:
+                        error_json = response.json()
+                        error_msg = error_json.get('msg', error_text)
+                        error_code = error_json.get('code', 'UNKNOWN')
+                        raise Exception(f"APIError(code={error_code}): {error_msg}")
+                    except Exception:
+                        raise Exception(f"HTTP {response.status_code}: {error_text}")
+
+                except (Timeout, ConnectionError, RequestException) as exc:
+                    last_exception = exc
+                    logger.warning(f"⚠️ 下全仓止损单失败 (网络/请求异常, attempt={attempt + 1}/{max_retries + 1}): {str(exc)}")
+                    if attempt < max_retries:
+                        wait_time = 2 ** attempt
+                        logger.debug(f"⏳ 等待 {wait_time} 秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                    raise
+
+            if last_exception:
+                raise last_exception
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.debug(f"Failed to place close-all stop loss order for {symbol}: [{error_type}] {error_msg}")
+            if 'params' in locals():
+                logger.debug(f"  请求参数: {params}")
+            logger.exception("下全仓止损单异常详情")
+            return {
+                'error': True,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'symbol': symbol,
+                'side': side,
+            }
     
     def place_take_profit_order(self, symbol: str, side: str, price: float, quantity: float, position_side: str = None) -> Optional[dict]:
         """Place a take-profit order
@@ -2148,6 +2252,110 @@ class BinanceClient:
             if 'params' in locals():
                 logger.debug(f"  请求参数: {params}")
             logger.exception(f"下止盈单异常详情")
+            return {
+                'error': True,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'symbol': symbol,
+                'side': side,
+            }
+
+    def place_close_all_take_profit_order(self, symbol: str, side: str, trigger_price: float) -> Optional[dict]:
+        """Place a one-way close-all TAKE_PROFIT_MARKET order via the algo order API."""
+        try:
+            position_mode = self.get_position_mode()
+            if position_mode is True:
+                raise ValueError("closePosition=true TAKE_PROFIT_MARKET is only supported by this helper in one-way mode")
+
+            trigger_price_str = self.format_price_by_precision(trigger_price, symbol)
+            if not trigger_price_str or trigger_price_str.strip() == '':
+                raise ValueError(f"Formatted trigger_price is empty for {symbol} (original: {trigger_price})")
+
+            trigger_price_validated = float(trigger_price_str)
+            if trigger_price_validated <= 0:
+                raise ValueError(f"Invalid trigger_price: {trigger_price_validated} (original: {trigger_price})")
+
+            import requests
+            from requests.exceptions import Timeout, ConnectionError, RequestException
+
+            url = f"{self.base_url}/fapi/v1/algoOrder"
+            params = {
+                'algoType': 'CONDITIONAL',
+                'symbol': symbol,
+                'side': side.upper(),
+                'positionSide': 'BOTH',
+                'type': 'TAKE_PROFIT_MARKET',
+                'triggerPrice': trigger_price_str,
+                'closePosition': 'true',
+                'workingType': 'CONTRACT_PRICE',
+                'timeInForce': 'GTC',
+                'timestamp': str(int(time.time() * 1000)),
+            }
+
+            _, request_body = self._generate_signed_request_body(params, debug=False)
+
+            max_retries = self.MAX_RETRIES
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        url,
+                        headers=self.default_headers,
+                        data=request_body,
+                        proxies=self.proxy_config,
+                        timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT)
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        if attempt > 0:
+                            logger.info(f"✅ 下全仓止盈单成功 (重试 {attempt} 次后): {symbol}")
+                        if result is None:
+                            return {
+                                'error': True,
+                                'error_type': 'NoneResult',
+                                'error_message': 'close-all TAKE_PROFIT_MARKET algo order returned no JSON body',
+                                'symbol': symbol,
+                                'side': side,
+                            }
+                        return result
+
+                    error_text = response.text
+                    if response.status_code in [500, 502, 503, 504]:
+                        logger.warning(f"⚠️ 下全仓止盈单失败 (服务器错误, status={response.status_code}, attempt={attempt + 1}/{max_retries + 1}): {error_text}")
+                        if attempt < max_retries:
+                            wait_time = 2 ** attempt
+                            logger.debug(f"⏳ 等待 {wait_time} 秒后重试...")
+                            time.sleep(wait_time)
+                            continue
+
+                    try:
+                        error_json = response.json()
+                        error_msg = error_json.get('msg', error_text)
+                        error_code = error_json.get('code', 'UNKNOWN')
+                        raise Exception(f"APIError(code={error_code}): {error_msg}")
+                    except Exception:
+                        raise Exception(f"HTTP {response.status_code}: {error_text}")
+
+                except (Timeout, ConnectionError, RequestException) as exc:
+                    last_exception = exc
+                    logger.warning(f"⚠️ 下全仓止盈单失败 (网络/请求异常, attempt={attempt + 1}/{max_retries + 1}): {str(exc)}")
+                    if attempt < max_retries:
+                        wait_time = 2 ** attempt
+                        logger.debug(f"⏳ 等待 {wait_time} 秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                    raise
+
+            if last_exception:
+                raise last_exception
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.debug(f"Failed to place close-all take profit order for {symbol}: [{error_type}] {error_msg}")
+            if 'params' in locals():
+                logger.debug(f"  请求参数: {params}")
+            logger.exception("下全仓止盈单异常详情")
             return {
                 'error': True,
                 'error_type': error_type,

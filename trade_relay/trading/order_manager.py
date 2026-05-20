@@ -34,6 +34,26 @@ class OrderResult:
         self.order_id = order_id
 
 
+def _coerce_legacy_submit_order_args(
+    post_only: object,
+    leverage: object,
+    position_direction: object,
+    position_mode: Optional[str],
+) -> tuple[bool, int, str, Optional[str]]:
+    """Support older positional callers that passed leverage before position_direction."""
+    if (
+        isinstance(post_only, (int, float))
+        and not isinstance(post_only, bool)
+        and isinstance(leverage, str)
+        and isinstance(position_direction, str)
+        and position_direction == 'OPEN'
+        and position_mode is None
+    ):
+        return False, int(post_only), leverage, position_mode
+
+    return bool(post_only), int(leverage), str(position_direction or 'OPEN').upper(), position_mode
+
+
 async def submit_order(
     session: Session,
     symbol: str,
@@ -52,6 +72,12 @@ async def submit_order(
     """
     Validate, place, and record an order for the given session user.
     """
+    post_only, leverage, position_direction, position_mode = _coerce_legacy_submit_order_args(
+        post_only,
+        leverage,
+        position_direction,
+        position_mode,
+    )
     symbol = symbol.strip().upper()
     side = side.upper()
     order_type = order_type.upper()

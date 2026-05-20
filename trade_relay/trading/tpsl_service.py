@@ -9,6 +9,15 @@ from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
 
 
+def _normalize_position_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"DUAL", "HEDGE"}:
+        return "DUAL"
+    if normalized in {"SINGLE", "ONE_WAY", "ONEWAY"}:
+        return "SINGLE"
+    return "UNKNOWN"
+
+
 def _replace_existing_conditional_orders(
     *,
     client: BinanceClient,
@@ -136,6 +145,8 @@ def place_tp_sl_orders(
         testnet=cfg.is_testnet(username),
     )
     close_side = "SELL" if str(position_side).upper() == "LONG" else "BUY"
+    normalized_position_mode = _normalize_position_mode(position_mode)
+    use_close_all_conditional_orders = normalized_position_mode == "SINGLE"
 
     if tp_price is not None and tp_price > 0:
         errors.extend(_replace_existing_conditional_orders(
@@ -149,13 +160,20 @@ def place_tp_sl_orders(
         if errors:
             return errors
         try:
-            tp_resp = client.place_take_profit_order(
-                symbol=symbol,
-                side=close_side,
-                price=tp_price,
-                quantity=quantity,
-                position_side=position_side,
-            )
+            if use_close_all_conditional_orders:
+                tp_resp = client.place_close_all_take_profit_order(
+                    symbol=symbol,
+                    side=close_side,
+                    trigger_price=tp_price,
+                )
+            else:
+                tp_resp = client.place_take_profit_order(
+                    symbol=symbol,
+                    side=close_side,
+                    price=tp_price,
+                    quantity=quantity,
+                    position_side=position_side,
+                )
             tp_exchange_id = str(tp_resp.get("algoId", "") or tp_resp.get("orderId", "")) if isinstance(tp_resp, dict) else None
             tp_client_id = str(tp_resp.get("clientAlgoId", "") or tp_resp.get("clientOrderId", "")) if isinstance(tp_resp, dict) else None
             tp_status = tp_resp.get("status", "NEW") if isinstance(tp_resp, dict) else "NEW"
@@ -173,7 +191,7 @@ def place_tp_sl_orders(
                 algo_client_id=tp_client_id or None,
                 client_order_id=None,
                 trade_direction="CLOSE",
-                position_mode=position_mode,
+                position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
                 order_category="Conditional",
@@ -191,7 +209,7 @@ def place_tp_sl_orders(
                 status="FAILED",
                 error_message=str(exc),
                 trade_direction="CLOSE",
-                position_mode=position_mode,
+                position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
                 order_category="Conditional",
@@ -209,13 +227,20 @@ def place_tp_sl_orders(
         if errors:
             return errors
         try:
-            sl_resp = client.place_stop_loss_order(
-                symbol=symbol,
-                side=close_side,
-                stop_price=sl_price,
-                quantity=quantity,
-                position_side=position_side,
-            )
+            if use_close_all_conditional_orders:
+                sl_resp = client.place_close_all_stop_loss_order(
+                    symbol=symbol,
+                    side=close_side,
+                    stop_price=sl_price,
+                )
+            else:
+                sl_resp = client.place_stop_loss_order(
+                    symbol=symbol,
+                    side=close_side,
+                    stop_price=sl_price,
+                    quantity=quantity,
+                    position_side=position_side,
+                )
             sl_exchange_id = str(sl_resp.get("algoId", "") or sl_resp.get("orderId", "")) if isinstance(sl_resp, dict) else None
             sl_client_id = str(sl_resp.get("clientAlgoId", "") or sl_resp.get("clientOrderId", "")) if isinstance(sl_resp, dict) else None
             sl_status = sl_resp.get("status", "NEW") if isinstance(sl_resp, dict) else "NEW"
@@ -234,7 +259,7 @@ def place_tp_sl_orders(
                 algo_client_id=sl_client_id or None,
                 client_order_id=None,
                 trade_direction="CLOSE",
-                position_mode=position_mode,
+                position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
                 order_category="Conditional",
@@ -253,7 +278,7 @@ def place_tp_sl_orders(
                 status="FAILED",
                 error_message=str(exc),
                 trade_direction="CLOSE",
-                position_mode=position_mode,
+                position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
                 order_category="Conditional",

@@ -227,7 +227,48 @@ def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
         "tp_price": 81000.0,
         "sl_price": 79000.0,
         "position_id": 99,
+        "position_mode": "UNKNOWN",
     }]
+
+
+def test_order_status_stream_skips_close_tpsl_quantity_refresh_for_single_mode(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    placement_attempts = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda *args, **kwargs: {"id": 99, "position_mode": "SINGLE"},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "trade_direction": "CLOSE",
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "quantity": 0.001,
+            "price": 81000.0,
+        }],
+    )
+    monkeypatch.setattr(
+        order_status_stream,
+        "place_tp_sl_orders",
+        lambda **kwargs: placement_attempts.append(kwargs) or [],
+    )
+
+    stream._sync_close_tpsl_quantity(
+        user_id=1,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.003,
+        entry_price=80000.0,
+    )
+
+    assert placement_attempts == []
 
 
 def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_close(monkeypatch):
@@ -307,7 +348,7 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
         "Will",
         "4000001327195551",
         "FILLED",
-        {"filled_qty": 0.012, "avg_price": 78391.7},
+        {"filled_qty": 0.012, "avg_price": 78391.7, "filled_at": None},
     )]
     assert history_creations == [{
         "symbol": "BTCUSDC",
@@ -559,6 +600,121 @@ def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
     assert created_orders[1]["order_type"] == "STOP_MARKET"
 
 
+def test_place_tp_sl_orders_uses_close_all_orders_for_single_mode(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    created_orders = []
+    client_calls = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def place_close_all_take_profit_order(self, symbol, side, trigger_price):
+            client_calls.append(("tp", symbol, side, trigger_price))
+            return {"algoId": 3001, "clientAlgoId": "tp-close-all", "status": "NEW"}
+
+        def place_close_all_stop_loss_order(self, symbol, side, stop_price):
+            client_calls.append(("sl", symbol, side, stop_price))
+            return {"algoId": 3002, "clientAlgoId": "sl-close-all", "status": "NEW"}
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 101)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=1,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.005,
+        entry_price=78000.0,
+        tp_price=78500.0,
+        sl_price=77600.0,
+        position_id=99,
+        position_mode="SINGLE",
+    )
+
+    assert errors == []
+    assert client_calls == [
+        ("tp", "BTCUSDC", "SELL", 78500.0),
+        ("sl", "BTCUSDC", "SELL", 77600.0),
+    ]
+    assert len(created_orders) == 2
+    assert all(order["position_mode"] == "SINGLE" for order in created_orders)
+    assert created_orders[0]["quantity"] == 0.005
+    assert created_orders[1]["quantity"] == 0.005
+
+
+def test_production_binance_client_close_all_conditional_orders(monkeypatch):
+    import requests
+    from trade_relay.exchange import binance_client as exchange_binance_client
+
+    post_calls = []
+
+    class StubSdkClient:
+        def __init__(self, api_key=None, api_secret=None, testnet=False):
+            self.api_key = api_key
+            self.api_secret = api_secret
+            self.testnet = testnet
+
+        def get_server_time(self):
+            return {"serverTime": 1710000000000}
+
+    class StubResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+            self.text = "ok"
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, headers=None, data=None, proxies=None, timeout=None):
+        post_calls.append({
+            "url": url,
+            "headers": headers,
+            "data": data,
+            "proxies": proxies,
+            "timeout": timeout,
+        })
+        if "TAKE_PROFIT_MARKET" in str(data):
+            return StubResponse({"algoId": 7002, "type": "TAKE_PROFIT_MARKET"})
+        return StubResponse({"algoId": 7001, "type": "STOP_MARKET"})
+
+    monkeypatch.setattr(exchange_binance_client, "BinanceClientBase", StubSdkClient)
+    monkeypatch.setattr(exchange_binance_client, "load_env", lambda override=True: None)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    client = exchange_binance_client.BinanceClient(api_key="key", secret_key="secret", testnet=False)
+    monkeypatch.setattr(client, "get_position_mode", lambda: False)
+    monkeypatch.setattr(client, "format_price_by_precision", lambda price, symbol: f"{price:.1f}")
+    monkeypatch.setattr(
+        client,
+        "_generate_signed_request_body",
+        lambda params, debug=False: ("sig", "&".join(f"{k}={v}" for k, v in sorted(params.items())) + "&signature=sig"),
+    )
+
+    stop_result = client.place_close_all_stop_loss_order("BTCUSDC", "SELL", 77600.0)
+    tp_result = client.place_close_all_take_profit_order("BTCUSDC", "SELL", 78500.0)
+
+    assert stop_result == {"algoId": 7001, "type": "STOP_MARKET"}
+    assert tp_result == {"algoId": 7002, "type": "TAKE_PROFIT_MARKET"}
+    assert len(post_calls) == 2
+    assert all(call["url"].endswith("/fapi/v1/algoOrder") for call in post_calls)
+    assert "closePosition=true" in post_calls[0]["data"]
+    assert "positionSide=BOTH" in post_calls[0]["data"]
+    assert "type=STOP_MARKET" in post_calls[0]["data"]
+    assert "closePosition=true" in post_calls[1]["data"]
+    assert "positionSide=BOTH" in post_calls[1]["data"]
+    assert "type=TAKE_PROFIT_MARKET" in post_calls[1]["data"]
+
+
 def test_sync_close_order_trade_details_updates_orders_and_position_history(monkeypatch):
     from trade_relay.trading import close_trade_sync
 
@@ -655,6 +811,7 @@ def test_sync_close_order_trade_details_updates_orders_and_position_history(monk
             "realized_pnl": 4.0,
             "commission": 0.30000000000000004,
             "commission_asset": "USDC",
+            "filled_at": None,
         },
     )]
     assert len(history_updates) == 2
@@ -730,6 +887,7 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
             "filled_qty": 0.003,
             "commission": 0.30000000000000004,
             "commission_asset": "USDC",
+            "filled_at": None,
         },
     )]
     assert history_updates == []
@@ -982,6 +1140,7 @@ def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_
             "realized_pnl": -0.395,
             "commission": 0.192,
             "commission_asset": "USDC",
+            "filled_at": None,
         },
     )]
     assert len(trade_sync_calls) == 1
@@ -1178,6 +1337,7 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
         "realized_pnl": (78556.2 - 78000.0) * 0.012,
         "commission": 0.0,
         "position_id": 9,
+        "position_mode": "UNKNOWN",
     }]
 
 

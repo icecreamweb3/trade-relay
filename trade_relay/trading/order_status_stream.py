@@ -29,6 +29,15 @@ def _derive_position_mode_from_position_side(raw_position_side: str | None) -> s
         return "SINGLE"
     return "UNKNOWN"
 
+
+def _normalize_position_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in ("DUAL", "HEDGE"):
+        return "DUAL"
+    if normalized in ("SINGLE", "ONE_WAY", "ONEWAY"):
+        return "SINGLE"
+    return "UNKNOWN"
+
 MAINNET_WS_URL = "wss://fstream.binance.com/ws/"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/ws/"
 
@@ -91,6 +100,16 @@ class UserOrderStatusStream:
         close_side = "SELL" if position_side == "LONG" else "BUY"
         position = db.get_position(user_id, symbol, position_side)
         position_id = int(position["id"]) if position and position.get("id") else None
+        position_mode = _normalize_position_mode((position or {}).get("position_mode"))
+        if position_mode == "SINGLE":
+            logger.debug(
+                "Skip CLOSE TP/SL quantity refresh for single-position mode: user=%s symbol=%s side=%s qty=%s",
+                self.username,
+                symbol,
+                position_side,
+                quantity,
+            )
+            return
         active_rows = db.query_orders(user_id=user_id, status="NEW", limit=500)
 
         tp_price: Optional[float] = None
@@ -142,7 +161,7 @@ class UserOrderStatusStream:
             tp_price=tp_price,
             sl_price=sl_price,
             position_id=position_id,
-            position_mode=str((position or {}).get("position_mode") or "UNKNOWN").upper(),
+            position_mode=position_mode,
         )
         if errors:
             logger.warning(
