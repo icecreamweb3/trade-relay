@@ -960,6 +960,35 @@ function _trackOverlayShapeId(idOrPromise, sig) {
   _overlayShapeSignals.set(idOrPromise, sig)
 }
 
+function _getChartShapeIdSet(chart) {
+  try {
+    const allShapes = chart?.getAllShapes?.()
+    if (!Array.isArray(allShapes)) return null
+    return new Set(allShapes.map((shape) => shape?.id).filter(Boolean))
+  } catch {
+    return null
+  }
+}
+
+function _captureOverlayShapesByDiff(chart, baseShapeIds) {
+  if (!baseShapeIds) return
+  const gen = _shapeGeneration
+
+  const syncNewShapeIds = () => {
+    if (gen !== _shapeGeneration) return
+    const nextShapeIds = _getChartShapeIdSet(chart)
+    if (!nextShapeIds) return
+
+    for (const id of nextShapeIds) {
+      if (baseShapeIds.has(id) || _drawnShapes.includes(id)) continue
+      _drawnShapes.push(id)
+    }
+  }
+
+  setTimeout(syncNewShapeIds, 0)
+  setTimeout(syncNewShapeIds, 80)
+}
+
 function _getOverlayVisiblePriceRange() {
   try {
     const chartApi = _tvChart || findTvChart()
@@ -1332,6 +1361,10 @@ let _detailOrderLines = []
 function _redrawArrows(chart) {
   _prepareOverlaySignalLayout()
   const visibleRange = _getOverlayVisibleRange()
+  const visiblePriceRange = _getOverlayVisiblePriceRange()
+  const priceSpan = Number.isFinite(visiblePriceRange?.to) && Number.isFinite(visiblePriceRange?.from)
+    ? Math.abs(visiblePriceRange.to - visiblePriceRange.from)
+    : null
   const fullLabelStartIndex = Math.max(0, _cachedSignals.length - MARKER_FULL_LABEL_LIMIT)
 
   _cachedSignals.forEach((sig, index) => {
@@ -1365,9 +1398,15 @@ function _redrawArrows(chart) {
     // Label text drawn separately so arrow anchor stays precise
     if (showLabel && showFullLabel) {
       const labelText = _formatMarkerLabel(sig)
+      const labelGap = priceSpan != null
+        ? Math.max(priceSpan * 0.03, 0.06)
+        : Math.max(Math.abs(Number(sig.entry_price) || 0) * 0.001, 0.06)
+      const labelPrice = dir === 'LONG'
+        ? priceHint - labelGap
+        : priceHint + labelGap
       try {
         const labelId = chart.createShape(
-          { time: timeSec, price: priceHint },
+          { time: timeSec, price: labelPrice },
           {
             shape: 'text',
             text: labelText,
@@ -1502,9 +1541,11 @@ function drawSignalDetail(chart, sig) {
 
 function drawSignalsOnChart(chart, signals) {
   clearOverlayShapes(chart)
+  const baseShapeIds = _getChartShapeIdSet(chart)
   _cachedSignals = signals.slice()  // cache for redraw after detail clear
   _lastOverlayVisibleRangeKey = _getOverlayVisibleRangeKey()
   _redrawArrows(chart)
+  _captureOverlayShapesByDiff(chart, baseShapeIds)
 }
 
 function _refreshOverlayForVisibleRangeChange() {
@@ -1523,6 +1564,15 @@ setInterval(() => {
 // The React renderer sends signals to main, main forwards here.
 
 let _tvChart = null  // cached chart reference
+
+function _getActiveOverlayChart() {
+  const freshChart = findTvChart()
+  if (freshChart) {
+    _tvChart = freshChart
+    return freshChart
+  }
+  return _tvChart
+}
 
 /**
  * Wait until the TV chart is showing a symbol that contains `expectedPair`.
@@ -1636,7 +1686,7 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 // IPC: clear all drawn shapes
 ipcRenderer.on('overlay-clear', async () => {
   _overlayMessageVersion += 1
-  const chart = _tvChart || findTvChart()
+  const chart = _getActiveOverlayChart()
   if (chart) {
     clearOverlayShapes(chart)
   }
@@ -1645,7 +1695,7 @@ ipcRenderer.on('overlay-clear', async () => {
 ipcRenderer.on('overlay-clear-debug', async () => {
   _overlayMessageVersion += 1
   const before = _getOverlayDebugState()
-  const chart = _tvChart || findTvChart()
+  const chart = _getActiveOverlayChart()
   if (chart) {
     clearOverlayShapes(chart)
   }
@@ -1661,13 +1711,13 @@ ipcRenderer.on('overlay-clear-debug', async () => {
 
 // IPC: show SL/TP detail for a clicked/replayed signal
 ipcRenderer.on('overlay-signal-detail', (event, sig) => {
-  const chart = _tvChart || findTvChart()
+  const chart = _getActiveOverlayChart()
   if (chart && sig) drawSignalDetail(chart, sig)
 })
 
 // IPC: probe chart and report back (useful for debugging from React DevTools)
 ipcRenderer.on('overlay-probe', async () => {
-  const chart = findTvChart()
+  const chart = _getActiveOverlayChart()
   ipcRenderer.send('overlay-status', {
     action: 'probe',
     ok: !!chart,
