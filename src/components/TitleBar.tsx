@@ -43,12 +43,10 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
     try {
       const probeResult = await window.electronAPI?.debugProbeChartOverlay?.()
       const clearResult = await window.electronAPI?.debugClearChartOverlaySignals?.()
-      const forceResult = await window.electronAPI?.forceClearChartArrows?.()
 
       const lines = [
         `[probe] ${JSON.stringify(probeResult ?? {})}`,
         `[clear-ipc] ${JSON.stringify(clearResult ?? {})}`,
-        `[force-clear] ${JSON.stringify(forceResult ?? {})}`,
       ]
 
       setDebugDialog({
