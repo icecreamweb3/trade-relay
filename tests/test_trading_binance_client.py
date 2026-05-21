@@ -849,6 +849,51 @@ def test_public_ticker_stream_transforms_binance_payload(monkeypatch):
     }]
 
 
+def test_public_ticker_stream_transforms_combined_stream_payload(monkeypatch):
+    from trade_relay.exchange import public_ticker_stream
+
+    monkeypatch.setattr(public_ticker_stream, 'get_proxy_config', lambda: (False, None, None))
+
+    stream = public_ticker_stream.PublicTicker24hStream('BTCUSDC')
+    captured: list[dict] = []
+
+    stream.add_listener(captured.append)
+    stream._on_message(None, json.dumps({
+        'stream': 'btcusdc@ticker',
+        'data': {
+            'e': '24hrTicker',
+            'E': 1710000000000,
+            's': 'BTCUSDC',
+            'p': '120.5',
+            'P': '1.25',
+            'o': '9640.0',
+            'c': '9760.5',
+            'h': '9800.0',
+            'l': '9500.0',
+            'v': '12.34',
+            'q': '120345.67',
+            'O': 1709913600000,
+            'C': 1710000000000,
+        },
+    }))
+
+    assert captured == [{
+        'type': 'ticker24h',
+        'symbol': 'BTCUSDC',
+        'lastPrice': 9760.5,
+        'priceChange': 120.5,
+        'priceChangePercent': 1.25,
+        'openPrice': 9640.0,
+        'highPrice': 9800.0,
+        'lowPrice': 9500.0,
+        'volume': 12.34,
+        'quoteVolume': 120345.67,
+        'openTime': 1709913600000,
+        'closeTime': 1710000000000,
+        'eventTime': 1710000000000,
+    }]
+
+
 def test_order_status_stream_persists_filled_open_order_without_explicit_trade_details_enqueue(monkeypatch):
     from trade_relay.trading import order_status_stream
 

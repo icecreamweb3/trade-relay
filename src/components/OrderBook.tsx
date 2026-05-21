@@ -3,7 +3,7 @@
  * Maintains a local order book from a REST snapshot plus diff depth stream.
  */
 import { useEffect, useRef, useState } from 'react'
-import { getBackendBaseUrl } from '../api/client'
+import { api } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
@@ -43,6 +43,7 @@ const SPREAD_OPTIONS: SpreadOption[] = [
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 const BOOK_SNAPSHOT_LIMIT = 1000
 const VISIBLE_LEVEL_COUNT = 19
+const FSTREAM_COMBINED_STREAM_BASE = 'wss://fstream.binance.com/stream?streams='
 
 function splitTradingSymbol(symbol: string) {
   const upperSymbol = symbol.toUpperCase()
@@ -165,7 +166,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
   useEffect(() => {
     const sym = symbol.toLowerCase()
-    const wsUrl = `wss://fstream.binance.com/public/ws/${sym}@depth@100ms`
+    const wsUrl = `${FSTREAM_COMBINED_STREAM_BASE}${sym}@depth@100ms`
 
     let alive = true
     let ws: WebSocket | null = null
@@ -236,18 +237,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       clearRetryTimer()
 
       try {
-        const response = await fetch(
-          `${getBackendBaseUrl()}/api/account/order-book-depth?symbol=${symbol.toUpperCase()}&limit=${BOOK_SNAPSHOT_LIMIT}`,
-        )
-        if (!alive || requestId !== snapshotRequestId) {
-          return
-        }
-        if (!response.ok) {
-          scheduleSnapshotRetry()
-          return
-        }
-
-        const snapshot = await response.json() as DepthSnapshot
+        const snapshot = await api.getOrderBookDepth(symbol.toUpperCase(), BOOK_SNAPSHOT_LIMIT)
         if (!alive || requestId !== snapshotRequestId) {
           return
         }
@@ -257,6 +247,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
         applyBookUpdates(bidsBook, snapshot.bids)
         applyBookUpdates(asksBook, snapshot.asks)
         lastAppliedUpdateId = snapshot.lastUpdateId ?? 0
+        publishOrderBook()
 
         const pendingEvents = bufferedEvents
           .filter((event) => event.u > lastAppliedUpdateId)
@@ -273,7 +264,6 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
         snapshotLoaded = true
         bufferedEvents = []
-        publishOrderBook()
 
         for (const event of pendingEvents.slice(startIndex)) {
           if (!applyDepthEvent(event)) {
@@ -299,7 +289,13 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           return
         }
         try {
-          const data = JSON.parse(event.data) as DepthEvent
+          const payload = JSON.parse(event.data) as DepthEvent | { data?: DepthEvent }
+          const data = (typeof payload === 'object' && payload !== null && 'data' in payload
+            ? payload.data
+            : payload) as DepthEvent | undefined
+          if (!data) {
+            return
+          }
           if (!snapshotLoaded) {
             bufferedEvents.push(data)
             return

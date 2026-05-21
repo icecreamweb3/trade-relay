@@ -251,7 +251,7 @@ function _ensureTicker24hStream(symbol) {
 
   _ticker24hSymbol = normalized
   _logTicker24h('info', 'subscribe', { symbol: normalized })
-  const ws = new OriginalWebSocket(`wss://fstream.binance.com/market/ws/${normalized}@ticker`)
+  const ws = new OriginalWebSocket(`wss://fstream.binance.com/market/stream?streams=${normalized}@ticker`)
   _ticker24hWs = ws
   let firstMessageLogged = false
 
@@ -261,7 +261,8 @@ function _ensureTicker24hStream(symbol) {
 
   ws.addEventListener('message', (event) => {
     try {
-      const data = JSON.parse(event.data)
+      const raw = JSON.parse(event.data)
+      const data = raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object' ? raw.data : raw
       if (data?.e === '24hrTicker' && String(data.s || '').trim().toLowerCase() === _ticker24hSymbol) {
         if (!firstMessageLogged) {
           firstMessageLogged = true

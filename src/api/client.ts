@@ -179,6 +179,12 @@ interface ApiAccountSummary {
   message?: string | null
 }
 
+interface ApiOrderBookDepth {
+  lastUpdateId?: number
+  bids?: Array<[string, string]>
+  asks?: Array<[string, string]>
+}
+
 interface ApiProfileStats {
   total_pnl: number
   win_rate: number
@@ -421,6 +427,12 @@ export const api = {
     if (force) params.force = true
     return request<ApiAccountSummary>('GET', '/api/account/summary', {
       params: Object.keys(params).length ? params : undefined,
+    })
+  },
+
+  async getOrderBookDepth(symbol: string, limit = 1000): Promise<ApiOrderBookDepth> {
+    return request<ApiOrderBookDepth>('GET', '/api/account/order-book-depth', {
+      params: { symbol, limit },
     })
   },
 

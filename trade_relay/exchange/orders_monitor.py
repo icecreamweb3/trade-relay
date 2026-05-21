@@ -37,7 +37,7 @@ class OrdersMonitor:
     # Binance Futures User Data Stream WebSocket URL
     WS_USER_DATA_STREAM_URL = "wss://fstream.binance.com/private/ws"
     # Binance Futures Market Data WebSocket URL
-    WS_MARKET_URL = "wss://fstream.binance.com/market/ws/"
+    WS_MARKET_URL = "wss://fstream.binance.com/market/stream?streams="
     PRIVATE_WS_EVENTS = ('ORDER_TRADE_UPDATE', 'ACCOUNT_UPDATE', 'ALGO_UPDATE', 'listenKeyExpired')
     
     def __init__(self, binance_client, on_order_filled_callback: Optional[Callable] = None,
@@ -448,7 +448,8 @@ class OrdersMonitor:
     def _on_price_message(self, ws, message) -> None:
         """处理 aggTrade 价格消息，提取成交价并触发回调。"""
         try:
-            data = json.loads(message)
+            raw = json.loads(message)
+            data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
             price = float(data["p"])
             if self.on_price_update:
                 self.on_price_update(price)

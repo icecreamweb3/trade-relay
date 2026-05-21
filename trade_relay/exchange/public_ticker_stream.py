@@ -15,7 +15,7 @@ from trade_relay.exchange.ws_proxy import get_proxy_config
 
 logger = logging.getLogger(__name__)
 
-WS_MARKET_URL = "wss://fstream.binance.com/market/ws/"
+WS_MARKET_URL = "wss://fstream.binance.com/market/stream?streams="
 
 TickerListener = Callable[[dict], None]
 
@@ -139,10 +139,12 @@ class PublicTicker24hStream:
 
     def _on_message(self, _ws, message: str) -> None:
         try:
-            data = json.loads(message)
+            raw = json.loads(message)
         except json.JSONDecodeError:
             logger.warning("Failed to decode 24hrTicker websocket payload for symbol=%s", self.symbol)
             return
+
+        data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
 
         if not isinstance(data, dict) or data.get("e") != "24hrTicker":
             return
