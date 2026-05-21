@@ -83,11 +83,40 @@ class UserOrderStatusStream:
     def _has_inflight_close_fill(self, *, user_id: int, symbol: str, position_side: str) -> bool:
         if not user_id:
             return False
-        return db.has_pending_close_tpsl_refresh(
+        if db.has_pending_close_tpsl_refresh(
             user_id=int(user_id),
             symbol=symbol,
             position_side=position_side,
-        )
+        ):
+            return True
+
+        normalized_symbol = str(symbol or "").strip().upper()
+        close_side = "SELL" if position_side == "LONG" else "BUY"
+        try:
+            recent_rows = db.query_orders(user_id=int(user_id), limit=200)
+        except Exception:
+            logger.debug(
+                "Failed to query recent orders while checking in-flight close fill: user=%s symbol=%s side=%s",
+                self.username,
+                normalized_symbol,
+                position_side,
+                exc_info=True,
+            )
+            return False
+
+        for row in recent_rows:
+            if str(row.get("trade_direction") or "").upper() != "CLOSE":
+                continue
+            if str(row.get("symbol") or "").upper() != normalized_symbol:
+                continue
+            if str(row.get("side") or "").upper() != close_side:
+                continue
+
+            status = str(row.get("status") or "").upper()
+            if status in {"PARTIALLY_FILLED", "PENDING_CANCEL", "PENDING"}:
+                return True
+
+        return False
 
     def _sync_close_tpsl_quantity(
         self,

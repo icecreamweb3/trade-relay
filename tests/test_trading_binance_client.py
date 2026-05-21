@@ -701,6 +701,56 @@ def test_order_status_stream_keeps_close_tpsl_refresh_suppressed_until_final_fil
     assert placement_attempts[0]["quantity"] == 0.02
 
 
+def test_order_status_stream_treats_partial_close_order_row_as_inflight_even_without_retry_flag(monkeypatch):
+    from trade_relay.trading import order_status_stream
+    from trade_relay.trading import close_tpsl_sync
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    placement_attempts = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda user_id, symbol, side: {"id": 509, "avg_entry_price": 77732.83783784, "position_mode": "DUAL"},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "has_pending_close_tpsl_refresh",
+        lambda **kwargs: False,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "id": 255,
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "status": "PARTIALLY_FILLED",
+            "quantity": 0.043,
+            "stop_price": 77700.0,
+            "position_id": 509,
+        }],
+    )
+    monkeypatch.setattr(
+        close_tpsl_sync,
+        "sync_close_tpsl_quantity",
+        lambda **kwargs: placement_attempts.append(kwargs) or [],
+    )
+
+    stream._sync_close_tpsl_quantity(
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.04,
+        entry_price=77732.83783784,
+    )
+
+    assert placement_attempts == []
+
+
 def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_close(monkeypatch):
     from trade_relay.trading import order_status_stream
 
@@ -1420,6 +1470,50 @@ def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
     assert len(created_orders) == 2
     assert created_orders[0]["order_type"] == "TAKE_PROFIT_MARKET"
     assert created_orders[1]["order_type"] == "STOP_MARKET"
+
+
+def test_place_tp_sl_orders_persists_failed_stop_loss_as_failed(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    created_orders = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {
+                "error": True,
+                "error_message": 'HTTP 400: {"code":-2021,"msg":"Order would immediately trigger."}',
+            }
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.043,
+        entry_price=77843.05306122,
+        tp_price=None,
+        sl_price=77700.0,
+        position_id=525,
+        position_mode="DUAL",
+    )
+
+    assert errors == ['SL: HTTP 400: {"code":-2021,"msg":"Order would immediately trigger."}']
+    assert len(created_orders) == 1
+    assert created_orders[0]["order_type"] == "STOP_MARKET"
+    assert created_orders[0]["status"] == "FAILED"
+    assert 'Order would immediately trigger.' in created_orders[0]["error_message"]
 
 
 def test_place_tp_sl_orders_uses_close_all_orders_for_single_mode(monkeypatch):

@@ -18,6 +18,16 @@ def _normalize_position_mode(value: str | None) -> str:
     return "UNKNOWN"
 
 
+def _raise_for_failed_conditional_response(response: object, label: str) -> dict:
+    if not isinstance(response, dict):
+        raise Exception(f"{label} placement returned invalid response")
+
+    if response.get("error"):
+        raise Exception(str(response.get("error_message") or f"{label} placement failed"))
+
+    return response
+
+
 def _replace_existing_conditional_orders(
     *,
     client: BinanceClient,
@@ -174,6 +184,7 @@ def place_tp_sl_orders(
                     quantity=quantity,
                     position_side=position_side,
                 )
+            tp_resp = _raise_for_failed_conditional_response(tp_resp, "TP")
             tp_exchange_id = str(tp_resp.get("algoId", "") or tp_resp.get("orderId", "")) if isinstance(tp_resp, dict) else None
             tp_client_id = str(tp_resp.get("clientAlgoId", "") or tp_resp.get("clientOrderId", "")) if isinstance(tp_resp, dict) else None
             tp_status = tp_resp.get("status", "NEW") if isinstance(tp_resp, dict) else "NEW"
@@ -241,6 +252,7 @@ def place_tp_sl_orders(
                     quantity=quantity,
                     position_side=position_side,
                 )
+            sl_resp = _raise_for_failed_conditional_response(sl_resp, "SL")
             sl_exchange_id = str(sl_resp.get("algoId", "") or sl_resp.get("orderId", "")) if isinstance(sl_resp, dict) else None
             sl_client_id = str(sl_resp.get("clientAlgoId", "") or sl_resp.get("clientOrderId", "")) if isinstance(sl_resp, dict) else None
             sl_status = sl_resp.get("status", "NEW") if isinstance(sl_resp, dict) else "NEW"
