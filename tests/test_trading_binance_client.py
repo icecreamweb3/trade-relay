@@ -443,6 +443,264 @@ def test_order_status_stream_skips_close_tpsl_quantity_refresh_for_single_mode(m
     assert placement_attempts == []
 
 
+def test_order_status_stream_skips_close_tpsl_quantity_refresh_during_partial_close_fill(monkeypatch):
+    from trade_relay.trading import order_status_stream
+    from trade_relay.trading import close_tpsl_sync
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    placement_attempts = []
+    history_rows = []
+    enqueue_calls = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_order_by_exchange_id",
+        lambda username, exchange_order_id: {
+            "id": 227,
+            "username": "Will",
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "exchange_order_id": exchange_order_id,
+            "filled_qty": None,
+            "avg_price": None,
+            "realized_pnl": None,
+            "commission": None,
+            "commission_asset": None,
+            "position_mode": "DUAL",
+        },
+    )
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda user_id, symbol, side: {"id": 509, "avg_entry_price": 77732.83783784, "position_mode": "DUAL"},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "has_pending_close_tpsl_refresh",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "enqueue_order_close_tpsl_refresh",
+        lambda order_id, **kwargs: enqueue_calls.append((order_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "add_position_history",
+        lambda **kwargs: history_rows.append(kwargs) or 902,
+    )
+    monkeypatch.setattr(order_status_stream, "sync_filled_order_trade_details", lambda **kwargs: None)
+    monkeypatch.setattr(order_status_stream.threading, "Thread", lambda target, args=(), daemon=None: type("_T", (), {"start": lambda self: None})())
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "trade_direction": "CLOSE",
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "order_type": "STOP_MARKET",
+            "quantity": 0.037,
+            "stop_price": 77700.0,
+            "position_id": 509,
+        }],
+    )
+    monkeypatch.setattr(
+        close_tpsl_sync,
+        "place_tp_sl_orders",
+        lambda **kwargs: placement_attempts.append(kwargs) or [],
+    )
+
+    stream._handle_close_fill({
+        "x": "TRADE",
+        "X": "PARTIALLY_FILLED",
+        "i": "58819962882",
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "l": "0.001",
+        "z": "0.001",
+        "L": "77673.7",
+        "ap": "77673.7",
+        "n": "0.03106948",
+        "N": "USDC",
+        "rp": "-0.05913783",
+    })
+
+    stream._sync_close_tpsl_quantity(
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.036,
+        entry_price=77732.83783784,
+    )
+
+    assert history_rows[0]["quantity"] == 0.001
+    assert placement_attempts == []
+    assert enqueue_calls == [(227, {"delay_seconds": 1.0, "error_message": "close_fill_inflight"})]
+
+
+def test_order_status_stream_keeps_close_tpsl_refresh_suppressed_until_final_fill(monkeypatch):
+    from trade_relay.trading import order_status_stream
+    from trade_relay.trading import close_tpsl_sync
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    placement_attempts = []
+    history_rows = []
+    pending_states = [True, True, True, False, False]
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_order_by_exchange_id",
+        lambda username, exchange_order_id: {
+            "id": 227,
+            "username": "Will",
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "exchange_order_id": exchange_order_id,
+            "filled_qty": None,
+            "avg_price": None,
+            "realized_pnl": None,
+            "commission": None,
+            "commission_asset": None,
+            "position_mode": "DUAL",
+        },
+    )
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda user_id, symbol, side: {"id": 509, "avg_entry_price": 77732.83783784, "position_mode": "DUAL"},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "has_pending_close_tpsl_refresh",
+        lambda **kwargs: pending_states[0] if len(pending_states) == 1 else pending_states.pop(0),
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "enqueue_order_close_tpsl_refresh",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "add_position_history",
+        lambda **kwargs: history_rows.append(kwargs) or (900 + len(history_rows)),
+    )
+    monkeypatch.setattr(order_status_stream, "sync_filled_order_trade_details", lambda **kwargs: None)
+    monkeypatch.setattr(order_status_stream.threading, "Thread", lambda target, args=(), daemon=None: type("_T", (), {"start": lambda self: None})())
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "trade_direction": "CLOSE",
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "order_type": "STOP_MARKET",
+            "quantity": 0.037,
+            "stop_price": 77700.0,
+            "position_id": 509,
+        }],
+    )
+    monkeypatch.setattr(
+        close_tpsl_sync,
+        "place_tp_sl_orders",
+        lambda **kwargs: placement_attempts.append(kwargs) or [],
+    )
+
+    stream._handle_close_fill({
+        "x": "TRADE",
+        "X": "PARTIALLY_FILLED",
+        "i": "58819962882",
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "l": "0.001",
+        "z": "0.001",
+        "L": "77673.7",
+        "ap": "77673.7",
+        "n": "0.03106948",
+        "N": "USDC",
+        "rp": "-0.05913783",
+    })
+    stream._sync_close_tpsl_quantity(
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.036,
+        entry_price=77732.83783784,
+    )
+
+    stream._handle_close_fill({
+        "x": "TRADE",
+        "X": "PARTIALLY_FILLED",
+        "i": "58819962882",
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "l": "0.010",
+        "z": "0.011",
+        "L": "77673.6",
+        "ap": "77673.60909091",
+        "n": "0.31069480",
+        "N": "USDC",
+        "rp": "-0.59137838",
+    })
+    stream._sync_close_tpsl_quantity(
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.026,
+        entry_price=77732.83783784,
+    )
+
+    assert placement_attempts == []
+    assert len(history_rows) == 2
+    assert stream._has_inflight_close_fill(user_id=5, symbol="BTCUSDC", position_side="LONG") is True
+
+    stream._handle_close_fill({
+        "x": "TRADE",
+        "X": "FILLED",
+        "i": "58819962882",
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "l": "0.026",
+        "z": "0.037",
+        "L": "77673.7",
+        "ap": "77673.68108108",
+        "n": "0.80780648",
+        "N": "USDC",
+        "rp": "-1.53758379",
+        "T": 1747820000000,
+    })
+
+    assert stream._has_inflight_close_fill(user_id=5, symbol="BTCUSDC", position_side="LONG") is False
+
+    stream._sync_close_tpsl_quantity(
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.02,
+        entry_price=77732.83783784,
+    )
+
+    assert len(history_rows) == 3
+    assert [row["quantity"] for row in history_rows] == [0.001, 0.01, 0.026]
+    assert len(placement_attempts) == 1
+    assert placement_attempts[0]["quantity"] == 0.02
+
+
 def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_close(monkeypatch):
     from trade_relay.trading import order_status_stream
 
@@ -525,6 +783,7 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
     assert history_creations == [{
         "symbol": "BTCUSDC",
         "position_side": "LONG",
+        "position_mode": "UNKNOWN",
         "fill_qty": 0.012,
         "fill_price": 78391.7,
     }]
@@ -587,6 +846,116 @@ def test_public_ticker_stream_transforms_binance_payload(monkeypatch):
         'openTime': 1709913600000,
         'closeTime': 1710000000000,
         'eventTime': 1710000000000,
+    }]
+
+
+def test_poll_open_orders_backfills_finished_conditional_algo_after_local_cancel(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    metadata_updates = []
+    status_updates = []
+    history_creations = []
+    trade_sync_calls = []
+
+    monkeypatch.setattr(order_status_stream.db, "get_active_orders_for_user", lambda username: [])
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "query_orders",
+        lambda **kwargs: [{
+            "id": 227,
+            "username": "Will",
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "order_category": "Conditional",
+            "status": "CANCELED",
+            "algo_id": "1000001711252489",
+            "exchange_order_id": None,
+            "quantity": 0.037,
+        }],
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_metadata",
+        lambda order_id, **kwargs: metadata_updates.append((order_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status",
+        lambda order_id, status, **kwargs: status_updates.append((order_id, status, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        stream,
+        "_create_position_history_from_poll",
+        lambda **kwargs: history_creations.append(kwargs),
+    )
+    monkeypatch.setattr(
+        order_status_stream,
+        "sync_filled_order_trade_details",
+        lambda **kwargs: trade_sync_calls.append(kwargs),
+    )
+    monkeypatch.setattr(stream, "_sync_position_from_rest", lambda symbol: None)
+    monkeypatch.setattr(stream, "_notify_listeners", lambda event, force=False: None)
+
+    class _StubClient:
+        def get_algo_order(self, algo_id=None, client_algo_id=None):
+            assert algo_id == 1000001711252489
+            return {
+                "algoId": 1000001711252489,
+                "actualOrderId": "58819962882",
+                "algoStatus": "FINISHED",
+                "actualPrice": "77673.7",
+                "actualQty": "0.037",
+                "triggerTime": 1779342518986,
+            }
+
+        def get_order_status(self, symbol, order_id):
+            assert symbol == "BTCUSDC"
+            assert order_id == "58819962882"
+            return {
+                "status": "FILLED",
+                "executedQty": "0.037",
+                "avgPrice": "77673.7",
+                "updateTime": 1779342519111,
+            }
+
+    stream.client = _StubClient()
+
+    stream._poll_open_orders_once()
+
+    assert metadata_updates == [(227, {"exchange_order_id": "58819962882"})]
+    assert status_updates == [(
+        227,
+        "FILLED",
+        {"filled_qty": 0.037, "avg_price": 77673.7, "filled_at": 1779342519111},
+    )]
+    assert history_creations == [{
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "position_mode": "UNKNOWN",
+        "fill_qty": 0.037,
+        "fill_price": 77673.7,
+    }]
+    assert trade_sync_calls == [{
+        "username": "Will",
+        "client": stream.client,
+        "order_row": {
+            "id": 227,
+            "username": "Will",
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "order_category": "Conditional",
+            "status": "CANCELED",
+            "algo_id": "1000001711252489",
+            "exchange_order_id": "58819962882",
+            "quantity": 0.037,
+        },
     }]
 
 
@@ -1518,6 +1887,7 @@ def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_
     order_updates = []
     history_rows = []
     trade_sync_calls = []
+    enqueue_calls = []
 
     monkeypatch.setattr(
         order_status_stream.db,
@@ -1553,6 +1923,11 @@ def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_
         "add_position_history",
         lambda **kwargs: history_rows.append(kwargs) or 901,
     )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "enqueue_order_close_tpsl_refresh",
+        lambda order_id, **kwargs: enqueue_calls.append((order_id, kwargs)) or True,
+    )
     monkeypatch.setattr(order_status_stream, "sync_filled_order_trade_details", lambda **kwargs: trade_sync_calls.append(kwargs))
     monkeypatch.setattr(order_status_stream.threading, "Thread", lambda target, args=(), daemon=None: type("_T", (), {"start": lambda self: None})())
 
@@ -1574,6 +1949,7 @@ def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_
     assert history_rows[0]["commission"] == 0.192
     assert history_rows[0]["commission_asset"] == "USDC"
     assert history_rows[0]["realized_pnl"] == -0.395
+    assert enqueue_calls == [(75, {"delay_seconds": 1.0, "error_message": "close_fill_inflight"})]
     assert order_updates == [(
         "Will",
         "58137689662",

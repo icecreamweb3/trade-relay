@@ -16,6 +16,7 @@ import websocket
 from trade_relay import config as cfg
 from trade_relay import database as db
 from trade_relay.exchange.binance_client import BinanceClient
+from trade_relay.trading.close_tpsl_sync import normalize_position_mode, sync_close_tpsl_quantity
 from trade_relay.trading.close_trade_sync import sync_close_order_trade_details, sync_filled_order_trade_details
 from trade_relay.trading.tpsl_service import cancel_close_tp_sl_orders, place_tp_sl_orders
 
@@ -30,14 +31,6 @@ def _derive_position_mode_from_position_side(raw_position_side: str | None) -> s
         return "SINGLE"
     return "UNKNOWN"
 
-
-def _normalize_position_mode(value: str | None) -> str:
-    normalized = str(value or "").strip().upper()
-    if normalized in ("DUAL", "HEDGE"):
-        return "DUAL"
-    if normalized in ("SINGLE", "ONE_WAY", "ONEWAY"):
-        return "SINGLE"
-    return "UNKNOWN"
 
 MAINNET_PRIVATE_WS_URL = "wss://fstream.binance.com/private/ws"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/ws/"
@@ -87,6 +80,15 @@ class UserOrderStatusStream:
         self._close_fill_metrics: dict[str, dict[str, object]] = {}
         self._close_fill_metrics_lock = threading.Lock()
 
+    def _has_inflight_close_fill(self, *, user_id: int, symbol: str, position_side: str) -> bool:
+        if not user_id:
+            return False
+        return db.has_pending_close_tpsl_refresh(
+            user_id=int(user_id),
+            symbol=symbol,
+            position_side=position_side,
+        )
+
     def _sync_close_tpsl_quantity(
         self,
         *,
@@ -102,7 +104,7 @@ class UserOrderStatusStream:
         close_side = "SELL" if position_side == "LONG" else "BUY"
         position = db.get_position(user_id, symbol, position_side)
         position_id = int(position["id"]) if position and position.get("id") else None
-        position_mode = _normalize_position_mode((position or {}).get("position_mode"))
+        position_mode = normalize_position_mode((position or {}).get("position_mode"))
         if position_mode == "SINGLE":
             logger.debug(
                 "Skip CLOSE TP/SL quantity refresh for single-position mode: user=%s symbol=%s side=%s qty=%s",
@@ -112,79 +114,25 @@ class UserOrderStatusStream:
                 quantity,
             )
             return
-        active_rows = db.query_orders(user_id=user_id, status="NEW", limit=500)
-
-        tp_price: Optional[float] = None
-        sl_price: Optional[float] = None
-        needs_refresh = False
-
-        for row in active_rows:
-            if str(row.get("trade_direction") or "").upper() != "CLOSE":
-                continue
-            if str(row.get("symbol") or "").upper() != symbol.upper():
-                continue
-            if str(row.get("side") or "").upper() != close_side:
-                continue
-
-            order_type = str(row.get("order_type") or "").upper()
-            if order_type not in {"TAKE_PROFIT_MARKET", "STOP_MARKET"}:
-                continue
-
-            row_quantity = _safe_float(row.get("quantity") or 0) or 0.0
-            row_position_id = row.get("position_id")
-            position_id_mismatch = (
-                position_id is not None
-                and row_position_id is not None
-                and int(row_position_id) != position_id
+        if self._has_inflight_close_fill(user_id=user_id, symbol=symbol, position_side=position_side):
+            logger.info(
+                "Skip CLOSE TP/SL quantity refresh during in-flight close fill: user=%s symbol=%s side=%s qty=%s",
+                self.username,
+                symbol,
+                position_side,
+                quantity,
             )
-
-            if abs(row_quantity - quantity) > 0.0005 or position_id_mismatch:
-                needs_refresh = True
-
-            if order_type == "TAKE_PROFIT_MARKET":
-                price = _safe_float(row.get("price") or 0)
-                if price and price > 0:
-                    tp_price = price
-            elif order_type == "STOP_MARKET":
-                stop_price = _safe_float(row.get("stop_price") or 0)
-                if stop_price and stop_price > 0:
-                    sl_price = stop_price
-
-        if not needs_refresh or (tp_price is None and sl_price is None):
             return
-
-        errors = place_tp_sl_orders(
+        errors = sync_close_tpsl_quantity(
             username=self.username,
             user_id=user_id,
             symbol=symbol,
             position_side=position_side,
             quantity=quantity,
             entry_price=entry_price,
-            tp_price=tp_price,
-            sl_price=sl_price,
-            position_id=position_id,
-            position_mode=position_mode,
         )
         if errors:
-            logger.warning(
-                "Auto-refresh CLOSE TP/SL quantity failed: user=%s symbol=%s side=%s qty=%s errors=%s",
-                self.username,
-                symbol,
-                position_side,
-                quantity,
-                "; ".join(errors),
-            )
             return
-
-        logger.info(
-            "Auto-refreshed CLOSE TP/SL quantity: user=%s symbol=%s side=%s qty=%s tp=%s sl=%s",
-            self.username,
-            symbol,
-            position_side,
-            quantity,
-            tp_price,
-            sl_price,
-        )
 
     def matches(self, api_key: str, api_secret: str, testnet: bool) -> bool:
         return self.api_key == api_key and self.api_secret == api_secret and self.testnet == testnet
@@ -457,8 +405,6 @@ class UserOrderStatusStream:
 
     def _poll_open_orders_once(self) -> None:
         active_rows = db.get_active_orders_for_user(self.username)
-        if not active_rows:
-            return
         notify_needed = False
         # Collect (db_row, new_status, executed_qty, avg_price) for fills detected this round
         fills: list[tuple[dict, str, float, float | None]] = []
@@ -496,12 +442,18 @@ class UserOrderStatusStream:
             except Exception:
                 logger.exception("Poll: error querying exchange_order_id=%s user=%s", exchange_order_id, self.username)
 
+        notify_needed = self._poll_recent_conditional_algo_orders_once(fills) or notify_needed
+
+        if not fills and not notify_needed:
+            return
+
         # Handle fills: create position_history for CLOSE orders, then sync positions from Binance
         symbols_to_sync: set[str] = set()
         for db_row, new_status, executed_qty, avg_price in fills:
             symbol = str(db_row.get("symbol") or "")
             trade_direction = str(db_row.get("trade_direction") or "").upper()
             order_side = str(db_row.get("side") or "").upper()
+            position_mode = str(db_row.get("position_mode") or "UNKNOWN").upper()
             # Derive position_side:
             # OPEN+BUY→LONG, OPEN+SELL→SHORT, CLOSE+SELL→LONG, CLOSE+BUY→SHORT
             if trade_direction == "CLOSE":
@@ -513,6 +465,7 @@ class UserOrderStatusStream:
                 self._create_position_history_from_poll(
                     symbol=symbol,
                     position_side=position_side,
+                    position_mode=position_mode,
                     fill_qty=executed_qty,
                     fill_price=avg_price,
                 )
@@ -528,6 +481,127 @@ class UserOrderStatusStream:
 
         if notify_needed:
             self._notify_listeners({"type": "order_update", "event": "POLL"}, force=True)
+
+    def _poll_recent_conditional_algo_orders_once(
+        self,
+        fills: list[tuple[dict, str, float, float | None]],
+    ) -> bool:
+        try:
+            recent_rows = db.query_orders(username=self.username, limit=50)
+        except Exception:
+            logger.exception("Poll: failed to load recent conditional algo orders for user=%s", self.username)
+            return False
+
+        notify_needed = False
+        for row in recent_rows:
+            db_status = str(row.get("status") or "").upper()
+            if db_status in db.ACTIVE_STATUSES or db_status == "FILLED":
+                continue
+            if str(row.get("order_category") or "").upper() != "CONDITIONAL":
+                continue
+
+            algo_id = str(row.get("algo_id") or "").strip()
+            algo_client_id = str(row.get("algo_client_id") or row.get("client_order_id") or "").strip()
+            symbol = str(row.get("symbol") or "")
+            if not symbol or (not algo_id and not algo_client_id):
+                continue
+
+            try:
+                algo_detail = self.client.get_algo_order(
+                    algo_id=int(algo_id) if algo_id else None,
+                    client_algo_id=None if algo_id else algo_client_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Poll: failed to query conditional algo order user=%s db_order_id=%s algo_id=%s algo_client_id=%s",
+                    self.username,
+                    row.get("id"),
+                    algo_id,
+                    algo_client_id,
+                )
+                continue
+
+            if not isinstance(algo_detail, dict):
+                continue
+
+            order_id = row.get("id")
+            backfill_fields: dict[str, str] = {}
+            actual_order_id = str(algo_detail.get("actualOrderId") or algo_detail.get("orderId") or "").strip()
+            algo_id_from_detail = str(algo_detail.get("algoId") or "").strip()
+            client_algo_id_from_detail = str(algo_detail.get("clientAlgoId") or "").strip()
+            if algo_id_from_detail and not algo_id:
+                backfill_fields["algo_id"] = algo_id_from_detail
+            if client_algo_id_from_detail and not algo_client_id:
+                backfill_fields["algo_client_id"] = client_algo_id_from_detail
+            if actual_order_id and str(row.get("exchange_order_id") or "").strip() != actual_order_id:
+                backfill_fields["exchange_order_id"] = actual_order_id
+            if backfill_fields and order_id:
+                db.update_order_metadata(int(order_id), **backfill_fields)
+                notify_needed = True
+
+            algo_status = str(algo_detail.get("algoStatus") or "").upper()
+            result = None
+            if actual_order_id:
+                result = self.client.get_order_status(symbol, actual_order_id)
+
+            if isinstance(result, dict):
+                new_status = str(result.get("status") or "").upper()
+                executed_qty = float(result.get("executedQty") or 0)
+                avg_price_raw = result.get("avgPrice")
+                avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
+                filled_at = result.get("updateTime") if new_status == "FILLED" else None
+            elif algo_status == "FINISHED":
+                new_status = "FILLED"
+                executed_qty = float(algo_detail.get("actualQty") or row.get("quantity") or 0)
+                avg_price_raw = algo_detail.get("actualPrice")
+                avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.0", "0.00000000") else None
+                filled_at = algo_detail.get("triggerTime") or algo_detail.get("updateTime")
+            elif algo_status in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+                new_status = "CANCELED" if algo_status == "CANCELLED" else algo_status
+                executed_qty = 0.0
+                avg_price = None
+                filled_at = None
+            else:
+                continue
+
+            if not new_status or not order_id:
+                continue
+            if new_status == db_status and not backfill_fields:
+                continue
+
+            logger.info(
+                "Poll conditional algo sync: db_order_id=%s user=%s symbol=%s %s -> %s actual_order_id=%s executedQty=%s avgPrice=%s algoStatus=%s",
+                order_id,
+                self.username,
+                symbol,
+                db_status,
+                new_status,
+                actual_order_id or None,
+                executed_qty,
+                avg_price,
+                algo_status,
+            )
+            db.update_order_status(
+                int(order_id),
+                new_status,
+                filled_qty=executed_qty if executed_qty else None,
+                avg_price=avg_price,
+                filled_at=filled_at,
+            )
+            notify_needed = True
+            if new_status in ("FILLED", "PARTIALLY_FILLED") and executed_qty > 0:
+                fills.append((
+                    {
+                        **row,
+                        **backfill_fields,
+                        "exchange_order_id": actual_order_id or row.get("exchange_order_id"),
+                    },
+                    new_status,
+                    executed_qty,
+                    avg_price,
+                ))
+
+        return notify_needed
 
     def _resolve_monitored_exchange_order_id(self, row: dict) -> str | None:
         exchange_order_id = str(row.get("exchange_order_id") or "").strip()
@@ -851,7 +925,11 @@ class UserOrderStatusStream:
         with self._close_fill_metrics_lock:
             metrics = self._close_fill_metrics.setdefault(
                 exchange_order_id,
-                {"commission": 0.0, "realized_pnl": 0.0, "commission_asset": None},
+                {
+                    "commission": 0.0,
+                    "realized_pnl": 0.0,
+                    "commission_asset": None,
+                },
             )
             metrics["commission"] = _safe_float(metrics.get("commission")) + commission
             metrics["realized_pnl"] = _safe_float(metrics.get("realized_pnl")) + realized_pnl
@@ -872,6 +950,12 @@ class UserOrderStatusStream:
             commission=accumulated_commission,
             commission_asset=str(accumulated_commission_asset) if accumulated_commission_asset else None,
         )
+        if db_order.get("id"):
+            db.enqueue_order_close_tpsl_refresh(
+                int(db_order["id"]),
+                delay_seconds=1.0,
+                error_message="close_fill_inflight",
+            )
 
         try:
             history_id = db.add_position_history(

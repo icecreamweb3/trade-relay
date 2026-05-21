@@ -978,6 +978,9 @@ def init_db() -> None:
                     trade_details_sync_attempts INT   NOT NULL DEFAULT 0 COMMENT '成交明细回填重试次数',
                     trade_details_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '成交明细下次回填时间',
                     trade_details_sync_last_error TEXT COMMENT '成交明细最近回填错误',
+                    close_tpsl_sync_attempts INT    NOT NULL DEFAULT 0 COMMENT '平仓TP/SL刷新重试次数',
+                    close_tpsl_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '平仓TP/SL下次刷新时间',
+                    close_tpsl_sync_last_error TEXT COMMENT '平仓TP/SL最近刷新错误',
                     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
                     position_mode     VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
                     reduce_only       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只减仓',
@@ -1018,6 +1021,9 @@ def init_db() -> None:
                 ("trade_details_sync_attempts", "ALTER TABLE orders ADD COLUMN trade_details_sync_attempts INT NOT NULL DEFAULT 0 COMMENT '成交明细回填重试次数' AFTER commission_asset"),
                 ("trade_details_sync_next_retry_at", "ALTER TABLE orders ADD COLUMN trade_details_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '成交明细下次回填时间' AFTER trade_details_sync_attempts"),
                 ("trade_details_sync_last_error", "ALTER TABLE orders ADD COLUMN trade_details_sync_last_error TEXT COMMENT '成交明细最近回填错误' AFTER trade_details_sync_next_retry_at"),
+                ("close_tpsl_sync_attempts", "ALTER TABLE orders ADD COLUMN close_tpsl_sync_attempts INT NOT NULL DEFAULT 0 COMMENT '平仓TP/SL刷新重试次数' AFTER trade_details_sync_last_error"),
+                ("close_tpsl_sync_next_retry_at", "ALTER TABLE orders ADD COLUMN close_tpsl_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '平仓TP/SL下次刷新时间' AFTER close_tpsl_sync_attempts"),
+                ("close_tpsl_sync_last_error", "ALTER TABLE orders ADD COLUMN close_tpsl_sync_last_error TEXT COMMENT '平仓TP/SL最近刷新错误' AFTER close_tpsl_sync_next_retry_at"),
                 ("algo_id",         "ALTER TABLE orders ADD COLUMN algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status"),
                 ("algo_client_id",  "ALTER TABLE orders ADD COLUMN algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id"),
             ]:
@@ -1038,6 +1044,7 @@ def init_db() -> None:
                 "ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id)",
                 "ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id)",
                 "ALTER TABLE orders ADD INDEX idx_trade_details_retry_due (status, trade_details_sync_next_retry_at)",
+                "ALTER TABLE orders ADD INDEX idx_close_tpsl_retry_due (status, close_tpsl_sync_next_retry_at)",
             ]:
                 try:
                     cur.execute(_index_ddl)
@@ -1860,6 +1867,146 @@ def get_due_order_trade_details_retry_candidates(limit: int = 100) -> list[dict]
                 (safe_limit,),
             )
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def update_order_close_tpsl_sync_state(
+    order_id: int,
+    *,
+    attempts: Optional[int] = None,
+    next_retry_at=...,
+    last_error=...,
+) -> bool:
+    fields = []
+    params: list = []
+
+    if attempts is not None:
+        fields.append("close_tpsl_sync_attempts = %s")
+        params.append(max(0, int(attempts)))
+
+    if next_retry_at is not ...:
+        normalized_next_retry_at = _coerce_utc_naive_datetime(next_retry_at)
+        fields.append("close_tpsl_sync_next_retry_at = %s")
+        params.append(normalized_next_retry_at)
+    else:
+        normalized_next_retry_at = None
+
+    if last_error is not ...:
+        fields.append("close_tpsl_sync_last_error = %s")
+        params.append(last_error)
+
+    if not fields:
+        return False
+
+    params.append(order_id)
+    _log_db_write(
+        "update",
+        "orders",
+        {
+            "order_id": order_id,
+            "close_tpsl_sync_attempts": attempts,
+            "close_tpsl_sync_next_retry_at": normalized_next_retry_at if next_retry_at is not ... else None,
+            "close_tpsl_sync_last_error": last_error if last_error is not ... else None,
+        },
+    )
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE orders SET {', '.join(fields)} WHERE id = %s",
+                params,
+            )
+            conn.commit()
+            success = cur.rowcount > 0
+            _log_db_write_result("update", "orders", order_id=order_id, affected_rows=cur.rowcount, success=success)
+            return success
+    finally:
+        conn.close()
+
+
+def clear_order_close_tpsl_sync_state(order_id: int) -> bool:
+    return update_order_close_tpsl_sync_state(
+        order_id,
+        attempts=0,
+        next_retry_at=None,
+        last_error=None,
+    )
+
+
+def enqueue_order_close_tpsl_refresh(order_id: int, *, delay_seconds: float, error_message: str) -> bool:
+    next_retry_at = _utc_now_naive() + timedelta(seconds=max(0.0, float(delay_seconds)))
+    trimmed_error = (error_message or "close_tpsl_sync_pending").strip()[:2000]
+    return update_order_close_tpsl_sync_state(
+        order_id,
+        next_retry_at=next_retry_at,
+        last_error=trimmed_error,
+    )
+
+
+def schedule_order_close_tpsl_retry(order_id: int, *, delay_seconds: float, error_message: str) -> bool:
+    row = get_order_by_id(order_id)
+    if not row:
+        return False
+
+    current_attempts = int(row.get("close_tpsl_sync_attempts") or 0)
+    next_retry_at = _utc_now_naive() + timedelta(seconds=max(0.0, float(delay_seconds)))
+    trimmed_error = (error_message or "close_tpsl_sync_pending").strip()[:2000]
+    return update_order_close_tpsl_sync_state(
+        order_id,
+        attempts=current_attempts + 1,
+        next_retry_at=next_retry_at,
+        last_error=trimmed_error,
+    )
+
+
+def get_due_order_close_tpsl_retry_candidates(limit: int = 100) -> list[dict]:
+    safe_limit = max(1, min(int(limit or 100), 500))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM orders
+                WHERE UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                  AND close_tpsl_sync_next_retry_at IS NOT NULL
+                  AND close_tpsl_sync_next_retry_at <= UTC_TIMESTAMP()
+                ORDER BY close_tpsl_sync_next_retry_at ASC, id ASC
+                LIMIT %s
+                """,
+                (safe_limit,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def has_pending_close_tpsl_refresh(*, user_id: int, symbol: str, position_side: str) -> bool:
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_side = str(position_side or "").strip().upper()
+    if not normalized_symbol or normalized_side not in {"LONG", "SHORT"}:
+        return False
+
+    close_side = "SELL" if normalized_side == "LONG" else "BUY"
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM orders
+                WHERE user_id = %s
+                  AND UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                  AND UPPER(COALESCE(symbol, '')) = %s
+                  AND UPPER(COALESCE(side, '')) = %s
+                  AND close_tpsl_sync_next_retry_at IS NOT NULL
+                LIMIT 1
+                """,
+                (int(user_id), normalized_symbol, close_side),
+            )
+            return cur.fetchone() is not None
     finally:
         conn.close()
 
