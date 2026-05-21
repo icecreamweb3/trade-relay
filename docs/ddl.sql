@@ -35,7 +35,11 @@ CREATE TABLE orders (
     realized_pnl      DECIMAL(30,10)  DEFAULT NULL COMMENT '已实现盈亏',
     commission        DECIMAL(20,8)   DEFAULT NULL COMMENT '手续费',
     commission_asset  VARCHAR(16)     DEFAULT NULL COMMENT '手续费币种',
+    trade_details_sync_attempts INT   NOT NULL DEFAULT 0 COMMENT '成交明细回填重试次数',
+    trade_details_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '成交明细下次回填时间',
+    trade_details_sync_last_error TEXT COMMENT '成交明细最近回填错误',
     trade_direction   ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓',
+    position_mode     VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
     reduce_only       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只减仓',
     post_only         TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只做Maker',
     position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
@@ -52,6 +56,7 @@ CREATE TABLE orders (
     KEY idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at),
     KEY idx_username_exchange_order (username, exchange_order_id),
     KEY idx_username_algo_id (username, algo_id),
+    KEY idx_trade_details_retry_due (status, trade_details_sync_next_retry_at),
     KEY idx_created_at (created_at DESC),
     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -166,6 +171,7 @@ CREATE TABLE account_summary (
     symbol               VARCHAR(32)     DEFAULT NULL COMMENT '交易对（NULL 表示全局）',
     base_asset           VARCHAR(16)     DEFAULT NULL,
     quote_asset          VARCHAR(16)     DEFAULT NULL,
+    position_mode        VARCHAR(16)     DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
     leverage             INT             DEFAULT NULL COMMENT '用户最近设置的杠杆',
     configured_leverage  INT             DEFAULT NULL,
     long_position_qty    DECIMAL(30,10)  DEFAULT NULL,
@@ -199,6 +205,7 @@ ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status,
     ADD COLUMN IF NOT EXISTS algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id,
     ADD COLUMN IF NOT EXISTS trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset,
+    ADD COLUMN IF NOT EXISTS position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS reduce_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只减仓' AFTER trade_direction,
     ADD COLUMN IF NOT EXISTS post_only TINYINT(1) NOT NULL DEFAULT 0 COMMENT '只做Maker' AFTER reduce_only,
@@ -206,7 +213,10 @@ ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS tp_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止盈价' AFTER stop_price,
     ADD COLUMN IF NOT EXISTS sl_price DECIMAL(20,8) DEFAULT NULL COMMENT '计划止损价' AFTER tp_price,
     ADD COLUMN IF NOT EXISTS filled_at DATETIME DEFAULT NULL COMMENT '实际成交时间' AFTER avg_price,
-    ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price;
+    ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '已实现盈亏' AFTER avg_price,
+    ADD COLUMN IF NOT EXISTS trade_details_sync_attempts INT NOT NULL DEFAULT 0 COMMENT '成交明细回填重试次数' AFTER commission_asset,
+    ADD COLUMN IF NOT EXISTS trade_details_sync_next_retry_at DATETIME DEFAULT NULL COMMENT '成交明细下次回填时间' AFTER trade_details_sync_attempts,
+    ADD COLUMN IF NOT EXISTS trade_details_sync_last_error TEXT COMMENT '成交明细最近回填错误' AFTER trade_details_sync_next_retry_at;
 
 ALTER TABLE orders
     MODIFY COLUMN order_category ENUM('Basic','Condition','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类';
@@ -237,6 +247,7 @@ ALTER TABLE orders ADD INDEX idx_username_status_created (username, status, crea
 ALTER TABLE orders ADD INDEX idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at);
 ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id);
 ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id);
+ALTER TABLE orders ADD INDEX idx_trade_details_retry_due (status, trade_details_sync_next_retry_at);
 
 ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS user_id INT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id,
@@ -275,5 +286,6 @@ ALTER TABLE daily_profile ADD INDEX idx_username (username);
 ALTER TABLE account_summary DROP KEY IF EXISTS uk_user_symbol;
 ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS user_id BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID' AFTER id;
 ALTER TABLE account_summary DROP COLUMN IF EXISTS username;
-ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS leverage INT DEFAULT NULL COMMENT '用户最近设置的杠杆' AFTER quote_asset;
+ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS position_mode VARCHAR(16) DEFAULT NULL COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER quote_asset;
+ALTER TABLE account_summary ADD COLUMN IF NOT EXISTS leverage INT DEFAULT NULL COMMENT '用户最近设置的杠杆' AFTER position_mode;
 ALTER TABLE account_summary ADD UNIQUE KEY uk_user_symbol (user_id, symbol);
