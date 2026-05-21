@@ -1,5 +1,5 @@
 import React from 'react'
-import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Eraser } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2 } from 'lucide-react'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -19,15 +19,15 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
   const { t } = useTranslation(locale)
   const { symbol, isConnected, isChartExpanded, setChartExpanded } = useMarketStore()
   const { user, logout } = useAuthStore()
-  const [isDebugClearing, setIsDebugClearing] = React.useState(false)
+  const [isClearingAllDrawings, setIsClearingAllDrawings] = React.useState(false)
   const [debugDialog, setDebugDialog] = React.useState<null | { title: string; lines: string[] }>(null)
 
   const minimize = () => window.electronAPI?.minimizeWindow()
   const maximize = () => window.electronAPI?.maximizeWindow()
   const close = () => window.electronAPI?.closeWindow()
 
-  const debugClearLabel = locale === 'zh-CN' ? '清箭头' : 'Clear Arrows'
-  const showDebugClearButton = false
+  const clearAllDrawingsLabel = locale === 'zh-CN' ? '清全部图形' : 'Clear All Drawings'
+  const showChartCleanupButtons = activeScreen === 'trade'
   const showDebugDialog = false
 
   React.useEffect(() => {
@@ -35,31 +35,15 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
     window.electronAPI?.setBinanceViewVisible?.(shouldShowBinanceView)
   }, [activeScreen, debugDialog, showDebugDialog])
 
-  const handleDebugClearArrows = async () => {
-    if (isDebugClearing) return
+  const handleClearAllDrawings = async () => {
+    if (isClearingAllDrawings) return
 
-    setIsDebugClearing(true)
+    setIsClearingAllDrawings(true)
     setChartOrderMarkersVisible(false)
     try {
-      const probeResult = await window.electronAPI?.debugProbeChartOverlay?.()
-      const clearResult = await window.electronAPI?.debugClearChartOverlaySignals?.()
-
-      const lines = [
-        `[probe] ${JSON.stringify(probeResult ?? {})}`,
-        `[clear-ipc] ${JSON.stringify(clearResult ?? {})}`,
-      ]
-
-      setDebugDialog({
-        title: locale === 'zh-CN' ? '清除箭头调试结果' : 'Clear Arrow Debug Result',
-        lines,
-      })
-    } catch (error) {
-      setDebugDialog({
-        title: locale === 'zh-CN' ? '清除箭头调试失败' : 'Clear Arrow Debug Failed',
-        lines: [error instanceof Error ? error.message : String(error)],
-      })
+      await window.electronAPI?.clearAllChartDrawings?.()
     } finally {
-      setIsDebugClearing(false)
+      setIsClearingAllDrawings(false)
     }
   }
 
@@ -87,13 +71,13 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
             >
               {isChartExpanded ? <Shrink size={11} /> : <Expand size={11} />}
             </NavBtn>
-            {showDebugClearButton && (
+            {showChartCleanupButtons && (
               <NavBtn
-                onClick={handleDebugClearArrows}
-                title={debugClearLabel}
-                active={isDebugClearing}
+                onClick={handleClearAllDrawings}
+                title={clearAllDrawingsLabel}
+                active={isClearingAllDrawings}
               >
-                {isDebugClearing ? '...' : <Eraser size={11} />}
+                {isClearingAllDrawings ? '...' : <Trash2 size={11} />}
               </NavBtn>
             )}
           </div>

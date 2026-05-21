@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('get-tv-klines', symbol, interval, limit),
   setChartOverlaySignals: (signals, locale) => ipcRenderer.invoke('set-chart-overlay-signals', signals, locale),
   clearChartOverlaySignals: () => ipcRenderer.invoke('clear-chart-overlay-signals'),
+  clearAllChartDrawings: () => ipcRenderer.invoke('clear-all-chart-drawings'),
   debugProbeChartOverlay: () => ipcRenderer.invoke('debug-probe-chart-overlay'),
   debugClearChartOverlaySignals: () => ipcRenderer.invoke('debug-clear-chart-overlay-signals'),
   forceClearChartArrows: () => ipcRenderer.invoke('force-clear-chart-arrows'),

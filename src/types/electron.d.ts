@@ -45,6 +45,7 @@ interface ElectronAPI {
   getTvKlines?: (symbol: string, interval: string, limit?: number) => Promise<unknown[] | null>
   setChartOverlaySignals?: (signals: Array<object>, locale?: string) => Promise<{ ok: boolean; count?: number; reason?: string }>
   clearChartOverlaySignals?: () => Promise<{ ok: boolean; reason?: string }>
+  clearAllChartDrawings?: () => Promise<{ ok: boolean; reason?: string }>
   debugProbeChartOverlay?: () => Promise<Record<string, unknown>>
   debugClearChartOverlaySignals?: () => Promise<Record<string, unknown>>
   forceClearChartArrows?: () => Promise<{ ok: boolean; result?: string; reason?: string }>

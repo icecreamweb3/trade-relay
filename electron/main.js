@@ -688,6 +688,18 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
   }
 })
 
+ipcMain.handle('clear-all-chart-drawings', async () => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  try {
+    logger.info('[OVERLAY_IPC] phase=send', { action: 'clear-all' })
+    binanceView.webContents.send('overlay-clear-all')
+    return { ok: true }
+  } catch (error) {
+    logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'clear-all', reason: error?.message || 'overlay_clear_all_failed' })
+    return { ok: false, reason: error?.message || 'overlay_clear_all_failed' }
+  }
+})
+
 ipcMain.handle('debug-probe-chart-overlay', async () => {
   if (!binanceView) return { action: 'probe', ok: false, reason: 'no_view' }
   try {

@@ -1749,6 +1749,103 @@ function _clearOverlayOnKnownCharts() {
   return summary
 }
 
+function _clearAllChartDrawings(chart) {
+  const results = []
+
+  try {
+    const overlayResult = clearOverlayShapes(chart)
+    results.push({ step: 'clearOverlayShapes', ok: true, detail: overlayResult })
+  } catch (error) {
+    results.push({ step: 'clearOverlayShapes', ok: false, reason: error instanceof Error ? error.message : String(error) })
+  }
+
+  try {
+    if (typeof chart?.removeAllShapes === 'function') {
+      chart.removeAllShapes()
+      results.push({ step: 'chart.removeAllShapes', ok: true })
+    } else {
+      results.push({ step: 'chart.removeAllShapes', ok: false, reason: 'unavailable' })
+    }
+  } catch (error) {
+    results.push({ step: 'chart.removeAllShapes', ok: false, reason: error instanceof Error ? error.message : String(error) })
+  }
+
+  try {
+    const allShapes = chart?.getAllShapes?.()
+    if (Array.isArray(allShapes) && allShapes.length > 0) {
+      allShapes.forEach((shape) => {
+        try { chart.removeEntity(shape.id) } catch { /* ignore individual failures */ }
+      })
+      results.push({ step: 'chart.getAllShapes.removeEntity', ok: true, count: allShapes.length })
+    } else {
+      results.push({ step: 'chart.getAllShapes.removeEntity', ok: true, count: 0 })
+    }
+  } catch (error) {
+    results.push({ step: 'chart.getAllShapes.removeEntity', ok: false, reason: error instanceof Error ? error.message : String(error) })
+  }
+
+  return results
+}
+
+function _clearAllChartDrawingsOnKnownCharts() {
+  const charts = []
+  const freshChart = findTvChart()
+  if (freshChart) charts.push(freshChart)
+  if (_tvChart && !charts.includes(_tvChart)) charts.push(_tvChart)
+
+  const widget = findTvWidget()
+  const clearResults = []
+  let clearedCount = 0
+
+  for (const chart of charts) {
+    try {
+      clearResults.push({ kind: 'chart', results: _clearAllChartDrawings(chart) })
+      clearedCount += 1
+    } catch (error) {
+      clearResults.push({
+        kind: 'chart',
+        results: [{ step: 'clear-all', ok: false, reason: error instanceof Error ? error.message : String(error) }],
+      })
+    }
+  }
+
+  if (widget) {
+    try {
+      const activeChart = widget.activeChart?.() || widget.chart?.()
+      if (typeof widget.removeAllShapes === 'function') {
+        widget.removeAllShapes()
+        clearResults.push({ kind: 'widget', step: 'widget.removeAllShapes', ok: true })
+      }
+      if (activeChart && typeof activeChart.removeAllShapes === 'function') {
+        activeChart.removeAllShapes()
+        clearResults.push({ kind: 'widget', step: 'widget.activeChart.removeAllShapes', ok: true })
+      }
+    } catch (error) {
+      clearResults.push({ kind: 'widget', step: 'widget.removeAllShapes', ok: false, reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  _drawnShapes = []
+  _cachedSignals = []
+  _detailShapes = []
+  _detailOrderLines = []
+  _overlayShapeSignals.clear()
+  _overlayBaseShapeIds = freshChart ? _getChartShapeIdSet(freshChart) : null
+  _tvChart = freshChart || _tvChart || null
+  _hideOverlayTooltip()
+
+  const summary = {
+    chartCount: charts.length,
+    clearedCount,
+    freshChartFound: Boolean(freshChart),
+    cachedChartFound: Boolean(_tvChart),
+    widgetFound: Boolean(widget),
+    clearResults,
+  }
+  _logOverlayToMain('info', 'clear all chart drawings on known charts', summary)
+  return summary
+}
+
 /**
  * Wait until the TV chart is showing a symbol that contains `expectedPair`.
  * After a pushState symbol switch the chart re-mounts asynchronously; we must
@@ -1892,6 +1989,11 @@ ipcRenderer.on('overlay-clear-debug', async () => {
     after,
     clearResult,
   })
+})
+
+ipcRenderer.on('overlay-clear-all', async () => {
+  _overlayMessageVersion += 1
+  _clearAllChartDrawingsOnKnownCharts()
 })
 
 // IPC: show SL/TP detail for a clicked/replayed signal
@@ -2533,42 +2635,7 @@ async function _getCachedKlinesWithRefresh(symbol, interval, limit) {
 // Also expose a __tradeRelayDebug object so executeJavaScript can call clearAll() directly
 window.__tradeRelayDebug = {
   clearAll: () => {
-    const results = []
-    const chart = _tvChart || findTvChart()
-    if (!chart) return 'no_chart'
-
-    // Try removeAllShapes on chart API object
-    try { chart.removeAllShapes(); results.push('chart.removeAllShapes:ok') }
-    catch (e) { results.push('chart.removeAllShapes:err:' + e.message) }
-
-    // Try getAllShapes + removeEntity
-    try {
-      const all = chart.getAllShapes?.()
-      if (Array.isArray(all) && all.length > 0) {
-        all.forEach(s => { try { chart.removeEntity(s.id) } catch {} })
-        results.push('getAllShapes+removeEntity:ok:' + all.length)
-      } else {
-        results.push('getAllShapes:empty_or_unavail')
-      }
-    } catch (e) { results.push('getAllShapes:err:' + e.message) }
-
-    // clearOverlayShapes from preload
-    try { clearOverlayShapes(chart); results.push('clearOverlayShapes:ok') }
-    catch (e) { results.push('clearOverlayShapes:err:' + e.message) }
-
-    // Try widget-level removeAllShapes (widget, not chart API)
-    const directNames = ['tvWidget','tv_chart_widget','tvChartWidget','chartWidget','tv','TV']
-    for (const name of directNames) {
-      try {
-        const w = window[name]
-        if (!w) continue
-        if (typeof w.removeAllShapes === 'function') { w.removeAllShapes(); results.push(name+'.removeAllShapes:ok') }
-        const ac = w.activeChart?.() || w.chart?.()
-        if (ac && typeof ac.removeAllShapes === 'function') { ac.removeAllShapes(); results.push(name+'.activeChart.removeAllShapes:ok') }
-      } catch (e) { results.push(name+':err:' + e.message) }
-    }
-
-    return results.join(' | ')
+    return JSON.stringify(_clearAllChartDrawingsOnKnownCharts())
   },
 }
 
