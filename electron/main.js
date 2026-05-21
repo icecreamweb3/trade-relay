@@ -808,7 +808,7 @@ if (process.platform === 'linux') {
 }
 
 app.whenReady().then(() => {
-  logger.info('Trade Relay starting up', { logFile: logger.getLogFile(), bootstrapFile: logger.getBootstrapFile() })
+  logger.info('Trade Relay starting up', { logFile: logger.getLogFile() })
   logger.info('[market-data] using renderer BrowserView + REST polling for mark price and funding')
   createMainWindow()
   setTimeout(() => { createBinanceView(); updateBinanceViewBounds() }, 1500)

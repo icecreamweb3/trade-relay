@@ -25,7 +25,6 @@ let _fd        = null   // 当前日志文件描述符
 let _filePath  = null   // 当前日志文件路径
 let _written   = 0      // 已写入字节数
 let _logDir    = null   // 当前日志目录
-let _bootstrapFilePath = null
 
 function _fallbackLogDir() {
   const explicitDir = String(process.env.TRADE_RELAY_LOG_DIR || '').trim()
@@ -79,24 +78,15 @@ function _logDirCandidates() {
     })
 }
 
-function _appendBootstrapLine(logDir, line) {
-  try {
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
-    const bootstrapFile = path.join(logDir, 'electron_bootstrap.log')
-    fs.appendFileSync(bootstrapFile, `${_timestamp()} | ${line}\n`, 'utf8')
-    _bootstrapFilePath = bootstrapFile
-    _logDir = logDir
-    return true
-  } catch {
-    return false
-  }
-}
-
 function _bootstrapLogDir() {
   if (_logDir && fs.existsSync(_logDir)) return
   for (const logDir of _logDirCandidates()) {
-    if (_appendBootstrapLine(logDir, 'bootstrap:init')) {
+    try {
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      _logDir = logDir
       return
+    } catch {
+      // try next candidate
     }
   }
 }
@@ -121,18 +111,11 @@ function _init() {
       _filePath = filePath
       _logDir = logDir
       _written = fs.fstatSync(fd).size
-      _appendBootstrapLine(logDir, `bootstrap:active file=${filePath}`)
       console.log(`[TradeRelay] Electron logger initialised at ${filePath}`)
       return
     } catch (error) {
       errors.push({ logDir, message: error && error.message ? error.message : String(error) })
     }
-  }
-
-  if (_bootstrapFilePath) {
-    try {
-      fs.appendFileSync(_bootstrapFilePath, `${_timestamp()} | bootstrap:error ${JSON.stringify(errors)}\n`, 'utf8')
-    } catch {}
   }
   throw new Error(`Failed to initialize Electron logger: ${JSON.stringify(errors)}`)
 }
@@ -234,10 +217,6 @@ const logger = {
 
   /** 获取当前日志文件路径（供外部查询） */
   getLogFile: () => { _init(); return _filePath },
-  getBootstrapFile: () => {
-    _bootstrapLogDir()
-    return _bootstrapFilePath
-  },
 
   /** 关闭文件句柄（进程退出前调用） */
   close: () => {
