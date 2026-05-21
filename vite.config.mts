@@ -9,6 +9,7 @@ const packageJson = JSON.parse(
 
 const appVersion = packageJson.version ?? '0.0.0'
 const buildTime = new Date().toISOString()
+const devServerPort = Number.parseInt(process.env.VITE_DEV_SERVER_PORT || process.env.DEV_SERVER_PORT || '5173', 10)
 
 export default defineConfig({
   plugins: [react()],
@@ -27,7 +28,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    host: '127.0.0.1',
+    port: Number.isFinite(devServerPort) ? devServerPort : 5173,
     strictPort: true,
   },
 })

@@ -68,6 +68,7 @@ const BACKEND_BASE_URL = normalizeBaseUrl(
   || process.env.BACKEND_BASE_URL
   || `http://127.0.0.1:${BACKEND_PORT}`
 )
+const DEV_SERVER_URL = process.env.DEV_SERVER_URL || `http://127.0.0.1:${process.env.DEV_SERVER_PORT || '5173'}`
 const BINANCE_URL    = `https://www.binance.com/${BINANCE_LANG}/futures/${BINANCE_SYMBOL}`
 
 function normalizeBaseUrl(url) {
@@ -302,7 +303,7 @@ function createMainWindow() {
   })
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173')
+    mainWindow.loadURL(DEV_SERVER_URL)
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }

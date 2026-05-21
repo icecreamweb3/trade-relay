@@ -236,14 +236,14 @@ function writeStoredAdvancedOrderType(username: string, symbol: string, type: Ad
 
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
-function TickerStrip({ onFillMark }: { onFillMark: () => void }) {
+function TickerStrip() {
   const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, dayPriceChange, dayPriceChangePercent } = useMarketStore()
 
   const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
   const isUp = hasDayTicker ? (dayPriceChange ?? 0) >= 0 : null
-  const priceColor = isUp == null ? 'text-[#EAECEF]' : isUp ? 'text-[#0ECB81]' : 'text-[#F6465D]'
+  const priceColor = isUp == null ? 'text-[#EAECEF]' : isUp ? 'text-buy' : 'text-sell'
   const changeAmountText = hasDayTicker ? fmtSigned(dayPriceChange, currentPrice != null && currentPrice > 1000 ? 2 : 4) : '--'
   const changePercentText = hasDayTicker ? `${isUp ? '+' : ''}${(dayPriceChangePercent ?? 0).toFixed(2)}%` : '--'
 
@@ -258,17 +258,8 @@ function TickerStrip({ onFillMark }: { onFillMark: () => void }) {
       </div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <div className={`text-[22px] font-bold leading-none tabular-nums ${priceColor}`}>
-              {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
-            </div>
-            <button
-              type="button"
-              onClick={onFillMark}
-              className="shrink-0 rounded bg-[#1E2026] px-2 py-1 text-[10px] font-medium text-[#F0B90B] transition-colors hover:text-[#D9A429]"
-            >
-              Mark
-            </button>
+          <div className={`text-[22px] font-bold leading-none tabular-nums ${priceColor}`}>
+            {currentPrice != null ? fmt(currentPrice, currentPrice > 1000 ? 2 : 4) : '—'}
           </div>
         </div>
         <div className="flex min-w-[132px] flex-col items-end text-right">
@@ -1102,7 +1093,7 @@ export function OrderFormWidget({
     <div className="relative h-full flex flex-col bg-[#0B0E11] overflow-hidden">
 
       {/* ── Ticker strip ── */}
-      <TickerStrip onFillMark={fillMarkPrice} />
+      <TickerStrip />
 
       {/* ── Market order confirmation modal ── */}
       {marketConfirm && (
