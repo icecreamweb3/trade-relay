@@ -183,16 +183,16 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
             className="grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider whitespace-nowrap shrink-0"
             style={{ gridTemplateColumns: GRID_TEMPLATE }}
           >
-          <span>{t('log.user')}</span>
-          <span className="-ml-[5px] text-left">{t('log.symbol')}</span>
-          <span className="-ml-[7px] text-left">{t('log.side')}</span>
-          <span className="pl-[5px] text-left">{t('log.qty')}</span>
-          <span className="pl-[5px] text-left">{t('log.dir')}</span>
-          <span className="-ml-[7px] text-center">{t('log.price')}</span>
-          <span className="-ml-[10px] text-center">{t('recentTrades.value')}</span>
+          <span className="text-left">{t('log.user')}</span>
+          <span className="pl-[5px] text-left">{t('log.symbol')}</span>
+          <span className="pl-[10px] text-left">{t('log.side')}</span>
+          <span className="pl-[15px] text-left">{t('log.qty')}</span>
+          <span className="pl-[15px] text-left">{t('log.dir')}</span>
+          <span className="text-center">{t('log.price')}</span>
+          <span className="text-right">{t('recentTrades.value')}</span>
           <span className="text-center">{t('pos.realizedPnl')}</span>
           <span className="text-center">{t('trade.commission')}</span>
-          <span className="min-w-0 overflow-hidden text-left">{t('recentTrades.kind')}</span>
+          <span className="text-center">{t('recentTrades.kind')}</span>
           <span className="text-center">{t('log.time')}</span>
           </div>
         </div>
@@ -231,7 +231,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                   {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </span>
                 <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
-                <span className="-ml-[10px] text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
+                <span className="text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
                 <span className={`text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
                 <span className="text-center text-[#aaa]">{commissionText}</span>
                 <span className="min-w-0 overflow-hidden pr-1">

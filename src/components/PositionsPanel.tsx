@@ -23,6 +23,7 @@ interface Position {
 interface Order {
   id: number; symbol: string; side: string; order_type: string
   quantity: number; filled_qty?: number; price: number; stop_price?: number | null
+  avg_price?: number | null
   reduce_only?: boolean; post_only?: boolean
   trade_direction?: string | null
   commission?: number | null; commission_asset?: string | null
@@ -75,6 +76,7 @@ export function PositionsPanel({
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
+  const { baseAsset: activeBaseAsset, quoteAsset: activeQuoteAsset } = splitTradingSymbol(activeSymbol)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
   const showToast = useToastStore((state) => state.showToast)
@@ -381,6 +383,10 @@ export function PositionsPanel({
     (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') && order.exchange_order_id,
   ).length
   const conditionalCancellableCount = conditionalOrders.filter((order) => order.status === 'NEW').length
+  const sizeUnitAsset = sizeUnit === 'QUOTE' ? activeQuoteAsset : activeBaseAsset
+  const sizeHeaderLabel = `${t('pos.size')} (${sizeUnitAsset})`
+  const qtyHeaderLabel = `${t('log.qty')} (${sizeUnitAsset})`
+  const amountHeaderLabel = `${t('pos.amount')} (${sizeUnitAsset})`
 
   const handleMarketClose = useCallback((position: Position) => {
     if (!currentUser?.username || closingPositionId !== null) return
@@ -465,7 +471,7 @@ export function PositionsPanel({
         {tab === 'positions' && (
           <table className="trade-table w-full">
             <thead><tr>
-              <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th>
+              <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
@@ -556,7 +562,7 @@ export function PositionsPanel({
               <thead><tr>
                 <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th>
                 {tab === 'history' && <th>{t('log.dir')}</th>}
-                <th>{t('log.qty')}</th><th>{t('log.price')}</th>
+                <th>{qtyHeaderLabel}</th><th>{t('log.price')}</th>
                 {tab === 'history' && <th>{t('trade.commission')}</th>}
                 {tab === 'history' && <th>{t('trade.commissionAsset')}</th>}
                 <th>{t('log.status')}</th>
@@ -576,7 +582,7 @@ export function PositionsPanel({
                       <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                       {tab === 'history' && <td className="text-[#858585]">{formatTradeDirection(o.trade_direction, t)}</td>}
-                      <td className="font-mono">{o.quantity}</td>
+                      <td className="font-mono">{formatOrderSize(o, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
                       <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                       {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission != null ? o.commission.toFixed(4) : '—'}</td>}
                       {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission_asset ?? '—'}</td>}
@@ -631,7 +637,7 @@ export function PositionsPanel({
                 <th>{t('log.symbol')}</th>
                 <th>{t('log.type')}</th>
                 <th>{t('log.side')}</th>
-                <th>{t('pos.amount')}</th>
+                <th>{amountHeaderLabel}</th>
                 <th>{t('log.price')}</th>
                 <th>{t('pos.triggerConditions')}</th>
                 <th></th>
@@ -684,7 +690,7 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th>
-              <th>{t('pos.positionMode')}</th><th>{t('pos.size')}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
+              <th>{t('pos.positionMode')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
               <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th>
             </tr></thead>
             <tbody>
@@ -696,7 +702,7 @@ export function PositionsPanel({
                     <td className="font-semibold">{ph.symbol}</td>
                     <td className={ph.side === 'LONG' ? 'text-buy' : 'text-sell'}>{ph.side}</td>
                     <td className="text-[#858585]">{formatPositionMode(ph.position_mode, t)}</td>
-                    <td className="font-mono">{ph.quantity}</td>
+                    <td className="font-mono">{formatPositionHistorySize(ph, sizeUnit)}</td>
                     <td className="font-mono">{ph.entry_price.toFixed(2)}</td>
                     <td className="font-mono">{ph.close_price.toFixed(2)}</td>
                     <td className={`font-mono ${ph.realized_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
@@ -1389,14 +1395,52 @@ function formatUnrealizedPnl(position: Position, activeSymbol: string, livePrice
 }
 
 function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {
-  if (sizeUnit === 'BASE') return position.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+  const { baseAsset, quoteAsset } = splitTradingSymbol(position.symbol)
 
-  const { quoteAsset } = splitTradingSymbol(position.symbol)
+  if (sizeUnit === 'BASE') {
+    return `${position.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} ${baseAsset}`
+  }
+
   const liveReferencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
   const price: number = typeof liveReferencePrice === 'number' && Number.isFinite(liveReferencePrice)
     ? liveReferencePrice
     : (typeof position.entry_price === 'number' && Number.isFinite(position.entry_price) ? position.entry_price : 0)
   const quoteValue = position.quantity * price
+  if (!quoteValue) return `— ${quoteAsset}`
+  return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
+}
+
+function formatOrderSize(order: Order, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {
+  const { baseAsset, quoteAsset } = splitTradingSymbol(order.symbol)
+
+  if (sizeUnit === 'BASE') {
+    return `${order.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} ${baseAsset}`
+  }
+
+  const liveReferencePrice = order.symbol.toUpperCase() === activeSymbol.toUpperCase() ? livePrice : null
+  const referencePrice = typeof order.avg_price === 'number' && Number.isFinite(order.avg_price) && order.avg_price > 0
+    ? order.avg_price
+    : typeof order.price === 'number' && Number.isFinite(order.price) && order.price > 0
+      ? order.price
+      : typeof order.stop_price === 'number' && Number.isFinite(order.stop_price) && order.stop_price > 0
+        ? order.stop_price
+        : (typeof liveReferencePrice === 'number' && Number.isFinite(liveReferencePrice) ? liveReferencePrice : 0)
+  const quoteValue = order.quantity * referencePrice
+  if (!quoteValue) return `— ${quoteAsset}`
+  return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
+}
+
+function formatPositionHistorySize(positionHistory: PositionHistory, sizeUnit: 'QUOTE' | 'BASE') {
+  const { baseAsset, quoteAsset } = splitTradingSymbol(positionHistory.symbol)
+
+  if (sizeUnit === 'BASE') {
+    return `${positionHistory.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} ${baseAsset}`
+  }
+
+  const referencePrice = typeof positionHistory.entry_price === 'number' && Number.isFinite(positionHistory.entry_price) && positionHistory.entry_price > 0
+    ? positionHistory.entry_price
+    : (typeof positionHistory.close_price === 'number' && Number.isFinite(positionHistory.close_price) ? positionHistory.close_price : 0)
+  const quoteValue = positionHistory.quantity * referencePrice
   if (!quoteValue) return `— ${quoteAsset}`
   return `${quoteValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${quoteAsset}`
 }
