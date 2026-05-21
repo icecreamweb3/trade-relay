@@ -849,6 +849,43 @@ def test_public_ticker_stream_transforms_binance_payload(monkeypatch):
     }]
 
 
+def test_order_status_stream_persists_filled_open_order_without_explicit_trade_details_enqueue(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    status_updates = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda username, exchange_order_id, status, **kwargs: status_updates.append((username, exchange_order_id, status, kwargs)) or True,
+    )
+
+    stream._persist_status({
+        "i": "58833049838",
+        "X": "FILLED",
+        "z": "0.001",
+        "ap": "77890",
+        "n": "0",
+        "N": "USDC",
+        "T": 1779343000000,
+    })
+
+    assert status_updates == [(
+        "Will",
+        "58833049838",
+        "FILLED",
+        {
+            "filled_qty": 0.001,
+            "avg_price": 77890.0,
+            "filled_at": 1779343000000,
+            "commission": 0.0,
+            "commission_asset": "USDC",
+            "error_message": None,
+        },
+    )]
+
+
 def test_poll_open_orders_backfills_finished_conditional_algo_after_local_cancel(monkeypatch):
     from trade_relay.trading import order_status_stream
 

@@ -1852,9 +1852,10 @@ def get_due_order_trade_details_retry_candidates(limit: int = 100) -> list[dict]
                   AND TRIM(COALESCE(exchange_order_id, '')) <> ''
                   AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
                   AND (
-                        commission IS NULL
+                                commission IS NULL
                      OR commission_asset IS NULL
                      OR TRIM(COALESCE(commission_asset, '')) = ''
+                            OR ABS(ABS(COALESCE(quantity, 0)) - ABS(COALESCE(filled_qty, 0))) > 0.000000001
                      OR (UPPER(COALESCE(trade_direction, '')) = 'CLOSE' AND realized_pnl IS NULL)
                   )
                   AND (

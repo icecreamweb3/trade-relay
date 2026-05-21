@@ -19,6 +19,7 @@ BATCH_SIZE = max(1, int(os.environ.get("TRADE_DETAILS_SYNC_BATCH_SIZE", "100")))
 
 _stop_event = threading.Event()
 _sync_thread: threading.Thread | None = None
+_QTY_SYNC_TOLERANCE = 1e-9
 
 
 def _build_client(username: str) -> BinanceClient | None:
@@ -36,6 +37,20 @@ def _build_client(username: str) -> BinanceClient | None:
 def _backoff_seconds(attempts: int) -> float:
     index = min(max(0, attempts - 1), len(RETRY_BACKOFF_SECONDS) - 1)
     return RETRY_BACKOFF_SECONDS[index]
+
+
+def _order_needs_trade_details_sync(order_row: dict) -> bool:
+    trade_direction = str(order_row.get("trade_direction") or "").upper()
+    quantity = abs(float(order_row.get("quantity") or 0.0))
+    filled_qty = abs(float(order_row.get("filled_qty") or 0.0))
+    quantity_incomplete = abs(quantity - filled_qty) > _QTY_SYNC_TOLERANCE
+
+    return (
+        order_row.get("commission") is None
+        or not str(order_row.get("commission_asset") or "").strip()
+        or quantity_incomplete
+        or (trade_direction == "CLOSE" and order_row.get("realized_pnl") is None)
+    )
 
 
 def _process_candidate(row: dict, client_cache: dict[str, BinanceClient | None]) -> None:
@@ -75,15 +90,7 @@ def _process_candidate(row: dict, client_cache: dict[str, BinanceClient | None])
     sync_filled_order_trade_details(username=username, client=client, order_row=before)
     after = db_module.get_order_by_id(order_id) or before
 
-    missing_fields = (
-        after.get("commission") is None
-        or not str(after.get("commission_asset") or "").strip()
-        or (
-            str(after.get("trade_direction") or "").upper() == "CLOSE"
-            and after.get("realized_pnl") is None
-        )
-    )
-    if missing_fields:
+    if _order_needs_trade_details_sync(after):
         after_attempts = int(after.get("trade_details_sync_attempts") or attempts)
         after_next_retry_at = after.get("trade_details_sync_next_retry_at")
         if after_attempts > attempts and after_next_retry_at is not None:
