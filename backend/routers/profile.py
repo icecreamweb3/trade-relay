@@ -146,10 +146,14 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
         for index, row in enumerate(all_time_leaderboard_rows)
     ]
 
-    total_pnl = sum(item.pnl for item in daily_pnl)
-    total_trades = sum(item.trades for item in daily_pnl)
-    total_wins = sum(1 for item in daily_pnl for _ in range(0))
-    total_wins = int(sum((item.win_rate * item.trades / 100.0) for item in daily_pnl))
+    total_pnl = sum(float(row.get("pnl") or 0) for row in rows)
+    total_trades = sum(int(row.get("trades") or 0) for row in rows)
+    total_wins = sum(
+        int(row.get("win_count") or 0)
+        if row.get("win_count") is not None
+        else float(row.get("win_rate") or 0) * int(row.get("trades") or 0) / 100.0
+        for row in rows
+    )
     total_commission_by_asset = [
         {
             "asset": str(row.get("asset") or "UNKNOWN"),

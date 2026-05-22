@@ -1,4 +1,5 @@
 from backend.routers import profile as profile_router
+from trade_relay import database as db_module
 
 
 def test_build_profile_overview_uses_daily_profile_for_win_rate(monkeypatch):
@@ -86,6 +87,94 @@ def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypa
     assert [entry.account_balance for entry in overview.daily_pnl] == [105.25, 103.5]
     assert overview.daily_pnl[0].pnl == 5.0229
     assert overview.daily_pnl[1].commission == 0.25
+
+
+def test_build_profile_overview_uses_win_count_for_total_win_rate(monkeypatch):
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_daily_pnl",
+        lambda user_id: [
+            {"date": "2026-05-16", "pnl": 3.0, "account_balance": 103.0, "commission": 0.1, "trades": 3, "win_rate": 33.33, "win_count": 1},
+            {"date": "2026-05-17", "pnl": -1.0, "account_balance": 102.0, "commission": 0.2, "trades": 1, "win_rate": 0.0, "win_count": 0},
+        ],
+    )
+    monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [{"asset": "USDC", "total": 0.3}])
+    monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_all_time_profile_leaderboard_for_days", lambda *, days=None, limit=20: [])
+    monkeypatch.setattr(profile_router.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
+
+    overview = profile_router._build_profile_overview(5)
+
+    assert overview.stats.total_trades == 4
+    assert overview.stats.win_rate == 25.0
+
+
+def test_get_daily_pnl_aggregates_from_position_history(monkeypatch):
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    rows = db_module.get_daily_pnl(5)
+
+    assert rows == []
+    sql, params = queries[-1]
+    assert "FROM position_history" in sql
+    assert "LEFT JOIN daily_profile" in sql
+    assert params == (5, 5)
+
+
+def test_get_all_time_profile_leaderboard_aggregates_from_position_history(monkeypatch):
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    rows = db_module.get_all_time_profile_leaderboard_for_days(days=7, limit=20)
+
+    assert rows == []
+    sql, params = queries[-1]
+    assert "FROM position_history" in sql
+    assert "GROUP BY user_id" in sql
+    assert params[-1] == 20
 
 
 def test_build_profile_overview_preserves_leaderboard_order(monkeypatch):

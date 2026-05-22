@@ -2563,17 +2563,33 @@ def get_daily_pnl(user_id: int) -> list:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT profile_date AS date,
-                       pnl,
-                       account_balance,
-                       commission,
-                       trade_count AS trades,
-                       win_rate
-                FROM daily_profile
-                WHERE user_id = %s
+                SELECT agg.profile_date AS date,
+                       agg.pnl,
+                       dp.account_balance,
+                       agg.commission,
+                       agg.trade_count AS trades,
+                       agg.win_rate,
+                       agg.win_count
+                FROM (
+                    SELECT DATE(created_at) AS profile_date,
+                           SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                           SUM(COALESCE(commission, 0)) AS commission,
+                           COUNT(*) AS trade_count,
+                           SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+                           CASE
+                               WHEN COUNT(*) = 0 THEN 0
+                               ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                           END AS win_rate
+                    FROM position_history
+                    WHERE user_id = %s
+                    GROUP BY DATE(created_at)
+                ) agg
+                LEFT JOIN daily_profile dp
+                  ON dp.user_id = %s
+                 AND dp.profile_date = agg.profile_date
                 ORDER BY date ASC
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
             return cur.fetchall()
     finally:
@@ -2585,24 +2601,42 @@ def get_daily_profile_leaderboard(
     limit: int = 10,
 ) -> list:
     leaderboard_date = profile_date or _utc_now_naive().date()
+    start_at, end_at = _get_profile_day_bounds(leaderboard_date)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT dp.username,
-                       dp.profile_date AS date,
-                       dp.pnl,
-                       dp.trade_count AS trades,
-                       dp.win_rate,
-                       dp.commission,
-                                             dp.account_balance
-                FROM daily_profile dp
-                WHERE dp.profile_date = %s
-                ORDER BY dp.pnl DESC, dp.win_rate DESC, dp.trade_count DESC, dp.username ASC
+                SELECT agg.username,
+                       agg.profile_date AS date,
+                       agg.pnl,
+                       agg.trade_count AS trades,
+                       agg.win_rate,
+                       agg.commission,
+                       dp.account_balance
+                FROM (
+                    SELECT user_id,
+                           COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+                           DATE(created_at) AS profile_date,
+                           SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                           COUNT(*) AS trade_count,
+                           CASE
+                               WHEN COUNT(*) = 0 THEN 0
+                               ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                           END AS win_rate,
+                           SUM(COALESCE(commission, 0)) AS commission
+                    FROM position_history
+                    WHERE created_at >= %s
+                      AND created_at < %s
+                    GROUP BY user_id, DATE(created_at)
+                ) agg
+                LEFT JOIN daily_profile dp
+                  ON dp.user_id = agg.user_id
+                 AND dp.profile_date = agg.profile_date
+                ORDER BY agg.pnl DESC, agg.win_rate DESC, agg.trade_count DESC, agg.username ASC
                 LIMIT %s
                 """,
-                (leaderboard_date, limit),
+                (start_at, end_at, limit),
             )
             return cur.fetchall()
     finally:
@@ -2622,27 +2656,27 @@ def get_all_time_profile_leaderboard_for_days(
     where_sql = ""
     if days is not None and days > 0:
         start_date = _utc_now_naive().date() - timedelta(days=days - 1)
-        where_sql = "WHERE profile_date >= %s"
-        params.append(start_date)
+        where_sql = "WHERE created_at >= %s"
+        params.append(datetime.combine(start_date, time.min))
 
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT username,
+                SELECT COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
                        SUM(COALESCE(pnl, 0)) AS pnl,
-                       SUM(COALESCE(trade_count, 0)) AS trades,
+                       COUNT(*) AS trades,
                        CASE
-                           WHEN SUM(COALESCE(trade_count, 0)) = 0 THEN 0
-                           ELSE SUM(COALESCE(win_count, 0)) / SUM(COALESCE(trade_count, 0)) * 100
+                           WHEN COUNT(*) = 0 THEN 0
+                           ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
                        END AS win_rate,
                        SUM(COALESCE(commission, 0)) AS commission
-                FROM daily_profile
+                FROM position_history
                 """
                 + where_sql
                 + """
-                GROUP BY user_id, username
+                GROUP BY user_id
                 ORDER BY pnl DESC, win_rate DESC, trades DESC, username ASC
                 LIMIT %s
                 """,
