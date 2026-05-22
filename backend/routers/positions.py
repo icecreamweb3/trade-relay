@@ -42,12 +42,23 @@ class PositionHistoryOut(BaseModel):
     created_at: str
     updated_at: Optional[str] = None
 
-# Per-user TTL cache: user_id (None = admin) → (timestamp, result)
-_positions_cache: dict[int | None, tuple[float, list]] = {}
+# Per-user TTL cache: (user_id, status) (None = admin) → (timestamp, result)
+_positions_cache: dict[tuple[int | None, str], tuple[float, list]] = {}
 _POSITIONS_CACHE_TTL = 0.5  # seconds — short enough that an account_update fetch always sees fresh DB data
 _startup_position_sync_inflight: set[str] = set()
 _startup_position_sync_lock = threading.Lock()
 _STARTUP_POSITION_SYNC_DELAY_SECONDS = 3.0
+
+
+def _normalize_positions_status(status: str | None) -> str:
+    normalized = str(status or "OPEN").strip().upper()
+    return normalized or "OPEN"
+
+
+def _clear_positions_cache(user_id: int | None) -> None:
+    stale_keys = [key for key in _positions_cache if key[0] == user_id]
+    for key in stale_keys:
+        _positions_cache.pop(key, None)
 
 
 def _schedule_initial_position_sync(username: str, user_id: int | None, api_key: str, api_secret: str, testnet: bool) -> None:
@@ -61,7 +72,7 @@ def _schedule_initial_position_sync(username: str, user_id: int | None, api_key:
             time.sleep(_STARTUP_POSITION_SYNC_DELAY_SECONDS)
             sync_initial_positions_for_user(username, api_key, api_secret, testnet)
             if user_id is not None:
-                _positions_cache.pop(user_id, None)
+                _clear_positions_cache(user_id)
         except Exception:
             _log.exception("Deferred initial position sync failed for user=%s", username)
         finally:
@@ -79,6 +90,7 @@ class PositionOut(BaseModel):
     id: int
     symbol: str
     side: str
+    status: str
     position_mode: str
     quantity: float
     entry_price: Optional[float]
@@ -145,8 +157,8 @@ def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | N
     return by_position_id, by_symbol_side
 
 
-def _db_positions(user_id: int | None) -> list[PositionOut]:
-    rows = db_module.get_positions(user_id=user_id)
+def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[PositionOut]:
+    rows = db_module.get_positions(user_id=user_id, status=_normalize_positions_status(status))
     persisted_by_position_id, persisted_by_symbol_side = _load_persisted_tpsl(user_id)
     positions: list[PositionOut] = []
     for index, row in enumerate(rows, start=1):
@@ -172,6 +184,7 @@ def _db_positions(user_id: int | None) -> list[PositionOut]:
                 id=pos_id,
                 symbol=symbol,
                 side=side,
+                status=str(row.get("status") or "OPEN").upper(),
                 position_mode=str(row.get("position_mode", "") or "UNKNOWN").upper(),
                 quantity=float(row["quantity"]),
                 entry_price=float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None,
@@ -284,7 +297,7 @@ def _serialize_conditional_orders_snapshot(user_id: int | None, username: str) -
 
 def _build_positions_ws_payload(user_id: int | None, username: str, event: dict[str, Any]) -> dict[str, Any]:
     payload = dict(event)
-    payload["positions"] = [_position_out_to_dict(position) for position in _db_positions(user_id)]
+    payload["positions"] = [_position_out_to_dict(position) for position in _db_positions(user_id, status="OPEN")]
     payload["open_orders"] = _serialize_open_orders_snapshot(user_id, username)
     payload["conditional_orders"] = _serialize_conditional_orders_snapshot(user_id, username)
     return payload
@@ -366,7 +379,10 @@ def _build_positions_ws_payload_for_symbol(
 
 
 @router.post("/sync", response_model=list[PositionOut])
-def sync_positions(user: dict = Depends(get_current_user)):
+def sync_positions(
+    status: str = Query("OPEN", description="持仓状态过滤：OPEN/CLOSE/ALL"),
+    user: dict = Depends(get_current_user),
+):
     """从 Binance 拉取最新持仓，写入数据库，并返回更新后的持仓列表。"""
     username = str(user.get("username") or "")
     _log.info("[POSITION_SYNC] phase=request username=%s", username)
@@ -378,26 +394,32 @@ def sync_positions(user: dict = Depends(get_current_user)):
         sync_initial_positions_for_user(username, api_key, api_secret, testnet)
         # Invalidate position cache so the subsequent read sees fresh data
         user_id = int(user["sub"]) if user["role"] != "admin" else None
-        _positions_cache.pop(user_id, None)
+        _clear_positions_cache(user_id)
     else:
         _log.warning("[POSITION_SYNC] phase=missing_credentials username=%s", username)
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    result = _db_positions(user_id=user_id)
-    _log.info("[POSITION_SYNC] phase=response username=%s positions=%s", username, len(result))
+    normalized_status = _normalize_positions_status(status)
+    result = _db_positions(user_id=user_id, status=normalized_status)
+    _log.info("[POSITION_SYNC] phase=response username=%s status=%s positions=%s", username, normalized_status, len(result))
     return result
 
 
 @router.get("", response_model=list[PositionOut])
-def get_positions(user: dict = Depends(get_current_user)):
+def get_positions(
+    status: str = Query("OPEN", description="持仓状态过滤：OPEN/CLOSE/ALL"),
+    user: dict = Depends(get_current_user),
+):
     user_id = int(user["sub"]) if user["role"] != "admin" else None
+    normalized_status = _normalize_positions_status(status)
+    cache_key = (user_id, normalized_status)
     now = time.monotonic()
-    cached = _positions_cache.get(user_id)
+    cached = _positions_cache.get(cache_key)
     if cached and now - cached[0] < _POSITIONS_CACHE_TTL:
-        _log.info("[POSITION_SYNC] phase=cache_hit user_id=%s positions=%s", user_id, len(cached[1]))
+        _log.info("[POSITION_SYNC] phase=cache_hit user_id=%s status=%s positions=%s", user_id, normalized_status, len(cached[1]))
         return cached[1]
-    result = _db_positions(user_id=user_id)
-    _positions_cache[user_id] = (now, result)
-    _log.info("[POSITION_SYNC] phase=cache_miss user_id=%s positions=%s", user_id, len(result))
+    result = _db_positions(user_id=user_id, status=normalized_status)
+    _positions_cache[cache_key] = (now, result)
+    _log.info("[POSITION_SYNC] phase=cache_miss user_id=%s status=%s positions=%s", user_id, normalized_status, len(result))
     return result
 
 
@@ -421,7 +443,7 @@ def set_position_tpsl(
 
     # Find the position row to get symbol, side, quantity
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    rows = db_module.get_positions(user_id=user_id)
+    rows = db_module.get_positions(user_id=user_id, status="OPEN")
     position_row = None
     for idx, row in enumerate(rows, start=1):
         rid = int(row.get("id") or idx)
@@ -474,7 +496,7 @@ def set_position_tpsl(
             body.sl_price if body.sl_price and body.sl_price > 0 else None,
         )
     # Invalidate position cache
-    _positions_cache.pop(user_id, None)
+    _clear_positions_cache(user_id)
 
     _log.info("[POSITION_SYNC] phase=tpsl_set user=%s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
     return {"ok": True, "tp_price": body.tp_price, "sl_price": body.sl_price}

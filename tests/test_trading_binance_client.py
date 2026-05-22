@@ -1227,6 +1227,122 @@ def test_poll_open_orders_skips_duplicate_close_history_when_order_already_handl
     }]
 
 
+def test_sync_positions_marks_flat_position_closed(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    close_calls = []
+    cancel_calls = []
+    upsert_calls = []
+
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5, "username": username})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_positions",
+        lambda user_id=None: [{"id": 525, "symbol": "BTCUSDC", "position_side": "LONG", "status": "OPEN"}],
+    )
+    monkeypatch.setattr(order_status_stream.db, "close_position", lambda user_id, symbol, position_side, exchange="binance": close_calls.append((user_id, symbol, position_side, exchange)) or True)
+    monkeypatch.setattr(order_status_stream.db, "upsert_position", lambda **kwargs: upsert_calls.append(kwargs))
+    monkeypatch.setattr(
+        order_status_stream,
+        "cancel_close_tp_sl_orders",
+        lambda **kwargs: cancel_calls.append(kwargs) or [],
+    )
+
+    stream._sync_positions([{
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "pa": "0",
+        "ep": "77843.05",
+        "up": "0",
+        "cr": "0",
+        "mt": "cross",
+    }])
+
+    assert close_calls == [(5, "BTCUSDC", "LONG", "binance")]
+    assert len(cancel_calls) == 1
+    assert upsert_calls == []
+
+
+def test_sync_positions_reopens_position_with_open_status(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    upsert_calls = []
+
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5, "username": username})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_positions",
+        lambda user_id=None: [{"id": 525, "symbol": "BTCUSDC", "position_side": "LONG", "status": "CLOSE", "leverage": 20}],
+    )
+    monkeypatch.setattr(order_status_stream.db, "upsert_position", lambda **kwargs: upsert_calls.append(kwargs))
+
+    stream._sync_positions([{
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "pa": "0.037",
+        "ep": "77843.05",
+        "lp": "76000",
+        "up": "1.23",
+        "cr": "0.45",
+        "mt": "cross",
+        "l": "20",
+    }])
+
+    assert len(upsert_calls) == 1
+    assert upsert_calls[0]["status"] == "OPEN"
+    assert upsert_calls[0]["quantity"] == 0.037
+
+
+def test_initial_position_sync_marks_missing_positions_closed(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    close_calls = []
+
+    class _StubClient:
+        def __init__(self, api_key=None, secret_key=None, testnet=False):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_position_information(self):
+            return [{
+                "symbol": "ETHUSDC",
+                "positionSide": "LONG",
+                "positionAmt": "0.1",
+                "entryPrice": "2500",
+                "liquidationPrice": "2000",
+                "unRealizedProfit": "10",
+                "marginType": "cross",
+                "leverage": "10",
+            }]
+
+    class _StubStream:
+        def __init__(self, username, api_key, api_secret, testnet):
+            self.username = username
+
+        def _sync_positions(self, payload):
+            return None
+
+    monkeypatch.setattr(order_status_stream, "BinanceClient", _StubClient)
+    monkeypatch.setattr(order_status_stream, "UserOrderStatusStream", _StubStream)
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5, "username": username})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_positions",
+        lambda user_id=None: [
+            {"symbol": "BTCUSDC", "position_side": "LONG", "status": "OPEN"},
+            {"symbol": "ETHUSDC", "position_side": "LONG", "status": "OPEN"},
+        ],
+    )
+    monkeypatch.setattr(order_status_stream.db, "close_position", lambda user_id, symbol, position_side, exchange="binance": close_calls.append((user_id, symbol, position_side, exchange)) or True)
+
+    order_status_stream.sync_initial_positions_for_user("Will", "key", "secret", False)
+
+    assert close_calls == [(5, "BTCUSDC", "LONG", "binance")]
+
+
 def test_public_ticker_stream_replays_last_payload_to_new_listener(monkeypatch):
     from trade_relay.exchange import public_ticker_stream
 

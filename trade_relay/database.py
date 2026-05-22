@@ -774,6 +774,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             symbol          VARCHAR(32)     NOT NULL,
             position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
             position_mode   VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
+            status          VARCHAR(8)      NOT NULL DEFAULT 'OPEN' COMMENT '持仓状态 OPEN/CLOSE',
             quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
             avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
             liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
@@ -809,8 +810,16 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             "ELSE 'UNKNOWN' END"
         )
         existing_columns.add("position_mode")
+    if "status" not in existing_columns:
+        cur.execute("ALTER TABLE positions ADD COLUMN status VARCHAR(8) NOT NULL DEFAULT 'OPEN' COMMENT '持仓状态 OPEN/CLOSE' AFTER position_mode")
+        cur.execute(
+            "UPDATE positions SET status = CASE "
+            "WHEN ABS(COALESCE(quantity, 0)) > 0 THEN 'OPEN' "
+            "ELSE 'CLOSE' END"
+        )
+        existing_columns.add("status")
     required_columns = {
-        "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode",
+        "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode", "status",
         "quantity", "avg_entry_price", "liquidation_price", "unrealized_pnl", "realized_pnl",
         "leverage", "margin_type", "updated_at",
     }
@@ -881,10 +890,10 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
 
         cur.execute(
             """INSERT INTO positions
-               (id, user_id, username, exchange, symbol, position_side, position_mode,
+               (id, user_id, username, exchange, symbol, position_side, position_mode, status,
                 quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                 leverage, margin_type, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 legacy_position_id,
                 owner_info["user_id"],
@@ -893,6 +902,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
                 row.get("symbol"),
                 position_side,
                 "SINGLE" if position_side == "BOTH" else "DUAL",
+                "OPEN" if abs(float(row.get("quantity") or 0)) > 0 else "CLOSE",
                 row.get("quantity") or 0,
                 row.get("avg_entry_price") if "avg_entry_price" in row else row.get("entry_price"),
                 row.get("liquidation_price"),
@@ -2687,6 +2697,7 @@ def upsert_position(
     margin_type: str = "CROSS",
     position_side: str = "BOTH",
     position_mode: str = "UNKNOWN",
+    status: str = "OPEN",
     exchange: str = "binance",
 ) -> None:
     """插入或更新当前统一结构的持仓记录。"""
@@ -2700,6 +2711,7 @@ def upsert_position(
             "symbol": symbol,
             "position_side": position_side,
             "position_mode": position_mode,
+            "status": status,
             "quantity": quantity,
             "avg_entry_price": avg_entry_price,
             "liquidation_price": liquidation_price,
@@ -2714,11 +2726,12 @@ def upsert_position(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO positions
-                   (user_id, username, exchange, symbol, position_side, position_mode,
+                   (user_id, username, exchange, symbol, position_side, position_mode, status,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
+                       status          = VALUES(status),
                        quantity        = VALUES(quantity),
                        avg_entry_price = VALUES(avg_entry_price),
                        liquidation_price = VALUES(liquidation_price),
@@ -2730,6 +2743,7 @@ def upsert_position(
                        updated_at      = CURRENT_TIMESTAMP""",
                 (
                     user_id, username, exchange, symbol, position_side, position_mode,
+                    status,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type,
                 ),
@@ -2751,14 +2765,27 @@ def _get_table_columns(table_name: str) -> set[str]:
         conn.close()
 
 
-def get_positions(user_id: Optional[int] = None, exchange: str = "binance") -> list:
+def get_positions(
+    user_id: Optional[int] = None,
+    exchange: str = "binance",
+    status: Optional[str] = None,
+) -> list:
     """返回当前统一结构的持仓列表。"""
+    columns = _get_table_columns("positions")
+    has_status_column = "status" in columns
     sql = "SELECT * FROM positions WHERE exchange = %s"
     params: list = [exchange]
     if user_id is not None:
         sql += " AND user_id = %s"
         params.append(user_id)
-    sql += " ORDER BY symbol, position_side"
+    normalized_status = str(status or "").strip().upper()
+    if has_status_column and normalized_status and normalized_status != "ALL":
+        sql += " AND UPPER(COALESCE(status, 'OPEN')) = %s"
+        params.append(normalized_status)
+    if has_status_column:
+        sql += " ORDER BY CASE WHEN UPPER(COALESCE(status, 'OPEN')) = 'OPEN' THEN 0 ELSE 1 END, symbol, position_side"
+    else:
+        sql += " ORDER BY symbol, position_side"
 
     conn = get_connection()
     try:
@@ -2769,38 +2796,54 @@ def get_positions(user_id: Optional[int] = None, exchange: str = "binance") -> l
         conn.close()
 
 
-def delete_position(
+def close_position(
     user_id: int,
     symbol: str,
     position_side: str = "BOTH",
     exchange: str = "binance",
 ) -> bool:
-    """删除（清除）指定持仓记录。"""
+    """将指定持仓记录标记为已关闭。"""
     _log_db_write(
-        "delete",
+        "update",
         "positions",
         {
             "user_id": user_id,
             "exchange": exchange,
             "symbol": symbol,
             "position_side": position_side,
+            "status": "CLOSE",
         },
     )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """DELETE FROM positions
+                """UPDATE positions
+                   SET status = 'CLOSE',
+                       quantity = 0,
+                       liquidation_price = NULL,
+                       unrealized_pnl = 0,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE user_id = %s AND exchange = %s
                      AND symbol = %s AND position_side = %s""",
                 (user_id, exchange, symbol, position_side),
             )
             conn.commit()
             success = cur.rowcount > 0
-            _log_db_write_result("delete", "positions", user_id=user_id, symbol=symbol, position_side=position_side, affected_rows=cur.rowcount, success=success)
+            _log_db_write_result("update", "positions", user_id=user_id, symbol=symbol, position_side=position_side, status="CLOSE", affected_rows=cur.rowcount, success=success)
             return success
     finally:
         conn.close()
+
+
+def delete_position(
+    user_id: int,
+    symbol: str,
+    position_side: str = "BOTH",
+    exchange: str = "binance",
+) -> bool:
+    """Backward-compatible alias for closing a position row instead of deleting it."""
+    return close_position(user_id=user_id, symbol=symbol, position_side=position_side, exchange=exchange)
 
 
 def _write_operation_log_sync(

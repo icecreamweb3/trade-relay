@@ -14,10 +14,15 @@ const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
+  status: string
   position_mode: string
   entry_price: number | null; liquidation_price: number | null; unrealized_pnl: number | null
   leverage: number; margin_type: string; margin: number | null
   tp_price?: number | null; sl_price?: number | null
+}
+
+function filterOpenPositions(rows: Position[]): Position[] {
+  return rows.filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN')
 }
 
 interface Order {
@@ -104,7 +109,7 @@ export function PositionsPanel({
   const loadPositions = useCallback(async () => {
     if (!isActive || !isAuthenticated) return
     try {
-      setPositions(await api.getPositions())
+      setPositions(filterOpenPositions(await api.getPositions()))
     } catch {
       // silently ignore background position refresh errors
     }
@@ -129,7 +134,7 @@ export function PositionsPanel({
     }
     setLoading(true)
     try {
-      if (tab === 'positions') setPositions(await api.getPositions())
+      if (tab === 'positions') setPositions(filterOpenPositions(await api.getPositions()))
       else if (tab === 'openOrders') {
         const [basic, conditional] = await Promise.all([api.getOpenOrders(), api.getConditionalOrders()])
         setOpenOrders(basic)
@@ -217,7 +222,7 @@ export function PositionsPanel({
           const hasSnapshot = Array.isArray(data.positions) || Array.isArray(data.open_orders) || Array.isArray(data.conditional_orders)
 
           if (Array.isArray(data.positions)) {
-            setPositions(data.positions)
+            setPositions(filterOpenPositions(data.positions))
           }
           if (Array.isArray(data.open_orders)) {
             setOpenOrders(data.open_orders)
@@ -434,7 +439,7 @@ export function PositionsPanel({
     setLoading(true)
     try {
       const synced = await api.syncPositions()
-      setPositions(synced)
+      setPositions(filterOpenPositions(synced))
       if (tab !== 'positions') await loadRef.current()
     } catch (error: unknown) {
       const msg =
@@ -471,16 +476,17 @@ export function PositionsPanel({
         {tab === 'positions' && (
           <table className="trade-table w-full">
             <thead><tr>
-              <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
+              <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.status')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={11} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
+                    <td className={p.status === 'OPEN' ? 'text-buy' : 'text-[#858585]'}>{p.status === 'OPEN' ? t('order.open') : t('order.close')}</td>
                     <td className="font-mono">{formatPositionSize(p, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
                     <td className="font-mono">{p.entry_price != null ? p.entry_price.toFixed(2) : '-'}</td>
                     <td className="text-[#858585]">{formatPositionMode(p.position_mode, t)}</td>
@@ -514,7 +520,7 @@ export function PositionsPanel({
                     </td>
                     <td className="text-right">
                       <button
-                        disabled={closingPositionId === p.id}
+                        disabled={closingPositionId === p.id || p.status !== 'OPEN' || p.quantity <= 0}
                         onClick={() => void handleMarketClose(p)}
                         className="px-2.5 py-1 text-[11px] rounded border border-[#f6465d] text-[#f6465d] hover:bg-[#f6465d] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         title={t('pos.marketClose')}

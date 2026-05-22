@@ -1205,7 +1205,7 @@ class UserOrderStatusStream:
                         with self._entry_price_cache_lock:
                             self._entry_price_cache.pop((symbol, side), None)
                     if side in ("LONG", "SHORT", "BOTH"):
-                        db.delete_position(user_id, symbol, side)
+                        db.close_position(user_id, symbol, side)
                 continue
 
             existing = existing_by_key.get((symbol, normalized_side)) or existing_by_key.get((symbol, raw_side)) or {}
@@ -1229,6 +1229,7 @@ class UserOrderStatusStream:
                 margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
                 position_side=normalized_side,
                 position_mode=position_mode,
+                status="OPEN",
             )
             self._sync_close_tpsl_quantity(
                 user_id=user_id,
@@ -1492,7 +1493,7 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
                         "Initial position sync: deleting stale DB position user=%s symbol=%s side=%s (not in Binance)",
                         username, sym, side,
                     )
-                    db.delete_position(user_id, sym, side)
+                    db.close_position(user_id, sym, side)
 
     except Exception:
         logger.exception("Failed initial position sync for user=%s", username)

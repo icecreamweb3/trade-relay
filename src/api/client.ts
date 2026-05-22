@@ -52,6 +52,7 @@ interface ApiPosition {
   id: number
   symbol: string
   side: string
+  status: string
   position_mode: string
   quantity: number
   entry_price: number
@@ -363,12 +364,12 @@ export const api = {
   },
 
   // ── Positions ─────────────────────────────────────────────────────────────
-  async getPositions(): Promise<ApiPosition[]> {
-    return request<ApiPosition[]>('GET', '/api/positions')
+  async getPositions(status = 'OPEN'): Promise<ApiPosition[]> {
+    return request<ApiPosition[]>('GET', '/api/positions', { params: { status } })
   },
 
-  async syncPositions(): Promise<ApiPosition[]> {
-    return request<ApiPosition[]>('POST', '/api/positions/sync')
+  async syncPositions(status = 'OPEN'): Promise<ApiPosition[]> {
+    return request<ApiPosition[]>('POST', '/api/positions/sync', { params: { status } })
   },
 
   async setPositionTpSl(positionId: number, tpPrice: number | null, slPrice: number | null): Promise<ApiResult> {
