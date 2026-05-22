@@ -1819,6 +1819,62 @@ def test_place_tp_sl_orders_uses_close_all_orders_for_single_mode(monkeypatch):
     assert created_orders[1]["quantity"] == 0.005
 
 
+def test_validate_tpsl_prices_allows_long_stop_loss_above_entry_for_profit_protection():
+    from trade_relay.trading import tpsl_service
+
+    errors = tpsl_service.validate_tpsl_prices(
+        position_side="LONG",
+        entry_price=77200.0,
+        tp_price=77700.0,
+        sl_price=77230.0,
+        current_price=77300.0,
+    )
+
+    assert errors == []
+
+
+def test_validate_tpsl_prices_allows_short_stop_loss_below_entry_for_profit_protection():
+    from trade_relay.trading import tpsl_service
+
+    errors = tpsl_service.validate_tpsl_prices(
+        position_side="SHORT",
+        entry_price=77200.0,
+        tp_price=76700.0,
+        sl_price=77170.0,
+        current_price=77100.0,
+    )
+
+    assert errors == []
+
+
+def test_validate_tpsl_prices_rejects_long_stop_loss_above_current_price():
+    from trade_relay.trading import tpsl_service
+
+    errors = tpsl_service.validate_tpsl_prices(
+        position_side="LONG",
+        entry_price=77200.0,
+        tp_price=77700.0,
+        sl_price=77230.0,
+        current_price=77200.0,
+    )
+
+    assert errors == ["LONG 仓位的止损价 (77230.0) 必须低于当前价 (77200.0)"]
+
+
+def test_validate_tpsl_prices_rejects_short_stop_loss_below_current_price():
+    from trade_relay.trading import tpsl_service
+
+    errors = tpsl_service.validate_tpsl_prices(
+        position_side="SHORT",
+        entry_price=77200.0,
+        tp_price=76700.0,
+        sl_price=77170.0,
+        current_price=77200.0,
+    )
+
+    assert errors == ["SHORT 仓位的止损价 (77170.0) 必须高于当前价 (77200.0)"]
+
+
 def test_production_binance_client_close_all_conditional_orders(monkeypatch):
     import requests
     from trade_relay.exchange import binance_client as exchange_binance_client

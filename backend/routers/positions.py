@@ -206,6 +206,46 @@ def _position_out_to_dict(position: PositionOut) -> dict[str, Any]:
     return position.dict()
 
 
+def _fetch_current_trigger_price(user_id: int | None, username: str, symbol: str) -> float | None:
+    normalized_symbol = str(symbol or "").strip().upper()
+    if not normalized_symbol:
+        return None
+
+    if user_id is not None:
+        summary_row = db_module.get_account_summary_from_db(user_id, normalized_symbol) or {}
+        rest_mark_price = summary_row.get("rest_mark_price")
+        if rest_mark_price is not None:
+            try:
+                price = float(rest_mark_price)
+                if price > 0:
+                    return price
+            except (TypeError, ValueError):
+                pass
+
+    testnet = cfg_module.is_testnet(username)
+    base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    try:
+        import requests as _requests
+
+        proxy_cfg = None
+        proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        if proxy_url:
+            proxy_cfg = {"http": proxy_url, "https": proxy_url}
+        resp = _requests.get(
+            f"{base_url}/fapi/v1/premiumIndex",
+            params={"symbol": normalized_symbol},
+            proxies=proxy_cfg,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        price = float(data.get("markPrice") or data.get("price") or 0)
+        return price if price > 0 else None
+    except Exception as exc:
+        _log.warning("[POSITION_SYNC] phase=mark_price_lookup_failed username=%s symbol=%s error=%s", username, normalized_symbol, exc)
+        return None
+
+
 def _active_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
     if user_id is not None:
         return db_module.get_active_orders(user_id=user_id)
@@ -459,18 +499,20 @@ def set_position_tpsl(
     position_mode = str(position_row.get("position_mode", "") or "UNKNOWN").upper()
     quantity = float(position_row.get("quantity") or 0)
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
+    current_price = _fetch_current_trigger_price(user_id, username, symbol)
 
     validation_errors = validate_tpsl_prices(
         position_side=position_side,
         entry_price=entry_price,
         tp_price=body.tp_price,
         sl_price=body.sl_price,
+        current_price=current_price,
     )
     if validation_errors:
         raise HTTPException(status_code=400, detail="; ".join(validation_errors))
     _log.info(
-        "[POSITION_SYNC] phase=tpsl_validated user=%s pos=%d symbol=%s side=%s entry_price=%s tp=%s sl=%s",
-        username, position_id, symbol, position_side, entry_price, body.tp_price, body.sl_price,
+        "[POSITION_SYNC] phase=tpsl_validated user=%s pos=%d symbol=%s side=%s entry_price=%s current_price=%s tp=%s sl=%s",
+        username, position_id, symbol, position_side, entry_price, current_price, body.tp_price, body.sl_price,
     )
 
     db_user_id = int(user["sub"])
@@ -485,6 +527,7 @@ def set_position_tpsl(
         sl_price=body.sl_price,
         position_id=position_id,
         position_mode=position_mode,
+        current_price=current_price,
     )
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))

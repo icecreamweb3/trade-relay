@@ -103,22 +103,23 @@ def validate_tpsl_prices(
     entry_price: Optional[float],
     tp_price: Optional[float],
     sl_price: Optional[float],
+    current_price: Optional[float] = None,
 ) -> list[str]:
     errors: list[str] = []
-    if entry_price is None or entry_price <= 0:
+    side = str(position_side or "").upper()
+    if current_price is None or current_price <= 0:
         return errors
 
-    side = str(position_side or "").upper()
     if side == "LONG":
-        if tp_price is not None and tp_price > 0 and tp_price <= entry_price:
-            errors.append(f"LONG 仓位的止盈价 ({tp_price}) 必须高于入场价 ({entry_price})")
-        if sl_price is not None and sl_price > 0 and sl_price >= entry_price:
-            errors.append(f"LONG 仓位的止损价 ({sl_price}) 必须低于入场价 ({entry_price})")
+        if tp_price is not None and tp_price > 0 and tp_price <= current_price:
+            errors.append(f"LONG 仓位的止盈价 ({tp_price}) 必须高于当前价 ({current_price})")
+        if sl_price is not None and sl_price > 0 and sl_price >= current_price:
+            errors.append(f"LONG 仓位的止损价 ({sl_price}) 必须低于当前价 ({current_price})")
     elif side == "SHORT":
-        if tp_price is not None and tp_price > 0 and tp_price >= entry_price:
-            errors.append(f"SHORT 仓位的止盈价 ({tp_price}) 必须低于入场价 ({entry_price})")
-        if sl_price is not None and sl_price > 0 and sl_price <= entry_price:
-            errors.append(f"SHORT 仓位的止损价 ({sl_price}) 必须高于入场价 ({entry_price})")
+        if tp_price is not None and tp_price > 0 and tp_price >= current_price:
+            errors.append(f"SHORT 仓位的止盈价 ({tp_price}) 必须低于当前价 ({current_price})")
+        if sl_price is not None and sl_price > 0 and sl_price <= current_price:
+            errors.append(f"SHORT 仓位的止损价 ({sl_price}) 必须高于当前价 ({current_price})")
     return errors
 
 
@@ -134,12 +135,14 @@ def place_tp_sl_orders(
     sl_price: Optional[float],
     position_id: Optional[int] = None,
     position_mode: str = "UNKNOWN",
+    current_price: Optional[float] = None,
 ) -> list[str]:
     errors = validate_tpsl_prices(
         position_side=position_side,
         entry_price=entry_price,
         tp_price=tp_price,
         sl_price=sl_price,
+        current_price=current_price,
     )
     if errors:
         return errors

@@ -1119,11 +1119,13 @@ function TpSlModal({
 }) {
   const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
+  const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const leverage = readStoredLeverage(username, position.symbol) ?? position.leverage
   const [tpInput, setTpInput] = useState(position.tp_price ? String(position.tp_price) : '')
   const [slInput, setSlInput] = useState(position.sl_price ? String(position.sl_price) : '')
   const [submitting, setSubmitting] = useState(false)
+  const [fetchedMarkPrice, setFetchedMarkPrice] = useState<number | null>(null)
 
   // Hide BrowserView (native layer) while modal is open, same as LoginModal pattern
   useEffect(() => {
@@ -1133,6 +1135,20 @@ function TpSlModal({
   }, [])
 
   const entryPrice = position.entry_price
+  const sameSymbolAsLiveFeed = position.symbol.toUpperCase() === String(activeSymbol || '').toUpperCase()
+  const referencePrice = fetchedMarkPrice ?? (sameSymbolAsLiveFeed ? (markPrice ?? currentPrice) : null)
+
+  useEffect(() => {
+    let alive = true
+    void api.getMarkPrice(position.symbol)
+      .then((price) => {
+        if (alive && Number.isFinite(price) && price > 0) setFetchedMarkPrice(price)
+      })
+      .catch(() => {
+        // Ignore local validation price fetch failures; backend remains authoritative.
+      })
+    return () => { alive = false }
+  }, [position.symbol])
 
   function calcPnl(triggerPrice: number): number | null {
     if (!entryPrice || !triggerPrice) return null
@@ -1146,9 +1162,39 @@ function TpSlModal({
   const tpPnl = Number.isFinite(tpVal) && tpVal > 0 ? calcPnl(tpVal) : null
   const slPnl = Number.isFinite(slVal) && slVal > 0 ? calcPnl(slVal) : null
 
+  function getTriggerValidationError(kind: 'tp' | 'sl', triggerPrice: number | null): string | null {
+    if (triggerPrice == null || triggerPrice <= 0 || referencePrice == null || referencePrice <= 0) return null
+
+    if (position.side === 'LONG') {
+      if (kind === 'tp' && triggerPrice <= referencePrice) {
+        return t('pos.tpMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+      }
+      if (kind === 'sl' && triggerPrice >= referencePrice) {
+        return t('pos.slMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+      }
+      return null
+    }
+
+    if (kind === 'tp' && triggerPrice >= referencePrice) {
+      return t('pos.tpMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+    }
+    if (kind === 'sl' && triggerPrice <= referencePrice) {
+      return t('pos.slMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+    }
+    return null
+  }
+
+  const tpError = getTriggerValidationError('tp', Number.isFinite(tpVal) && tpVal > 0 ? tpVal : null)
+  const slError = getTriggerValidationError('sl', Number.isFinite(slVal) && slVal > 0 ? slVal : null)
+  const hasValidationError = Boolean(tpError || slError)
+
   const handleConfirm = async () => {
     const tp = Number.isFinite(tpVal) && tpVal > 0 ? tpVal : null
     const sl = Number.isFinite(slVal) && slVal > 0 ? slVal : null
+    if (tpError || slError) {
+      showToast('error', tpError || slError || 'Invalid trigger price')
+      return
+    }
     setSubmitting(true)
     try {
       await api.setPositionTpSl(position.id, tp, sl)
@@ -1193,6 +1239,10 @@ function TpSlModal({
             <span className="text-[#848E9C]">{t('pos.entry')}</span>
             <span className="text-[#EAECEF] font-mono">{entryPrice != null ? entryPrice.toFixed(1) : '—'} {quoteAsset}</span>
           </div>
+          <div className="flex justify-between text-[11px]">
+            <span className="text-[#848E9C]">{t('pos.currentPrice')}</span>
+            <span className="text-[#F0B90B] font-mono">{referencePrice != null ? referencePrice.toFixed(1) : '—'} {quoteAsset}</span>
+          </div>
         </div>
 
         <div className="border-t border-[#2B2F36] mx-4 mb-1" />
@@ -1228,7 +1278,9 @@ function TpSlModal({
             </div>
           </div>
           <div className="mt-1.5 text-[10px] text-[#848E9C] leading-relaxed min-h-[30px]">
-            {tpPnl != null
+            {tpError
+              ? <span className="text-[#F6465D]">{tpError}</span>
+              : tpPnl != null
               ? <>{t('pos.when')} <span className="text-[#F0B90B] font-medium">{t('order.triggerPriceType.last')}</span> {t('pos.reaches')}{' '}
                   <span className="text-[#EAECEF]">{tpVal.toFixed(2)}</span>, {t('pos.tpTriggerHint')}{' '}
                   <span className={tpPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
@@ -1264,7 +1316,9 @@ function TpSlModal({
             </div>
           </div>
           <div className="mt-1.5 text-[10px] text-[#848E9C] leading-relaxed min-h-[30px]">
-            {slPnl != null
+            {slError
+              ? <span className="text-[#F6465D]">{slError}</span>
+              : slPnl != null
               ? <>{t('pos.when')} <span className="text-[#F0B90B] font-medium">{t('order.triggerPriceType.last')}</span> {t('pos.reaches')}{' '}
                   <span className="text-[#EAECEF]">{slVal.toFixed(2)}</span>, {t('pos.slTriggerHint')}{' '}
                   <span className={slPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
@@ -1279,7 +1333,7 @@ function TpSlModal({
         <div className="px-4 pb-4 border-t border-[#2B2F36] pt-3">
           <button
             onClick={() => void handleConfirm()}
-            disabled={submitting || (!tpInput && !slInput)}
+            disabled={submitting || (!tpInput && !slInput) || hasValidationError}
             className="w-full py-3 rounded text-[13px] font-bold bg-[#F0B90B] text-black hover:bg-[#d4a30a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {submitting ? '...' : t('common.confirm')}
