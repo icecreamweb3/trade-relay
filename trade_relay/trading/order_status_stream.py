@@ -270,6 +270,7 @@ class UserOrderStatusStream:
                             position_mode=position_mode,
                             fill_qty=executed_qty,
                             fill_price=avg_price,
+                            order_row=db_order,
                         )
                 # Always backfill commission / realized_pnl via trade fills API,
                 # regardless of whether position_history was just created here or
@@ -491,13 +492,27 @@ class UserOrderStatusStream:
                 position_side = "LONG" if order_side == "BUY" else "SHORT"
 
             if trade_direction == "CLOSE" and avg_price and avg_price > 0:
-                self._create_position_history_from_poll(
-                    symbol=symbol,
-                    position_side=position_side,
-                    position_mode=position_mode,
-                    fill_qty=executed_qty,
-                    fill_price=avg_price,
-                )
+                exchange_order_id = str(db_row.get("exchange_order_id") or "").strip()
+                already_handled = False
+                if exchange_order_id:
+                    with self._handled_close_fills_lock:
+                        if exchange_order_id in self._handled_close_fills:
+                            logger.debug(
+                                "position_history already created for order=%s (poll loop), skipping",
+                                exchange_order_id,
+                            )
+                            already_handled = True
+                        else:
+                            self._handled_close_fills.add(exchange_order_id)
+                if not already_handled:
+                    self._create_position_history_from_poll(
+                        symbol=symbol,
+                        position_side=position_side,
+                        position_mode=position_mode,
+                        fill_qty=executed_qty,
+                        fill_price=avg_price,
+                        order_row=db_row,
+                    )
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
             elif trade_direction == "OPEN" and new_status == "FILLED":
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
@@ -742,6 +757,7 @@ class UserOrderStatusStream:
         position_mode: str,
         fill_qty: float,
         fill_price: float,
+        order_row: Optional[dict] = None,
     ) -> None:
         """Create a position_history record for a CLOSE fill detected via REST poll."""
         try:
@@ -787,10 +803,19 @@ class UserOrderStatusStream:
                         "entry_price fallback from cache: user=%s symbol=%s side=%s entry=%.4f",
                         self.username, symbol, position_side, entry_price,
                     )
+            order_realized_pnl_raw = (order_row or {}).get("realized_pnl")
+            has_order_realized_pnl = order_realized_pnl_raw not in (None, "")
+            order_realized_pnl = _safe_float(order_realized_pnl_raw)
             if position_side == "LONG":
-                realized_pnl = (fill_price - entry_price) * fill_qty
+                fallback_realized_pnl = (fill_price - entry_price) * fill_qty
             else:
-                realized_pnl = (entry_price - fill_price) * fill_qty
+                fallback_realized_pnl = (entry_price - fill_price) * fill_qty
+            if has_order_realized_pnl:
+                realized_pnl = order_realized_pnl
+            elif entry_price:
+                realized_pnl = fallback_realized_pnl
+            else:
+                realized_pnl = 0.0
             history_id = db.add_position_history(
                 user_id=user_id,
                 username=self.username,

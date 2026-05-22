@@ -836,6 +836,20 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
         "position_mode": "UNKNOWN",
         "fill_qty": 0.012,
         "fill_price": 78391.7,
+        "order_row": {
+            "id": 91,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "order_category": "Conditional",
+            "status": "NEW",
+            "algo_id": "4000001326609744",
+            "exchange_order_id": "4000001327195551",
+            "quantity": 0.012,
+        },
     }]
     assert trade_sync_calls == [{
         "username": "Will",
@@ -1070,6 +1084,20 @@ def test_poll_open_orders_backfills_finished_conditional_algo_after_local_cancel
         "position_mode": "UNKNOWN",
         "fill_qty": 0.037,
         "fill_price": 77673.7,
+        "order_row": {
+            "id": 227,
+            "username": "Will",
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "order_category": "Conditional",
+            "status": "CANCELED",
+            "algo_id": "1000001711252489",
+            "exchange_order_id": "58819962882",
+            "quantity": 0.037,
+        },
     }]
     assert trade_sync_calls == [{
         "username": "Will",
@@ -1087,6 +1115,114 @@ def test_poll_open_orders_backfills_finished_conditional_algo_after_local_cancel
             "algo_id": "1000001711252489",
             "exchange_order_id": "58819962882",
             "quantity": 0.037,
+        },
+    }]
+
+
+def test_create_position_history_from_poll_uses_order_realized_pnl_when_entry_price_missing(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Simba", "key", "secret", False)
+    captured = {}
+
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 3, "username": username})
+    monkeypatch.setattr(order_status_stream.db, "get_position", lambda user_id, symbol, side: None)
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "add_position_history",
+        lambda **kwargs: captured.update(kwargs) or 56,
+    )
+
+    class _StubClient:
+        def get_position_information(self, symbol=None):
+            return []
+
+    stream.client = _StubClient()
+
+    stream._create_position_history_from_poll(
+        symbol="BTCUSDC",
+        position_side="SHORT",
+        position_mode="DUAL",
+        fill_qty=0.012,
+        fill_price=77712.0,
+        order_row={"realized_pnl": -0.86639999},
+    )
+
+    assert captured["entry_price"] == 0.0
+    assert captured["realized_pnl"] == -0.86639999
+
+
+def test_poll_open_orders_skips_duplicate_close_history_when_order_already_handled(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    history_creations = []
+    trade_sync_calls = []
+
+    stream._handled_close_fills.add("4000001327195551")
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_active_orders_for_user",
+        lambda username: [{
+            "id": 91,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "order_category": "Conditional",
+            "status": "NEW",
+            "algo_id": "4000001326609744",
+            "exchange_order_id": None,
+            "quantity": 0.012,
+        }],
+    )
+    monkeypatch.setattr(order_status_stream.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(order_status_stream.db, "update_order_metadata", lambda order_id, **kwargs: True)
+    monkeypatch.setattr(order_status_stream.db, "update_order_status_by_exchange_id", lambda username, exchange_order_id, status, **kwargs: True)
+    monkeypatch.setattr(stream, "_create_position_history_from_poll", lambda **kwargs: history_creations.append(kwargs))
+    monkeypatch.setattr(order_status_stream, "sync_filled_order_trade_details", lambda **kwargs: trade_sync_calls.append(kwargs))
+    monkeypatch.setattr(stream, "_sync_position_from_rest", lambda symbol: None)
+    monkeypatch.setattr(stream, "_notify_listeners", lambda event, force=False: None)
+
+    class _StubClient:
+        def get_order_status(self, symbol, order_id):
+            return {
+                "status": "FILLED",
+                "executedQty": "0.012",
+                "avgPrice": "78391.7",
+            }
+
+        def get_algo_order(self, algo_id=None, client_algo_id=None):
+            return {
+                "algoId": 4000001326609744,
+                "actualOrderId": "4000001327195551",
+                "algoStatus": "TRIGGERED",
+            }
+
+    stream.client = _StubClient()
+
+    stream._poll_open_orders_once()
+
+    assert history_creations == []
+    assert trade_sync_calls == [{
+        "username": "Will",
+        "client": stream.client,
+        "order_row": {
+            "id": 91,
+            "username": "Will",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "TAKE_PROFIT_MARKET",
+            "order_category": "Conditional",
+            "status": "NEW",
+            "algo_id": "4000001326609744",
+            "exchange_order_id": "4000001327195551",
+            "quantity": 0.012,
         },
     }]
 
