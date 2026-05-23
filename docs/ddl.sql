@@ -194,6 +194,27 @@ CREATE TABLE account_summary (
     UNIQUE KEY uk_user_symbol (user_id, symbol)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账户快照缓存（后台定时同步）';
 
+CREATE TABLE income_history (
+    id            BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    user_id       BIGINT          NOT NULL COMMENT '用户ID（关联 users.id）',
+    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+    exchange      VARCHAR(32)     NOT NULL DEFAULT 'binance' COMMENT '交易所',
+    symbol        VARCHAR(32)     NOT NULL DEFAULT '' COMMENT '交易对',
+    income_type   VARCHAR(32)     NOT NULL COMMENT '流水类型 REALIZED_PNL/COMMISSION/FUNDING_FEE/...',
+    income        DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '资金变动金额，保持交易所原始符号',
+    asset         VARCHAR(16)     NOT NULL DEFAULT '' COMMENT '资产币种',
+    info_text     VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '交易所 info 字段',
+    trade_id      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tradeId',
+    tran_id       VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tranId',
+    income_time   DATETIME(3)     NOT NULL COMMENT '交易所资金流水时间（UTC）',
+    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_income_event (user_id, exchange, tran_id, trade_id, income_type, income_time, symbol, asset),
+    KEY idx_income_user_time (user_id, income_time),
+    KEY idx_income_user_type_time (user_id, income_type, income_time),
+    CONSTRAINT fk_income_history_user FOREIGN KEY (user_id) REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易所 income history 资金流水';
+
 -- ============================================================
 -- 存量库升级脚本（初次部署后第一次执行，重复执行无影响）
 -- ============================================================
@@ -276,6 +297,31 @@ ALTER TABLE daily_profile
 ALTER TABLE daily_profile ADD UNIQUE KEY uk_user_date (user_id, profile_date);
 ALTER TABLE daily_profile ADD INDEX idx_profile_date (profile_date, pnl DESC);
 ALTER TABLE daily_profile ADD INDEX idx_username (username);
+
+CREATE TABLE IF NOT EXISTS income_history (
+    id            BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    user_id       BIGINT          NOT NULL COMMENT '用户ID（关联 users.id）',
+    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+    exchange      VARCHAR(32)     NOT NULL DEFAULT 'binance' COMMENT '交易所',
+    symbol        VARCHAR(32)     NOT NULL DEFAULT '' COMMENT '交易对',
+    income_type   VARCHAR(32)     NOT NULL COMMENT '流水类型 REALIZED_PNL/COMMISSION/FUNDING_FEE/...',
+    income        DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '资金变动金额，保持交易所原始符号',
+    asset         VARCHAR(16)     NOT NULL DEFAULT '' COMMENT '资产币种',
+    info_text     VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '交易所 info 字段',
+    trade_id      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tradeId',
+    tran_id       VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tranId',
+    income_time   DATETIME(3)     NOT NULL COMMENT '交易所资金流水时间（UTC）',
+    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_income_event (user_id, exchange, tran_id, trade_id, income_type, income_time, symbol, asset),
+    KEY idx_income_user_time (user_id, income_time),
+    KEY idx_income_user_type_time (user_id, income_type, income_time),
+    CONSTRAINT fk_income_history_user FOREIGN KEY (user_id) REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易所 income history 资金流水';
+
+ALTER TABLE income_history
+    ADD INDEX idx_income_user_time (user_id, income_time),
+    ADD INDEX idx_income_user_type_time (user_id, income_type, income_time);
 
 -- positions 旧结构不再兼容。应用启动时会：
 -- 1. 备份旧表到 positions_legacy_backup

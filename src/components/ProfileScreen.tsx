@@ -11,7 +11,7 @@ interface Stats {
   total_commission_by_asset: Array<{ asset: string; total: number }>
 }
 
-interface DailyPnl { date: string; pnl: number; account_balance: number | null; commission: number; trades: number; win_rate: number }
+interface DailyPnl { date: string; pnl: number; net_pnl: number; account_balance: number | null; commission: number; trades: number; win_rate: number }
 
 type DailyChartTab = 'pnl' | 'equity'
 
@@ -20,6 +20,7 @@ interface DailyLeaderboardEntry {
   username: string
   date: string
   pnl: number
+  net_pnl: number
   account_balance: number | null
   trades: number
   win_rate: number
@@ -30,6 +31,7 @@ interface AllTimeLeaderboardEntry {
   rank: number
   username: string
   pnl: number
+  net_pnl: number
   trades: number
   win_rate: number
   commission: number
@@ -94,6 +96,7 @@ function buildDailyLeaderboardRows(
       username: currentUsername!.trim(),
       date: leaderboard[0]?.date ?? getTodayUtcDateString(),
       pnl: 0,
+      net_pnl: 0,
       account_balance: typeof currentBalance === 'number' && !Number.isNaN(currentBalance) ? currentBalance : null,
       trades: 0,
       win_rate: 0,
@@ -122,7 +125,7 @@ function buildEquitySeries(daily: DailyPnl[], currentBalance: number | null | un
 
   for (let index = daily.length - 1; index >= 0; index -= 1) {
     const entry = daily[index]
-    const netProfit = getNetProfit(entry.pnl, entry.commission)
+    const netProfit = entry.net_pnl
     const storedBalance = typeof entry.account_balance === 'number' && !Number.isNaN(entry.account_balance)
       ? entry.account_balance
       : null
@@ -168,7 +171,7 @@ export function ProfileScreen() {
     load()
   }, [allTimeRange])
 
-  const maxPnl = Math.max(...daily.map(d => Math.abs(d.pnl)), 1)
+  const maxPnl = Math.max(...daily.map(d => Math.abs(d.net_pnl)), 1)
   const hasSingleDay = daily.length === 1
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
   const equitySeries = buildEquitySeries(daily, stats?.account_balance)
@@ -232,18 +235,18 @@ export function ProfileScreen() {
                 </div>
                 <div className={`flex h-40 items-end gap-3 ${hasSingleDay ? 'justify-center' : 'justify-between'}`}>
                   {daily.map((d) => {
-                    const barHeight = Math.max(10, Math.round((Math.abs(d.pnl) / maxPnl) * 88))
-                    const isUp = d.pnl >= 0
+                    const barHeight = Math.max(10, Math.round((Math.abs(d.net_pnl) / maxPnl) * 88))
+                    const isUp = d.net_pnl >= 0
                     const barStyle = { height: `${barHeight}px` }
 
                     return (
                       <div
                         key={d.date}
                         className={`flex flex-col items-center gap-2 ${hasSingleDay ? 'w-[120px]' : 'min-w-[56px] max-w-[92px] flex-1'}`}
-                        title={`${d.date}: ${d.pnl.toFixed(2)}`}
+                        title={`${d.date}: ${d.net_pnl.toFixed(2)}`}
                       >
                         <div className={`text-[11px] font-mono ${isUp ? 'text-buy' : 'text-sell'}`}>
-                          {formatSignedAmount(d.pnl, 2)}
+                          {formatSignedAmount(d.net_pnl, 2)}
                         </div>
                         <div className="flex h-28 w-full items-end justify-center px-3">
                           <div
@@ -291,8 +294,8 @@ export function ProfileScreen() {
                       <span className={`text-right font-mono tabular-nums ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
                         {formatSignedAmount(entry.pnl, 2)}
                       </span>
-                      <span className={`text-right font-mono tabular-nums ${getNetProfit(entry.pnl, entry.commission) >= 0 ? 'text-buy' : 'text-sell'}`}>
-                        {formatSignedAmount(getNetProfit(entry.pnl, entry.commission), 2)}
+                      <span className={`text-right font-mono tabular-nums ${entry.net_pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(entry.net_pnl, 2)}
                       </span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
@@ -349,8 +352,8 @@ export function ProfileScreen() {
                       <span className={`text-right font-mono tabular-nums ${entry.pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
                         {formatSignedAmount(entry.pnl, 2)}
                       </span>
-                      <span className={`text-right font-mono tabular-nums ${getNetProfit(entry.pnl, entry.commission) >= 0 ? 'text-buy' : 'text-sell'}`}>
-                        {formatSignedAmount(getNetProfit(entry.pnl, entry.commission), 2)}
+                      <span className={`text-right font-mono tabular-nums ${entry.net_pnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                        {formatSignedAmount(entry.net_pnl, 2)}
                       </span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>

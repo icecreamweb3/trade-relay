@@ -38,6 +38,14 @@ def _safe_datetime(value) -> datetime | None:
     return None
 
 
+def _resolve_history_created_at(order_row: dict) -> datetime | None:
+    return (
+        _safe_datetime(order_row.get("filled_at"))
+        or _safe_datetime(order_row.get("updated_at"))
+        or _safe_datetime(order_row.get("created_at"))
+    )
+
+
 def _order_close_price(order_row: dict) -> float:
     close_price = _safe_float(order_row.get("avg_price"))
     if close_price > 0:
@@ -129,6 +137,7 @@ def _create_missing_position_history_from_close_order(
         position_id=int(order_row["position_id"]) if order_row.get("position_id") else None,
         close_order_id=int(order_row["id"]) if order_row.get("id") else None,
         position_mode=str(order_row.get("position_mode") or "UNKNOWN").upper(),
+        created_at=_resolve_history_created_at(order_row),
     )
     logger.info(
         "[ORDER_FLOW] phase=position_history_backfilled_from_close_order order_id=%s exchange_order_id=%s user_id=%s symbol=%s side=%s qty=%s entry=%s close=%s",

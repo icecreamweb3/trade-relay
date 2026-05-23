@@ -2366,6 +2366,7 @@ def test_sync_position_history_from_filled_close_order_creates_missing_history_r
     assert created_rows[0]["commission_asset"] == "USDC"
     assert created_rows[0]["position_id"] == 9
     assert created_rows[0]["close_order_id"] == 63
+    assert str(created_rows[0]["created_at"]) == "2026-05-16 17:58:51"
 
 
 def test_sync_position_history_from_filled_close_order_prefers_close_order_id_match(monkeypatch):

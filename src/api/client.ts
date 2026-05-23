@@ -202,6 +202,7 @@ interface ApiProfileStats {
 interface ApiDailyPnl {
   date: string
   pnl: number
+  net_pnl: number
   account_balance: number | null
   commission: number
   trades: number
@@ -213,6 +214,7 @@ interface ApiDailyLeaderboardEntry {
   username: string
   date: string
   pnl: number
+  net_pnl: number
   account_balance: number | null
   trades: number
   win_rate: number
@@ -223,6 +225,7 @@ interface ApiAllTimeLeaderboardEntry {
   rank: number
   username: string
   pnl: number
+  net_pnl: number
   trades: number
   win_rate: number
   commission: number

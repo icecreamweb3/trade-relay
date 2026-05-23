@@ -25,6 +25,7 @@ class ProfileStats(BaseModel):
 class DailyPnl(BaseModel):
     date: str
     pnl: float
+    net_pnl: float
     account_balance: float | None
     commission: float
     trades: int
@@ -36,6 +37,7 @@ class DailyLeaderboardEntry(BaseModel):
     username: str
     date: str
     pnl: float
+    net_pnl: float
     account_balance: float | None
     trades: int
     win_rate: float
@@ -46,6 +48,7 @@ class AllTimeLeaderboardEntry(BaseModel):
     rank: int
     username: str
     pnl: float
+    net_pnl: float
     trades: int
     win_rate: float
     commission: float
@@ -85,6 +88,7 @@ def _build_daily_leaderboard_rows() -> list[dict]:
                 "username": username,
                 "date": leaderboard_date,
                 "pnl": 0,
+                "net_pnl": 0,
                 "account_balance": float(account_balance_raw) if account_balance_raw is not None else None,
                 "trades": 0,
                 "win_rate": 0,
@@ -114,6 +118,7 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
         DailyPnl(
             date=str(r["date"]),
             pnl=round(float(r.get("pnl") or 0), 4),
+            net_pnl=round(float(r.get("net_pnl") or ((r.get("pnl") or 0) - (r.get("commission") or 0))), 4),
             account_balance=round(float(r.get("account_balance")), 4) if r.get("account_balance") is not None else None,
             commission=round(float(r.get("commission") or 0), 4),
             trades=int(r.get("trades") or 0),
@@ -127,6 +132,7 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
             username=str(row.get("username") or "-"),
             date=str(row.get("date")),
             pnl=round(float(row.get("pnl") or 0), 4),
+            net_pnl=round(float(row.get("net_pnl") or ((row.get("pnl") or 0) - (row.get("commission") or 0))), 4),
             account_balance=round(float(row.get("account_balance")), 4) if row.get("account_balance") is not None else None,
             trades=int(row.get("trades") or 0),
             win_rate=round(float(row.get("win_rate") or 0), 2),
@@ -134,17 +140,31 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
         )
         for index, row in enumerate(leaderboard_rows)
     ]
-    all_time_leaderboard = [
-        AllTimeLeaderboardEntry(
-            rank=index + 1,
-            username=str(row.get("username") or "-"),
-            pnl=round(float(row.get("pnl") or 0), 4),
-            trades=int(row.get("trades") or 0),
-            win_rate=round(float(row.get("win_rate") or 0), 2),
-            commission=round(float(row.get("commission") or 0), 4),
+    all_time_leaderboard = []
+    for index, row in enumerate(all_time_leaderboard_rows):
+        pnl = round(float(row.get("pnl") or 0), 4)
+        commission = round(float(row.get("commission") or 0), 4)
+        net_pnl = round(float(row.get("net_pnl") or (pnl - commission)), 4)
+
+        if all_time_days is None:
+            leaderboard_user_id = int(row.get("user_id") or 0)
+            if leaderboard_user_id > 0:
+                current_balance = db_module.get_profile_current_balance(leaderboard_user_id)
+                initial_balance = db_module.get_profile_initial_balance(leaderboard_user_id)
+                if current_balance is not None and initial_balance is not None:
+                    net_pnl = round(current_balance - initial_balance, 4)
+
+        all_time_leaderboard.append(
+            AllTimeLeaderboardEntry(
+                rank=index + 1,
+                username=str(row.get("username") or "-"),
+                pnl=pnl,
+                net_pnl=net_pnl,
+                trades=int(row.get("trades") or 0),
+                win_rate=round(float(row.get("win_rate") or 0), 2),
+                commission=commission,
+            )
         )
-        for index, row in enumerate(all_time_leaderboard_rows)
-    ]
 
     total_pnl = sum(float(row.get("pnl") or 0) for row in rows)
     total_trades = sum(int(row.get("trades") or 0) for row in rows)

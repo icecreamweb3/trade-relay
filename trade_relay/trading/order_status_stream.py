@@ -830,6 +830,7 @@ class UserOrderStatusStream:
                 position_id=position_id,
                 close_order_id=int(order_row["id"]) if order_row and order_row.get("id") else None,
                 position_mode=position_mode,
+                created_at=(order_row or {}).get("filled_at") or (order_row or {}).get("updated_at") or (order_row or {}).get("created_at"),
             )
             logger.info(
                 "position_history (poll) created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "
@@ -1027,6 +1028,7 @@ class UserOrderStatusStream:
                 position_id=position_id,
                 close_order_id=int(db_order["id"]) if db_order and db_order.get("id") else None,
                 position_mode=str(db_order.get("position_mode") or _derive_position_mode_from_position_side(order.get("ps") or order.get("positionSide"))).upper(),
+                created_at=(db_order or {}).get("filled_at") or order.get("T"),
             )
             logger.info(
                 "position_history created: id=%s position_id=%s user=%s symbol=%s side=%s qty=%s "

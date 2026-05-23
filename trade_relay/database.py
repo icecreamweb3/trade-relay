@@ -17,6 +17,7 @@ Tables:
 import base64
 import logging
 import os
+from decimal import Decimal
 from queue import Empty, Full, Queue
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
@@ -41,6 +42,8 @@ _MYSQL_SESSION_UTC_SQL = "SET time_zone = '+00:00'"
 
 _PYMYSQL_SOCKET_PATCH_LOCK = RLock()
 _MYSQL_PROXY_SCHEME_NAMES = frozenset({"socks5", "socks5h", "socks4", "socks4a", "http", "https"})
+
+_INCOME_HISTORY_CORE_TYPES = frozenset({"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"})
 
 _DB_LOG_REDACT_KEYS = frozenset({
     "password_hash",
@@ -1378,6 +1381,39 @@ def init_db() -> None:
                     UNIQUE KEY uk_user_symbol (user_id, symbol)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账户快照缓存（后台定时同步）'
             """)
+
+            # ── income_history（交易所资金流水）────────────────────────
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS income_history (
+                    id            BIGINT          NOT NULL AUTO_INCREMENT,
+                    user_id       BIGINT          NOT NULL COMMENT '用户ID（关联 users.id）',
+                    username      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '用户名',
+                    exchange      VARCHAR(32)     NOT NULL DEFAULT 'binance' COMMENT '交易所',
+                    symbol        VARCHAR(32)     NOT NULL DEFAULT '' COMMENT '交易对',
+                    income_type   VARCHAR(32)     NOT NULL COMMENT '流水类型 REALIZED_PNL/COMMISSION/FUNDING_FEE/...',
+                    income        DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '资金变动金额，保持交易所原始符号',
+                    asset         VARCHAR(16)     NOT NULL DEFAULT '' COMMENT '资产币种',
+                    info_text     VARCHAR(128)    NOT NULL DEFAULT '' COMMENT '交易所 info 字段',
+                    trade_id      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tradeId',
+                    tran_id       VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '交易所 tranId',
+                    income_time   DATETIME(3)     NOT NULL COMMENT '交易所资金流水时间（UTC）',
+                    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_income_event (user_id, exchange, tran_id, trade_id, income_type, income_time, symbol, asset),
+                    KEY idx_income_user_time (user_id, income_time),
+                    KEY idx_income_user_type_time (user_id, income_type, income_time),
+                    CONSTRAINT fk_income_history_user FOREIGN KEY (user_id) REFERENCES users (id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易所 income history 资金流水'
+            """)
+            for _index_ddl in [
+                "ALTER TABLE income_history ADD INDEX idx_income_user_time (user_id, income_time)",
+                "ALTER TABLE income_history ADD INDEX idx_income_user_type_time (user_id, income_type, income_time)",
+            ]:
+                try:
+                    cur.execute(_index_ddl)
+                except Exception:
+                    pass
             # ── 迁移：若旧表仍使用 username 列，自动切换为 user_id ──────────
             cur.execute("SHOW COLUMNS FROM account_summary LIKE 'username'")
             if cur.fetchone():
@@ -1486,6 +1522,203 @@ def get_account_summary_from_db(user_id: int, symbol: Optional[str]) -> Optional
             return row
     finally:
         conn.close()
+
+
+# ──────────────────────────────────────────────
+# income_history CRUD / 对账
+# ──────────────────────────────────────────────
+
+_INCOME_HISTORY_COLUMNS = (
+    "user_id",
+    "username",
+    "exchange",
+    "symbol",
+    "income_type",
+    "income",
+    "asset",
+    "info_text",
+    "trade_id",
+    "tran_id",
+    "income_time",
+)
+
+
+def _normalize_income_history_row(user_id: int, username: str, income_row: dict, *, exchange: str = "binance") -> dict:
+    income_time = _coerce_utc_naive_datetime(income_row.get("time"))
+    if user_id <= 0:
+        raise ValueError("user_id must be positive")
+    if income_time is None:
+        raise ValueError("income row is missing a valid time")
+
+    normalized_income_type = str(income_row.get("incomeType") or "").strip().upper()
+    if not normalized_income_type:
+        raise ValueError("income row is missing incomeType")
+
+    return {
+        "user_id": user_id,
+        "username": str(username or "").strip(),
+        "exchange": str(exchange or "binance").strip() or "binance",
+        "symbol": str(income_row.get("symbol") or "").strip().upper(),
+        "income_type": normalized_income_type,
+        "income": str(income_row.get("income") or "0").strip() or "0",
+        "asset": str(income_row.get("asset") or "").strip().upper(),
+        "info_text": str(income_row.get("info") or "").strip(),
+        "trade_id": str(income_row.get("tradeId") or "").strip(),
+        "tran_id": str(income_row.get("tranId") or "").strip(),
+        "income_time": income_time,
+    }
+
+
+def upsert_income_history_entry(user_id: int, username: str, income_row: dict, *, exchange: str = "binance") -> int:
+    row = _normalize_income_history_row(user_id, username, income_row, exchange=exchange)
+    _log_db_write("upsert", "income_history", row)
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO income_history ({', '.join(_INCOME_HISTORY_COLUMNS)})
+                VALUES ({', '.join(['%s'] * len(_INCOME_HISTORY_COLUMNS))})
+                ON DUPLICATE KEY UPDATE
+                    username = VALUES(username),
+                    income = VALUES(income),
+                    info_text = VALUES(info_text),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                [row[column] for column in _INCOME_HISTORY_COLUMNS],
+            )
+        conn.commit()
+        _log_db_write_result("upsert", "income_history", user_id=user_id, income_type=row["income_type"], tran_id=row["tran_id"], affected_rows=1)
+        return 1
+    finally:
+        conn.close()
+
+
+def upsert_income_history_entries(user_id: int, username: str, income_rows: list[dict], *, exchange: str = "binance") -> int:
+    written = 0
+    for income_row in income_rows:
+        written += upsert_income_history_entry(user_id, username, income_row, exchange=exchange)
+    return written
+
+
+def get_income_history_totals(user_id: int) -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       SUM(COALESCE(income, 0)) AS total_income,
+                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS realized_pnl,
+                       SUM(CASE WHEN income_type = 'COMMISSION' THEN COALESCE(income, 0) ELSE 0 END) AS commission,
+                       SUM(CASE WHEN income_type = 'FUNDING_FEE' THEN COALESCE(income, 0) ELSE 0 END) AS funding_fee,
+                       SUM(CASE WHEN income_type NOT IN ('REALIZED_PNL', 'COMMISSION', 'FUNDING_FEE') THEN COALESCE(income, 0) ELSE 0 END) AS other_income
+                FROM income_history
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            return cur.fetchone() or {}
+    finally:
+        conn.close()
+
+
+def get_filled_order_totals(user_id: int) -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT SUM(CASE WHEN status = 'FILLED' AND UPPER(COALESCE(trade_direction, '')) = 'CLOSE' THEN 1 ELSE 0 END) AS close_count,
+                       SUM(CASE WHEN status = 'FILLED' THEN COALESCE(realized_pnl, 0) ELSE 0 END) AS pnl,
+                       SUM(CASE WHEN status = 'FILLED' THEN COALESCE(commission, 0) ELSE 0 END) AS commission
+                FROM orders
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            return cur.fetchone() or {}
+    finally:
+        conn.close()
+
+
+def get_position_history_trade_totals(user_id: int) -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(DISTINCT COALESCE(NULLIF(position_id, 0), -id)) AS trade_count,
+                       SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                       SUM(COALESCE(commission, 0)) AS commission
+                FROM position_history
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            return cur.fetchone() or {}
+    finally:
+        conn.close()
+
+
+def _decimal_or_zero(value) -> Decimal:
+    return Decimal(str(value or 0))
+
+
+def _decimal_or_none(value) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value))
+
+
+def get_income_reconciliation_summary(user_id: int) -> dict:
+    income_totals = get_income_history_totals(user_id)
+    order_totals = get_filled_order_totals(user_id)
+    position_totals = get_position_history_trade_totals(user_id)
+
+    initial_balance = _decimal_or_none(get_profile_initial_balance(user_id))
+    current_balance = _decimal_or_none(get_profile_current_balance(user_id))
+    balance_net = None if initial_balance is None or current_balance is None else current_balance - initial_balance
+
+    income_total = _decimal_or_zero(income_totals.get("total_income"))
+    income_realized_pnl = _decimal_or_zero(income_totals.get("realized_pnl"))
+    income_commission = _decimal_or_zero(income_totals.get("commission"))
+    income_funding_fee = _decimal_or_zero(income_totals.get("funding_fee"))
+    income_other = _decimal_or_zero(income_totals.get("other_income"))
+    order_pnl = _decimal_or_zero(order_totals.get("pnl"))
+    order_commission = _decimal_or_zero(order_totals.get("commission"))
+    position_pnl = _decimal_or_zero(position_totals.get("pnl"))
+    position_commission = _decimal_or_zero(position_totals.get("commission"))
+
+    unexplained_gap = None if balance_net is None else balance_net - income_total
+    income_vs_order_realized_gap = income_realized_pnl - order_pnl
+    income_vs_order_commission_gap = abs(income_commission) - order_commission
+    income_vs_order_net_gap = income_total - (order_pnl - order_commission)
+
+    return {
+        "initial_balance": float(initial_balance) if initial_balance is not None else None,
+        "current_balance": float(current_balance) if current_balance is not None else None,
+        "balance_net": float(balance_net) if balance_net is not None else None,
+        "income_row_count": int(income_totals.get("row_count") or 0),
+        "income_total": float(income_total),
+        "income_realized_pnl": float(income_realized_pnl),
+        "income_commission": float(income_commission),
+        "income_commission_cost": float(abs(income_commission)),
+        "income_funding_fee": float(income_funding_fee),
+        "income_other": float(income_other),
+        "order_close_count": int(order_totals.get("close_count") or 0),
+        "order_pnl": float(order_pnl),
+        "order_commission": float(order_commission),
+        "order_net": float(order_pnl - order_commission),
+        "income_vs_order_realized_gap": float(income_vs_order_realized_gap),
+        "income_vs_order_commission_gap": float(income_vs_order_commission_gap),
+        "income_vs_order_net_gap": float(income_vs_order_net_gap),
+        "position_trade_count": int(position_totals.get("trade_count") or 0),
+        "position_pnl": float(position_pnl),
+        "position_commission": float(position_commission),
+        "position_net": float(position_pnl - position_commission),
+        "unexplained_gap": float(unexplained_gap) if unexplained_gap is not None else None,
+    }
 
 
 def get_all_active_users_with_api_keys() -> list[dict]:
@@ -2647,49 +2880,68 @@ def get_user_filled_order_markers(
 
 
 def get_daily_pnl(user_id: int) -> list:
-    """Return daily realized P&L for a user from grouped position_history trades.
-
-    Each row: { date: str, pnl: float, account_balance: float | None, commission: float, trades: int, win_rate: float }
-    """
+    """Return daily profile rows with monetary amounts sourced from income_history when available."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT agg.profile_date AS date,
-                       agg.pnl,
-                       dp.account_balance,
-                       agg.commission,
-                       agg.trade_count AS trades,
-                       agg.win_rate,
-                       agg.win_count
-                FROM (
-                    SELECT trade_date AS profile_date,
-                           SUM(COALESCE(trade_pnl, 0)) AS pnl,
-                           SUM(COALESCE(trade_commission, 0)) AS commission,
-                           COUNT(*) AS trade_count,
-                           SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-                           CASE
-                               WHEN COUNT(*) = 0 THEN 0
-                               ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
-                           END AS win_rate
-                    FROM (
-                    """
-                    + _position_history_trade_groups_subquery(row_where_sql="WHERE user_id = %s")
-                    + """
-                    ) trade_groups
-                    GROUP BY trade_date
-                ) agg
-                LEFT JOIN daily_profile dp
-                  ON dp.user_id = %s
-                 AND dp.profile_date = agg.profile_date
-                ORDER BY date ASC
+                SELECT profile_date AS date,
+                       pnl,
+                       account_balance,
+                       commission,
+                       trade_count AS trades,
+                       win_rate,
+                       win_count
+                FROM daily_profile
+                WHERE user_id = %s
+                ORDER BY profile_date ASC
                 """,
-                (user_id, user_id),
+                (user_id,),
             )
-            return cur.fetchall()
+            daily_profile_rows = cur.fetchall() or []
+            cur.execute(
+                """
+                SELECT DATE(income_time) AS date,
+                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS pnl,
+                      SUM(CASE WHEN income_type = 'COMMISSION' THEN ABS(COALESCE(income, 0)) ELSE 0 END) AS commission,
+                      SUM(COALESCE(income, 0)) AS net_pnl
+                FROM income_history
+                WHERE user_id = %s
+                GROUP BY DATE(income_time)
+                ORDER BY DATE(income_time) ASC
+                """,
+                (user_id,),
+            )
+            income_rows = cur.fetchall() or []
     finally:
         conn.close()
+
+    daily_profile_by_date = {_coerce_utc_date(row["date"]): row for row in daily_profile_rows}
+    income_by_date = {_coerce_utc_date(row["date"]): row for row in income_rows}
+    all_dates = sorted(set(daily_profile_by_date) | set(income_by_date))
+
+    merged_rows: list[dict] = []
+    for profile_date in all_dates:
+        daily_row = daily_profile_by_date.get(profile_date, {})
+        income_row = income_by_date.get(profile_date, {})
+        merged_rows.append(
+            {
+                "date": profile_date,
+                "pnl": income_row.get("pnl", daily_row.get("pnl") or 0),
+                "account_balance": daily_row.get("account_balance"),
+                "commission": income_row.get("commission", daily_row.get("commission") or 0),
+                "net_pnl": income_row.get(
+                    "net_pnl",
+                    (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
+                ),
+                "trades": int(daily_row.get("trades") or 0),
+                "win_rate": float(daily_row.get("win_rate") or 0),
+                "win_count": int(daily_row.get("win_count") or 0),
+            }
+        )
+
+    return merged_rows
 
 
 def get_daily_profile_leaderboard(
@@ -2697,50 +2949,78 @@ def get_daily_profile_leaderboard(
     limit: int = 10,
 ) -> list:
     leaderboard_date = profile_date or _utc_now_naive().date()
-    start_at, end_at = _get_profile_day_bounds(leaderboard_date)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT agg.username,
-                       agg.profile_date AS date,
-                       agg.pnl,
-                       agg.trade_count AS trades,
-                       agg.win_rate,
-                       agg.commission,
-                       dp.account_balance
-                FROM (
-                    SELECT user_id,
-                           COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                                                     trade_date AS profile_date,
-                                                     SUM(COALESCE(trade_pnl, 0)) AS pnl,
-                           COUNT(*) AS trade_count,
-                           CASE
-                               WHEN COUNT(*) = 0 THEN 0
-                                                             ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
-                           END AS win_rate,
-                                                     SUM(COALESCE(trade_commission, 0)) AS commission
-                                        FROM (
-                                        """
-                                        + _position_history_trade_groups_subquery()
-                                        + """
-                                        ) trade_groups
-                                        WHERE trade_date >= %s
-                                            AND trade_date < %s
-                                        GROUP BY user_id, trade_date
-                ) agg
-                LEFT JOIN daily_profile dp
-                  ON dp.user_id = agg.user_id
-                 AND dp.profile_date = agg.profile_date
-                ORDER BY agg.pnl DESC, agg.win_rate DESC, agg.trade_count DESC, agg.username ASC
-                LIMIT %s
+                SELECT user_id,
+                       username,
+                       profile_date AS date,
+                       pnl,
+                       account_balance,
+                       trade_count AS trades,
+                       win_rate,
+                       win_count,
+                       commission
+                FROM daily_profile
+                WHERE profile_date = %s
                 """,
-                (start_at, end_at, limit),
+                (leaderboard_date,),
             )
-            return cur.fetchall()
+            daily_profile_rows = cur.fetchall() or []
+            cur.execute(
+                """
+                SELECT user_id,
+                       COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+                       DATE(income_time) AS date,
+                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS pnl,
+                      SUM(CASE WHEN income_type = 'COMMISSION' THEN ABS(COALESCE(income, 0)) ELSE 0 END) AS commission,
+                      SUM(COALESCE(income, 0)) AS net_pnl
+                FROM income_history
+                WHERE DATE(income_time) = %s
+                GROUP BY user_id, DATE(income_time)
+                """,
+                (leaderboard_date,),
+            )
+            income_rows = cur.fetchall() or []
     finally:
         conn.close()
+
+    daily_profile_by_user = {int(row["user_id"]): row for row in daily_profile_rows}
+    income_by_user = {int(row["user_id"]): row for row in income_rows}
+    user_ids = set(daily_profile_by_user) | set(income_by_user)
+
+    merged_rows = []
+    for ranked_user_id in user_ids:
+        daily_row = daily_profile_by_user.get(ranked_user_id, {})
+        income_row = income_by_user.get(ranked_user_id, {})
+        merged_rows.append(
+            {
+                "user_id": ranked_user_id,
+                "username": str(income_row.get("username") or daily_row.get("username") or ""),
+                "date": leaderboard_date,
+                "pnl": income_row.get("pnl", daily_row.get("pnl") or 0),
+                "trades": int(daily_row.get("trades") or 0),
+                "win_rate": float(daily_row.get("win_rate") or 0),
+                "commission": income_row.get("commission", daily_row.get("commission") or 0),
+                "net_pnl": income_row.get(
+                    "net_pnl",
+                    (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
+                ),
+                "account_balance": daily_row.get("account_balance"),
+            }
+        )
+
+    merged_rows.sort(
+        key=lambda row: (
+            -float(row.get("pnl") or 0),
+            -float(row.get("win_rate") or 0),
+            -int(row.get("trades") or 0),
+            str(row.get("username") or ""),
+        )
+    )
+    return merged_rows[:limit]
 
 
 def get_all_time_profile_leaderboard(limit: int = 20) -> list:
@@ -2752,54 +3032,112 @@ def get_all_time_profile_leaderboard_for_days(
     limit: int = 20,
     days: Optional[int] = None,
 ) -> list:
-    params: list[object] = []
-    where_sql = ""
+    start_date: date | None = None
     if days is not None and days > 0:
         start_date = _utc_now_naive().date() - timedelta(days=days - 1)
-        where_sql = "WHERE created_at >= %s"
-        params.append(datetime.combine(start_date, time.min))
 
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
+            daily_profile_sql = [
                 """
-                SELECT COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                      SUM(COALESCE(trade_pnl, 0)) AS pnl,
-                       COUNT(*) AS trades,
+                SELECT user_id,
+                       COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+                       SUM(COALESCE(pnl, 0)) AS pnl,
+                       SUM(COALESCE(trade_count, 0)) AS trades,
+                       SUM(COALESCE(win_count, 0)) AS win_count,
                        CASE
-                           WHEN COUNT(*) = 0 THEN 0
-                           ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                           WHEN SUM(COALESCE(trade_count, 0)) = 0 THEN 0
+                           ELSE SUM(COALESCE(win_count, 0)) / SUM(COALESCE(trade_count, 0)) * 100
                        END AS win_rate,
-                       SUM(COALESCE(trade_commission, 0)) AS commission
-                FROM (
+                       SUM(COALESCE(commission, 0)) AS commission
+                FROM daily_profile
+                WHERE 1 = 1
                 """
-                + _position_history_trade_groups_subquery()
-                + """
-                ) trade_groups
+            ]
+            daily_profile_params: list[object] = []
+            income_sql = [
                 """
-                + ("WHERE trade_date >= %s" if where_sql else "")
-                + """
-                GROUP BY user_id
-                ORDER BY pnl DESC, win_rate DESC, trades DESC, username ASC
-                LIMIT %s
-                """,
-                [*params, limit],
-            )
-            return cur.fetchall()
+                SELECT user_id,
+                       COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS pnl,
+                       SUM(CASE WHEN income_type = 'COMMISSION' THEN ABS(COALESCE(income, 0)) ELSE 0 END) AS commission
+                FROM income_history
+                WHERE 1 = 1
+                """
+            ]
+            income_params: list[object] = []
+            if start_date is not None:
+                daily_profile_sql.append("AND profile_date >= %s")
+                daily_profile_params.append(start_date)
+                income_sql.append("AND DATE(income_time) >= %s")
+                income_params.append(start_date)
+
+            daily_profile_sql.append("GROUP BY user_id")
+            income_sql.append("GROUP BY user_id")
+
+            cur.execute("\n".join(daily_profile_sql), daily_profile_params)
+            daily_profile_rows = cur.fetchall() or []
+            cur.execute("\n".join(income_sql), income_params)
+            income_rows = cur.fetchall() or []
     finally:
         conn.close()
+
+    daily_profile_by_user = {int(row["user_id"]): row for row in daily_profile_rows}
+    income_by_user = {int(row["user_id"]): row for row in income_rows}
+    user_ids = set(daily_profile_by_user) | set(income_by_user)
+
+    merged_rows = []
+    for ranked_user_id in user_ids:
+        daily_row = daily_profile_by_user.get(ranked_user_id, {})
+        income_row = income_by_user.get(ranked_user_id, {})
+        merged_rows.append(
+            {
+                "user_id": ranked_user_id,
+                "username": str(income_row.get("username") or daily_row.get("username") or ""),
+                "pnl": income_row.get("pnl", daily_row.get("pnl") or 0),
+                "trades": int(daily_row.get("trades") or 0),
+                "win_rate": float(daily_row.get("win_rate") or 0),
+                "commission": income_row.get("commission", daily_row.get("commission") or 0),
+            }
+        )
+
+    merged_rows.sort(
+        key=lambda row: (
+            -float(row.get("pnl") or 0),
+            -float(row.get("win_rate") or 0),
+            -int(row.get("trades") or 0),
+            str(row.get("username") or ""),
+        )
+    )
+    return merged_rows[:limit]
 
 
 def get_total_commission_by_asset(user_id: int) -> list:
     """Return total commission grouped by commission_asset for a user.
 
     Each row: { asset: str, total: float }
-    Data is aggregated from filled orders to preserve existing totals for historical rows.
+    Prefer income_history because it is the exchange-level source of truth.
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(TRIM(asset), ''), 'UNKNOWN') AS asset,
+                       SUM(ABS(COALESCE(income, 0))) AS total
+                FROM income_history
+                WHERE user_id = %s
+                  AND income_type = 'COMMISSION'
+                GROUP BY COALESCE(NULLIF(TRIM(asset), ''), 'UNKNOWN')
+                ORDER BY asset ASC
+                """,
+                (user_id,),
+            )
+            income_rows = cur.fetchall() or []
+            if income_rows:
+                return income_rows
+
             cur.execute(
                 """
                 SELECT COALESCE(NULLIF(TRIM(commission_asset), ''), 'UNKNOWN') AS asset,
@@ -2816,6 +3154,59 @@ def get_total_commission_by_asset(user_id: int) -> list:
             return cur.fetchall()
     finally:
         conn.close()
+
+
+def get_profile_initial_balance(user_id: int) -> float | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT account_balance, pnl, commission
+                FROM daily_profile
+                WHERE user_id = %s
+                  AND account_balance IS NOT NULL
+                ORDER BY profile_date ASC, id ASC
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone() or {}
+    finally:
+        conn.close()
+
+    account_balance = row.get("account_balance")
+    if account_balance is None:
+        return None
+    return float(account_balance or 0) - float(row.get("pnl") or 0) + float(row.get("commission") or 0)
+
+
+def get_profile_current_balance(user_id: int) -> float | None:
+    summary = get_account_summary_from_db(user_id, None) or {}
+    wallet_balance = summary.get("wallet_balance")
+    if wallet_balance is not None:
+        return float(wallet_balance)
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT account_balance
+                FROM daily_profile
+                WHERE user_id = %s
+                  AND account_balance IS NOT NULL
+                ORDER BY profile_date DESC, id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone() or {}
+    finally:
+        conn.close()
+
+    account_balance = row.get("account_balance")
+    return float(account_balance) if account_balance is not None else None
 
 
 # ──────────────────────────────────────────────
@@ -3113,9 +3504,10 @@ def add_position_history(
     position_id: Optional[int] = None,
     close_order_id: Optional[int] = None,
     position_mode: str = "UNKNOWN",
+    created_at: Optional[datetime] = None,
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
-    created_at = _utc_now_naive()
+    normalized_created_at = _coerce_utc_naive_datetime(created_at) or _utc_now_naive()
     _log_db_write(
         "insert",
         "position_history",
@@ -3133,7 +3525,7 @@ def add_position_history(
             "commission_asset": commission_asset,
             "position_id": position_id,
             "close_order_id": close_order_id,
-            "created_at": created_at,
+            "created_at": normalized_created_at,
         },
     )
     conn = get_connection()
@@ -3157,11 +3549,11 @@ def add_position_history(
                     commission_asset,
                     position_id,
                     close_order_id,
-                    created_at,
-                    created_at,
+                    normalized_created_at,
+                    normalized_created_at,
                 ),
             )
-            _refresh_daily_profile_for_user_date(cur, user_id, username, created_at.date())
+            _refresh_daily_profile_for_user_date(cur, user_id, username, normalized_created_at.date())
             conn.commit()
             _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
             return cur.lastrowid
