@@ -817,6 +817,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
+            KEY idx_positions_user (user_id),
             UNIQUE KEY uk_position_open (user_id, exchange, symbol, position_side, open_position_slot),
             CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -861,6 +862,8 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         "WHEN UPPER(COALESCE(status, 'OPEN')) = 'OPEN' AND ABS(COALESCE(quantity, 0)) > 0 THEN 1 "
         "ELSE NULL END"
     )
+    if not _index_exists(cur, "positions", "idx_positions_user"):
+        cur.execute("ALTER TABLE positions ADD KEY idx_positions_user (user_id)")
     if _index_exists(cur, "positions", "uk_position"):
         cur.execute("ALTER TABLE positions DROP INDEX uk_position")
     if not _index_exists(cur, "positions", "uk_position_open"):
