@@ -84,6 +84,7 @@ export function PositionsPanel({
   const { baseAsset: activeBaseAsset, quoteAsset: activeQuoteAsset } = splitTradingSymbol(activeSymbol)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
+  const expireSession = useAuthStore((state) => state.expireSession)
   const showToast = useToastStore((state) => state.showToast)
   const [tab, setTab] = useState<Tab>('positions')
   const [positions, setPositions] = useState<Position[]>([])
@@ -210,7 +211,11 @@ export function PositionsPanel({
 
     const connect = async () => {
       const token = await window.electronAPI?.getToken?.()
-      if (!alive || !token) return
+      if (!alive) return
+      if (!token) {
+        expireSession()
+        return
+      }
 
       const wsUrl = new URL(getBackendWebSocketUrl('/api/positions/ws'))
       wsUrl.searchParams.set('token', token)
@@ -269,7 +274,7 @@ export function PositionsPanel({
       if (reconnectTimer) clearTimeout(reconnectTimer)
       socket?.close()
     }
-  }, [isActive, isAuthenticated])
+  }, [expireSession, isActive, isAuthenticated])
 
   const handleCancelOrder = async (o: Order) => {
     if (!o.exchange_order_id) return

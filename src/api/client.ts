@@ -1,5 +1,6 @@
 // Trade Relay API client — all calls go to FastAPI backend on port 8000
 import axios from 'axios'
+import { useAuthStore } from '../store/authStore'
 import { perf } from '../utils/perf'
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
@@ -267,6 +268,12 @@ function makeBackendError(status: number, body: unknown) {
   }
 }
 
+function getErrorStatus(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null
+  const response = (error as { response?: { status?: number } }).response
+  return typeof response?.status === 'number' ? response.status : null
+}
+
 async function request<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
@@ -283,30 +290,37 @@ async function request<T>(
   const perfSpan = perfActive ? perf.spanStart(`api ${perfLabel}`) : null
 
   const execute = async (): Promise<T> => {
-    let result: T
-    if (window.electronAPI?.backendRequest) {
-      const res = await window.electronAPI.backendRequest(method, path, {
-        body: options.body,
-        query: options.params,
-      })
-      if (res.status >= 200 && res.status < 300) {
-        result = res.body as T
+    try {
+      let result: T
+      if (window.electronAPI?.backendRequest) {
+        const res = await window.electronAPI.backendRequest(method, path, {
+          body: options.body,
+          query: options.params,
+        })
+        if (res.status >= 200 && res.status < 300) {
+          result = res.body as T
+        } else {
+          throw makeBackendError(res.status, res.body)
+        }
       } else {
-        throw makeBackendError(res.status, res.body)
+        const token = await getToken()
+        const res = await axios.request<T>({
+          method,
+          url: `${getBackendBaseUrl()}${path}`,
+          data: options.body,
+          params: options.params,
+          headers: getHeaders(token),
+        })
+        result = res.data
       }
-    } else {
-      const token = await getToken()
-      const res = await axios.request<T>({
-        method,
-        url: `${getBackendBaseUrl()}${path}`,
-        data: options.body,
-        params: options.params,
-        headers: getHeaders(token),
-      })
-      result = res.data
+      if (perfActive) perf.spanEnd(perfSpan, 'ok')
+      return result
+    } catch (error) {
+      if (getErrorStatus(error) === 401) {
+        useAuthStore.getState().expireSession()
+      }
+      throw error
     }
-    if (perfActive) perf.spanEnd(perfSpan, 'ok')
-    return result
   }
 
   const pending = execute().catch((err) => {

@@ -292,6 +292,7 @@ export function OrderFormWidget({
   const { t } = useTranslation(locale)
   const { symbol, currentPrice, markPrice } = useMarketStore()
   const { user } = useAuthStore()
+  const expireSession = useAuthStore((state) => state.expireSession)
   const { baseAsset, quoteAsset } = useMemo(() => splitTradingSymbol(symbol), [symbol])
   const isAdminAccount = user?.role === 'admin'
 
@@ -494,7 +495,11 @@ export function OrderFormWidget({
 
     const connect = async () => {
       const token = await window.electronAPI?.getToken?.()
-      if (!alive || !token) return
+      if (!alive) return
+      if (!token) {
+        expireSession()
+        return
+      }
 
       const wsUrl = new URL(getBackendWebSocketUrl('/api/positions/ws'))
       wsUrl.searchParams.set('token', token)
@@ -555,7 +560,7 @@ export function OrderFormWidget({
       if (reconnectTimer) clearTimeout(reconnectTimer)
       socket?.close()
     }
-  }, [isActive, user?.username, isAdminAccount, symbol])
+  }, [expireSession, isActive, user?.username, isAdminAccount, symbol])
 
   const baseTicker = baseAsset
 

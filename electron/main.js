@@ -128,6 +128,29 @@ function getProxyAgent(targetUrl) {
 // ── JWT token storage (in-memory + safeStorage) ──────────────────────────────
 let _tokenStore = null
 
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== 'string') return null
+  const segments = token.split('.')
+  if (segments.length < 2) return null
+
+  try {
+    const base64 = segments[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(segments[1].length / 4) * 4, '=')
+    return JSON.parse(Buffer.from(base64, 'base64').toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+function isTokenExpired(token) {
+  const payload = decodeJwtPayload(token)
+  const exp = Number(payload?.exp)
+  if (!Number.isFinite(exp) || exp <= 0) return false
+  return exp <= Math.floor(Date.now() / 1000)
+}
+
 function storeToken(token) {
   if (safeStorage.isEncryptionAvailable()) {
     try { _tokenStore = safeStorage.encryptString(token).toString('base64') } catch { _tokenStore = token }
@@ -138,10 +161,16 @@ function storeToken(token) {
 
 function getToken() {
   if (!_tokenStore) return null
+  let token = _tokenStore
   if (safeStorage.isEncryptionAvailable()) {
-    try { return safeStorage.decryptString(Buffer.from(_tokenStore, 'base64')) } catch { return _tokenStore }
+    try { token = safeStorage.decryptString(Buffer.from(_tokenStore, 'base64')) } catch { token = _tokenStore }
   }
-  return _tokenStore
+  if (isTokenExpired(token)) {
+    clearToken()
+    logger.info('[ELECTRON_AUTH] action=token phase=expired_cleared')
+    return null
+  }
+  return token
 }
 
 function clearToken() { _tokenStore = null }

@@ -111,6 +111,7 @@ def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
     access_handler = logging.StreamHandler()
     access_handler.setFormatter(access_fmt)
     access_logger.addHandler(access_handler)
+    access_logger.addHandler(file_handler)
     access_logger.propagate = False
 
     return root

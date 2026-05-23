@@ -18,6 +18,7 @@ interface AuthStore {
   login: (username: string, password: string) => Promise<boolean>
   logout: () => Promise<void>
   checkAuth: () => Promise<void>
+  expireSession: () => void
   clearError: () => void
 }
 
@@ -69,6 +70,10 @@ export const useAuthStore = create<AuthStore>((set) => ({
     } catch {
       set({ isAuthenticated: false, user: null, isLoading: false })
     }
+  },
+
+  expireSession: () => {
+    set({ isAuthenticated: false, user: null, token: null, isLoading: false })
   },
 
   clearError: () => set({ error: null }),

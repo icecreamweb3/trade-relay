@@ -28,6 +28,7 @@ function MainApp() {
 
   const { t } = useTranslation(appLocale)
   const { isAuthenticated } = useAuthStore()
+  const wasAuthenticatedRef = useRef(isAuthenticated)
   const getScreenTitle = (screen: Screen) => {
     switch (screen) {
       case 'trade': return t('nav.trade')
@@ -90,6 +91,13 @@ function MainApp() {
   // Close modal automatically after successful login
   useEffect(() => {
     if (isAuthenticated) closeLogin()
+  }, [isAuthenticated])
+
+  useEffect(() => {
+    if (wasAuthenticatedRef.current && !isAuthenticated) {
+      openLogin()
+    }
+    wasAuthenticatedRef.current = isAuthenticated
   }, [isAuthenticated])
 
   useEffect(() => {
