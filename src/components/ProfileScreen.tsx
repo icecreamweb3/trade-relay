@@ -39,9 +39,18 @@ interface AllTimeLeaderboardEntry {
 
 type AllTimeRange = 7 | 30 | null
 
+function truncateDecimal(value: number, digits = 2) {
+  const factor = 10 ** digits
+  return Math.trunc(value * factor) / factor
+}
+
+function formatTruncatedAmount(value: number, digits = 2) {
+  return truncateDecimal(value, digits).toFixed(digits)
+}
+
 function formatSignedAmount(value: number, digits = 2) {
   const sign = value > 0 ? '+' : ''
-  return `${sign}${value.toFixed(digits)}`
+  return `${sign}${formatTruncatedAmount(value, digits)}`
 }
 
 function formatChartDate(value: string) {
@@ -54,20 +63,20 @@ function formatChartDate(value: string) {
 }
 
 function formatCommissionByAsset(items: Array<{ asset: string; total: number }>) {
-  if (!items || items.length === 0) return '0.0000'
+  if (!items || items.length === 0) return '0.00'
   return items
-    .map((item) => `${item.total.toFixed(4)} ${item.asset}`)
+    .map((item) => `${formatTruncatedAmount(item.total, 2)} ${item.asset}`)
     .join(' · ')
 }
 
 function formatAccountBalance(value: number | null | undefined) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '—'
-  return `${value.toFixed(4)} ${PROFILE_ACCOUNT_ASSET}`
+  return `${formatTruncatedAmount(value, 2)} ${PROFILE_ACCOUNT_ASSET}`
 }
 
 function formatCompactBalance(value: number) {
   if (!Number.isFinite(value)) return '—'
-  return `${value.toFixed(2)} ${PROFILE_ACCOUNT_ASSET}`
+  return `${formatTruncatedAmount(value, 2)} ${PROFILE_ACCOUNT_ASSET}`
 }
 
 function getNetProfit(pnl: number, commission: number) {
@@ -243,7 +252,7 @@ export function ProfileScreen() {
                       <div
                         key={d.date}
                         className={`flex flex-col items-center gap-2 ${hasSingleDay ? 'w-[120px]' : 'min-w-[56px] max-w-[92px] flex-1'}`}
-                        title={`${d.date}: ${d.net_pnl.toFixed(2)}`}
+                        title={`${d.date}: ${formatTruncatedAmount(d.net_pnl, 2)}`}
                       >
                         <div className={`text-[11px] font-mono ${isUp ? 'text-buy' : 'text-sell'}`}>
                           {formatSignedAmount(d.net_pnl, 2)}
@@ -299,7 +308,7 @@ export function ProfileScreen() {
                       </span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
-                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.commission.toFixed(2)}</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{formatTruncatedAmount(entry.commission, 2)}</span>
                     </div>
                   ))}
                 </div>
@@ -357,7 +366,7 @@ export function ProfileScreen() {
                       </span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.trades}</span>
                       <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.win_rate.toFixed(1)}%</span>
-                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{entry.commission.toFixed(2)}</span>
+                      <span className="text-right font-mono tabular-nums text-[#c7ccd4]">{formatTruncatedAmount(entry.commission, 2)}</span>
                     </div>
                   ))}
                 </div>
@@ -487,7 +496,7 @@ function EquityCurveChart({
                 <g key={point.date}>
                   <circle cx={point.x} cy={point.y} r="4" fill={isUp ? '#0ecb81' : '#f6465d'} stroke="#171a1f" strokeWidth="2" />
                   <text x={point.x} y={point.y - 10} textAnchor="middle" className="fill-[#c7ccd4] text-[10px] font-mono">
-                    {point.balance.toFixed(2)}
+                    {formatTruncatedAmount(point.balance, 2)}
                   </text>
                   <text x={point.x} y={height - 12} textAnchor="middle" className="fill-[#8c93a1] text-[10px] font-mono">
                     {formatChartDate(point.date)}
