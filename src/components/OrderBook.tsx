@@ -44,6 +44,28 @@ const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 const BOOK_SNAPSHOT_LIMIT = 1000
 const VISIBLE_LEVEL_COUNT = 19
 const FSTREAM_COMBINED_STREAM_BASE = 'wss://fstream.binance.com/stream?streams='
+const ORDER_BOOK_DIAGNOSTIC_INTERVAL_MS = 5000
+
+interface OrderBookDiagnosticsSnapshot {
+  symbol: string
+  receivedEvents: number
+  bufferedEvents: number
+  appliedEvents: number
+  staleEvents: number
+  coalescedEvents: number
+  publishCount: number
+  snapshotLoads: number
+  snapshotRetries: number
+  sequenceResyncs: number
+  maxBufferedEvents: number
+  maxCoalescedEventsPerFrame: number
+  maxPublishDelayMs: number
+}
+
+function logOrderBookDiagnostics(message: string, extra: Record<string, unknown>) {
+  console.info(`[ORDERBOOK_DIAG] ${message}`, extra)
+  window.electronAPI?.logToMain?.('info', `[ORDERBOOK_DIAG] ${message}`, extra)
+}
 
 function splitTradingSymbol(symbol: string) {
   const upperSymbol = symbol.toUpperCase()
@@ -145,7 +167,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
   const locale = useUiPreferencesStore((state) => state.locale)
   const orderBookDepthMode = useUiPreferencesStore((state) => state.orderBookDepthMode)
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, setCurrentPrice } = useMarketStore()
+  const { symbol, currentPrice } = useMarketStore()
   const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
   const [spreadStep, setSpreadStep] = useState<number>(SPREAD_OPTIONS[0].step)
   const [isSpreadMenuOpen, setIsSpreadMenuOpen] = useState(false)
@@ -175,8 +197,27 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     let lastAppliedUpdateId = 0
     let snapshotLoaded = false
     let snapshotRequestId = 0
+    let publishFrameId: number | null = null
+    let diagnosticsTimer: number | null = null
+    let pendingPublishEvents = 0
+    let firstPendingPublishAt = 0
     const asksBook = new Map<string, string>()
     const bidsBook = new Map<string, string>()
+    const diagnostics: OrderBookDiagnosticsSnapshot = {
+      symbol,
+      receivedEvents: 0,
+      bufferedEvents: 0,
+      appliedEvents: 0,
+      staleEvents: 0,
+      coalescedEvents: 0,
+      publishCount: 0,
+      snapshotLoads: 0,
+      snapshotRetries: 0,
+      sequenceResyncs: 0,
+      maxBufferedEvents: 0,
+      maxCoalescedEventsPerFrame: 0,
+      maxPublishDelayMs: 0,
+    }
 
     const clearRetryTimer = () => {
       if (retryTimer != null) {
@@ -185,10 +226,62 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       }
     }
 
+    const clearPublishFrame = () => {
+      if (publishFrameId != null) {
+        window.cancelAnimationFrame(publishFrameId)
+        publishFrameId = null
+      }
+    }
+
+    const clearDiagnosticsTimer = () => {
+      if (diagnosticsTimer != null) {
+        window.clearInterval(diagnosticsTimer)
+        diagnosticsTimer = null
+      }
+    }
+
+    const flushDiagnostics = (reason: 'interval' | 'cleanup') => {
+      logOrderBookDiagnostics('summary', {
+        reason,
+        symbol: diagnostics.symbol,
+        receivedEvents: diagnostics.receivedEvents,
+        bufferedEvents: diagnostics.bufferedEvents,
+        appliedEvents: diagnostics.appliedEvents,
+        staleEvents: diagnostics.staleEvents,
+        coalescedEvents: diagnostics.coalescedEvents,
+        publishCount: diagnostics.publishCount,
+        snapshotLoads: diagnostics.snapshotLoads,
+        snapshotRetries: diagnostics.snapshotRetries,
+        sequenceResyncs: diagnostics.sequenceResyncs,
+        maxBufferedEvents: diagnostics.maxBufferedEvents,
+        maxCoalescedEventsPerFrame: diagnostics.maxCoalescedEventsPerFrame,
+        maxPublishDelayMs: diagnostics.maxPublishDelayMs,
+      })
+      diagnostics.receivedEvents = 0
+      diagnostics.bufferedEvents = 0
+      diagnostics.appliedEvents = 0
+      diagnostics.staleEvents = 0
+      diagnostics.coalescedEvents = 0
+      diagnostics.publishCount = 0
+      diagnostics.snapshotLoads = 0
+      diagnostics.snapshotRetries = 0
+      diagnostics.sequenceResyncs = 0
+      diagnostics.maxBufferedEvents = 0
+      diagnostics.maxCoalescedEventsPerFrame = 0
+      diagnostics.maxPublishDelayMs = 0
+    }
+
     const scheduleSnapshotRetry = () => {
       if (!alive || retryTimer != null) {
         return
       }
+      diagnostics.snapshotRetries += 1
+      logOrderBookDiagnostics('snapshot retry scheduled', {
+        symbol,
+        retryInMs: 1000,
+        lastAppliedUpdateId,
+        bufferedEvents: bufferedEvents.length,
+      })
       retryTimer = window.setTimeout(() => {
         retryTimer = null
         if (alive) {
@@ -202,16 +295,43 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       const nextBids = sortBook(bidsBook, 'bid')
       setRawAsks(nextAsks)
       setRawBids(nextBids)
+      diagnostics.publishCount += 1
+      diagnostics.maxCoalescedEventsPerFrame = Math.max(diagnostics.maxCoalescedEventsPerFrame, pendingPublishEvents)
+      if (firstPendingPublishAt > 0) {
+        diagnostics.maxPublishDelayMs = Math.max(
+          diagnostics.maxPublishDelayMs,
+          Math.round(performance.now() - firstPendingPublishAt),
+        )
+      }
+      pendingPublishEvents = 0
+      firstPendingPublishAt = 0
+      publishFrameId = null
+
+      if (!alive) {
+        return
+      }
 
       const bestAsk = nextAsks.length > 0 ? parseFloat(nextAsks[0][0]) : null
       const bestBid = nextBids.length > 0 ? parseFloat(nextBids[0][0]) : null
-      if (bestAsk != null && bestBid != null) {
-        setCurrentPrice(symbol, (bestAsk + bestBid) / 2)
+      if (bestAsk == null || bestBid == null) {
+        return
       }
+    }
+
+    const schedulePublishOrderBook = () => {
+      if (!alive || publishFrameId != null) {
+        diagnostics.coalescedEvents += 1
+        return
+      }
+      if (pendingPublishEvents === 0) {
+        firstPendingPublishAt = performance.now()
+      }
+      publishFrameId = window.requestAnimationFrame(publishOrderBook)
     }
 
     const applyDepthEvent = (event: DepthEvent): boolean => {
       if (event.u <= lastAppliedUpdateId) {
+        diagnostics.staleEvents += 1
         return true
       }
 
@@ -219,13 +339,24 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       const bridgesExpectedRange = event.U <= expectedNextUpdateId && event.u >= expectedNextUpdateId
       const followsPreviousEvent = event.pu == null || event.pu === lastAppliedUpdateId
       if (!bridgesExpectedRange && !followsPreviousEvent) {
+        diagnostics.sequenceResyncs += 1
+        logOrderBookDiagnostics('sequence gap detected', {
+          symbol,
+          expectedNextUpdateId,
+          eventStartUpdateId: event.U,
+          eventEndUpdateId: event.u,
+          previousUpdateId: lastAppliedUpdateId,
+          previousFinalUpdateId: event.pu ?? null,
+        })
         return false
       }
 
       applyBookUpdates(bidsBook, event.b)
       applyBookUpdates(asksBook, event.a)
       lastAppliedUpdateId = event.u
-      publishOrderBook()
+      diagnostics.appliedEvents += 1
+      pendingPublishEvents += 1
+      schedulePublishOrderBook()
       return true
     }
 
@@ -234,6 +365,8 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       snapshotLoaded = false
       lastAppliedUpdateId = 0
       bufferedEvents = []
+      pendingPublishEvents = 0
+      firstPendingPublishAt = 0
       clearRetryTimer()
 
       try {
@@ -242,16 +375,21 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           return
         }
 
+        diagnostics.snapshotLoads += 1
+
         asksBook.clear()
         bidsBook.clear()
         applyBookUpdates(bidsBook, snapshot.bids)
         applyBookUpdates(asksBook, snapshot.asks)
         lastAppliedUpdateId = snapshot.lastUpdateId ?? 0
+        clearPublishFrame()
         publishOrderBook()
 
         const pendingEvents = bufferedEvents
           .filter((event) => event.u > lastAppliedUpdateId)
           .sort((left, right) => left.U - right.U)
+
+        diagnostics.maxBufferedEvents = Math.max(diagnostics.maxBufferedEvents, pendingEvents.length)
 
         const startIndex = pendingEvents.length === 0
           ? 0
@@ -289,6 +427,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           return
         }
         try {
+          diagnostics.receivedEvents += 1
           const payload = JSON.parse(event.data) as DepthEvent | { data?: DepthEvent }
           const data = (typeof payload === 'object' && payload !== null && 'data' in payload
             ? payload.data
@@ -298,6 +437,8 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           }
           if (!snapshotLoaded) {
             bufferedEvents.push(data)
+            diagnostics.bufferedEvents += 1
+            diagnostics.maxBufferedEvents = Math.max(diagnostics.maxBufferedEvents, bufferedEvents.length)
             return
           }
           if (!applyDepthEvent(data)) {
@@ -325,13 +466,17 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     }
 
     connect()
+    diagnosticsTimer = window.setInterval(() => flushDiagnostics('interval'), ORDER_BOOK_DIAGNOSTIC_INTERVAL_MS)
 
     return () => {
       alive = false
       clearRetryTimer()
+      clearPublishFrame()
+      clearDiagnosticsTimer()
+      flushDiagnostics('cleanup')
       ws?.close()
     }
-  }, [symbol, setCurrentPrice])
+  }, [symbol])
 
   const asks = [...buildLevels(rawAsks, 'ask', spreadStep)].reverse()
   const bids = buildLevels(rawBids, 'bid', spreadStep)
