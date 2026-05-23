@@ -790,6 +790,10 @@ def _table_exists(cur: pymysql.cursors.Cursor, table_name: str) -> bool:
     cur.execute("SHOW TABLES LIKE %s", (table_name,))
     return cur.fetchone() is not None
 
+def _index_exists(cur: pymysql.cursors.Cursor, table_name: str, index_name: str) -> bool:
+    cur.execute(f"SHOW INDEX FROM {table_name}")
+    return any(str(row.get("Key_name") or "") == index_name for row in cur.fetchall())
+
 
 def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
     cur.execute("""
@@ -802,6 +806,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
             position_mode   VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
             status          VARCHAR(8)      NOT NULL DEFAULT 'OPEN' COMMENT '持仓状态 OPEN/CLOSE',
+            open_position_slot TINYINT      DEFAULT 1 COMMENT '仅当前打开仓位参与唯一约束；关闭后置空以保留历史记录',
             quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
             avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
             liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
@@ -812,7 +817,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
-            UNIQUE KEY uk_position (user_id, exchange, symbol, position_side),
+            UNIQUE KEY uk_position_open (user_id, exchange, symbol, position_side, open_position_slot),
             CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """)
@@ -845,8 +850,27 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             "ELSE 'CLOSE' END"
         )
         existing_columns.add("status")
+    if "open_position_slot" not in existing_columns:
+        cur.execute(
+            "ALTER TABLE positions ADD COLUMN open_position_slot TINYINT DEFAULT 1 "
+            "COMMENT '仅当前打开仓位参与唯一约束；关闭后置空以保留历史记录' AFTER status"
+        )
+        existing_columns.add("open_position_slot")
+    cur.execute(
+        "UPDATE positions SET open_position_slot = CASE "
+        "WHEN UPPER(COALESCE(status, 'OPEN')) = 'OPEN' AND ABS(COALESCE(quantity, 0)) > 0 THEN 1 "
+        "ELSE NULL END"
+    )
+    if _index_exists(cur, "positions", "uk_position"):
+        cur.execute("ALTER TABLE positions DROP INDEX uk_position")
+    if not _index_exists(cur, "positions", "uk_position_open"):
+        cur.execute(
+            "ALTER TABLE positions ADD UNIQUE KEY uk_position_open "
+            "(user_id, exchange, symbol, position_side, open_position_slot)"
+        )
+
     required_columns = {
-        "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode", "status",
+        "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode", "status", "open_position_slot",
         "quantity", "avg_entry_price", "liquidation_price", "unrealized_pnl", "realized_pnl",
         "leverage", "margin_type", "updated_at",
     }
@@ -914,13 +938,14 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             margin_type = "CROSS"
 
         updated_at = row.get("updated_at") or row.get("created_at") or row.get("opened_at") or _utc_now_naive()
+        is_open = abs(float(row.get("quantity") or 0)) > 0
 
         cur.execute(
             """INSERT INTO positions
-               (id, user_id, username, exchange, symbol, position_side, position_mode, status,
+               (id, user_id, username, exchange, symbol, position_side, position_mode, status, open_position_slot,
                 quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                 leverage, margin_type, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 legacy_position_id,
                 owner_info["user_id"],
@@ -929,7 +954,8 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
                 row.get("symbol"),
                 position_side,
                 "SINGLE" if position_side == "BOTH" else "DUAL",
-                "OPEN" if abs(float(row.get("quantity") or 0)) > 0 else "CLOSE",
+                "OPEN" if is_open else "CLOSE",
+                1 if is_open else None,
                 row.get("quantity") or 0,
                 row.get("avg_entry_price") if "avg_entry_price" in row else row.get("entry_price"),
                 row.get("liquidation_price"),
@@ -1154,12 +1180,14 @@ def init_db() -> None:
                     commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
                     commission_asset VARCHAR(16)  DEFAULT NULL COMMENT '手续费币种',
                     position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
+                    close_order_id BIGINT         DEFAULT NULL COMMENT '关联实际平仓订单ID（对应 orders.id）',
                     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                     updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                     PRIMARY KEY (id),
                     KEY idx_user_id (user_id),
                     KEY idx_username (username),
                     KEY idx_symbol (symbol),
+                    KEY idx_close_order_id (close_order_id),
                     KEY idx_created_at (created_at DESC)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史'
             """)
@@ -1184,12 +1212,17 @@ def init_db() -> None:
                 ("position_mode", "ALTER TABLE position_history ADD COLUMN position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER side"),
                 ("commission_asset", "ALTER TABLE position_history ADD COLUMN commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission"),
                 ("position_id", "ALTER TABLE position_history ADD COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission"),
+                ("close_order_id", "ALTER TABLE position_history ADD COLUMN close_order_id BIGINT DEFAULT NULL COMMENT '关联实际平仓订单ID（对应 orders.id）' AFTER position_id"),
                 ("updated_at",  "ALTER TABLE position_history ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at"),
             ]:
                 try:
                     cur.execute(_ddl)
                 except Exception:
                     pass  # column already exists
+            try:
+                cur.execute("ALTER TABLE position_history ADD INDEX idx_close_order_id (close_order_id)")
+            except Exception:
+                pass
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_profile (
@@ -2787,12 +2820,14 @@ def upsert_position(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO positions
-                   (user_id, username, exchange, symbol, position_side, position_mode, status,
+                   (user_id, username, exchange, symbol, position_side, position_mode, status, open_position_slot,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
+                       username        = VALUES(username),
                        status          = VALUES(status),
+                       open_position_slot = VALUES(open_position_slot),
                        quantity        = VALUES(quantity),
                        avg_entry_price = VALUES(avg_entry_price),
                        liquidation_price = VALUES(liquidation_price),
@@ -2804,7 +2839,7 @@ def upsert_position(
                        updated_at      = CURRENT_TIMESTAMP""",
                 (
                     user_id, username, exchange, symbol, position_side, position_mode,
-                    status,
+                    status, 1 if str(status or "").strip().upper() == "OPEN" else None,
                     quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
                     leverage, margin_type,
                 ),
@@ -2881,12 +2916,14 @@ def close_position(
             cur.execute(
                 """UPDATE positions
                    SET status = 'CLOSE',
+                       open_position_slot = NULL,
                        quantity = 0,
                        liquidation_price = NULL,
                        unrealized_pnl = 0,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE user_id = %s AND exchange = %s
-                     AND symbol = %s AND position_side = %s""",
+                     AND symbol = %s AND position_side = %s
+                     AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'""",
                 (user_id, exchange, symbol, position_side),
             )
             conn.commit()
@@ -3030,6 +3067,7 @@ def add_position_history(
     commission: float = 0.0,
     commission_asset: Optional[str] = None,
     position_id: Optional[int] = None,
+    close_order_id: Optional[int] = None,
     position_mode: str = "UNKNOWN",
 ) -> int:
     """插入一条持仓历史记录，返回新行 id。"""
@@ -3050,6 +3088,7 @@ def add_position_history(
             "commission": commission,
             "commission_asset": commission_asset,
             "position_id": position_id,
+            "close_order_id": close_order_id,
             "created_at": created_at,
         },
     )
@@ -3058,8 +3097,8 @@ def add_position_history(
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO position_history
-                         (user_id, username, symbol, side, position_mode, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                         (user_id, username, symbol, side, position_mode, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, close_order_id, created_at, updated_at)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     user_id,
                     username,
@@ -3073,6 +3112,7 @@ def add_position_history(
                     commission,
                     commission_asset,
                     position_id,
+                    close_order_id,
                     created_at,
                     created_at,
                 ),
@@ -3166,17 +3206,26 @@ def get_order_by_id(order_id: int) -> Optional[dict]:
         conn.close()
 
 
-def get_position(user_id: int, symbol: str, position_side: str, exchange: str = "binance") -> Optional[dict]:
-    """按 user_id + symbol + position_side 查询单条持仓，失败返回 None。"""
+def get_position(
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    exchange: str = "binance",
+    status: Optional[str] = "OPEN",
+) -> Optional[dict]:
+    """按 user_id + symbol + position_side 查询单条持仓，默认只返回当前 OPEN 持仓。"""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """SELECT * FROM positions
-                   WHERE user_id = %s AND exchange = %s AND symbol = %s AND position_side = %s
-                   LIMIT 1""",
-                (user_id, exchange, symbol, position_side),
-            )
+            params: list = [user_id, exchange, symbol, position_side]
+            sql = """SELECT * FROM positions
+                   WHERE user_id = %s AND exchange = %s AND symbol = %s AND position_side = %s"""
+            normalized_status = str(status or "").strip().upper()
+            if normalized_status and normalized_status != "ALL":
+                sql += " AND UPPER(COALESCE(status, 'OPEN')) = %s"
+                params.append(normalized_status)
+            sql += " ORDER BY id DESC LIMIT 1"
+            cur.execute(sql, params)
             return cur.fetchone()
     finally:
         conn.close()
@@ -3186,7 +3235,7 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
     """返回持仓历史记录。user_id=None 时返回所有用户。"""
     params: list = []
     sql = """SELECT id, user_id, username, symbol, side, position_mode, entry_price, close_price,
-                    quantity, realized_pnl, commission, commission_asset, position_id, created_at, updated_at
+                    quantity, realized_pnl, commission, commission_asset, position_id, close_order_id, created_at, updated_at
              FROM position_history"""
     if user_id is not None:
         sql += " WHERE user_id = %s"

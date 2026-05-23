@@ -127,6 +127,7 @@ def _create_missing_position_history_from_close_order(
         commission=total_commission,
         commission_asset=commission_asset,
         position_id=int(order_row["position_id"]) if order_row.get("position_id") else None,
+        close_order_id=int(order_row["id"]) if order_row.get("id") else None,
         position_mode=str(order_row.get("position_mode") or "UNKNOWN").upper(),
     )
     logger.info(
@@ -154,7 +155,9 @@ def _select_related_position_history_rows(order_row: dict, total_qty: float) -> 
         return []
 
     requested_position_id = int(order_row["position_id"]) if order_row.get("position_id") else None
+    requested_close_order_id = int(order_row["id"]) if order_row.get("id") else None
     history_rows = db.get_position_history(user_id=user_id, limit=200)
+    close_order_rows = []
     exact_rows = []
     fallback_rows = []
     for row in history_rows:
@@ -162,6 +165,13 @@ def _select_related_position_history_rows(order_row: dict, total_qty: float) -> 
             continue
         if str(row.get("side") or "").upper() != position_side:
             continue
+        row_close_order_id = int(row["close_order_id"]) if row.get("close_order_id") else None
+        if requested_close_order_id is not None:
+            if row_close_order_id == requested_close_order_id:
+                close_order_rows.append(row)
+                continue
+            if row_close_order_id is not None and row_close_order_id != requested_close_order_id:
+                continue
         row_position_id = int(row["position_id"]) if row.get("position_id") else None
         if requested_position_id is not None:
             if row_position_id == requested_position_id:
@@ -171,7 +181,7 @@ def _select_related_position_history_rows(order_row: dict, total_qty: float) -> 
             continue
         fallback_rows.append(row)
 
-    matching_rows = exact_rows or fallback_rows
+    matching_rows = close_order_rows or exact_rows or fallback_rows
 
     if not matching_rows:
         return []

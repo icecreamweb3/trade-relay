@@ -39,6 +39,7 @@ class PositionHistoryOut(BaseModel):
     realized_pnl: float
     commission: float
     commission_asset: Optional[str] = None
+    close_order_id: Optional[int] = None
     created_at: str
     updated_at: Optional[str] = None
 
@@ -634,6 +635,7 @@ def get_position_history(user: dict = Depends(get_current_user)):
             realized_pnl=float(r["realized_pnl"]),
             commission=float(r["commission"]),
             commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
+            close_order_id=int(r["close_order_id"]) if r.get("close_order_id") is not None else None,
             created_at=serialize_utc_timestamp_required(r.get("created_at")),
             updated_at=serialize_utc_timestamp(r.get("updated_at")),
         )
@@ -657,6 +659,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         realized_pnl=body.realized_pnl,
         commission=body.commission,
         commission_asset=body.commission_asset,
+        close_order_id=body.close_order_id,
         position_mode=body.position_mode,
     )
     rows = db_module.get_position_history(user_id=user_id, limit=1)
@@ -673,6 +676,7 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         realized_pnl=float(r["realized_pnl"]),
         commission=float(r["commission"]),
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
+        close_order_id=int(r["close_order_id"]) if r.get("close_order_id") is not None else None,
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
         updated_at=serialize_utc_timestamp(r.get("updated_at")),
     )

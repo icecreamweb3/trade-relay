@@ -828,6 +828,7 @@ class UserOrderStatusStream:
                 commission=0.0,  # commission not available from poll; WS path has it
                 commission_asset=None,
                 position_id=position_id,
+                close_order_id=int(order_row["id"]) if order_row and order_row.get("id") else None,
                 position_mode=position_mode,
             )
             logger.info(
@@ -1024,6 +1025,7 @@ class UserOrderStatusStream:
                 commission=commission,
                 commission_asset=str(commission_asset) if commission_asset else None,
                 position_id=position_id,
+                close_order_id=int(db_order["id"]) if db_order and db_order.get("id") else None,
                 position_mode=str(db_order.get("position_mode") or _derive_position_mode_from_position_side(order.get("ps") or order.get("positionSide"))).upper(),
             )
             logger.info(
@@ -1150,7 +1152,7 @@ class UserOrderStatusStream:
             return
 
         user_id = int(user["id"])
-        existing_rows = db.get_positions(user_id=user_id)
+        existing_rows = db.get_positions(user_id=user_id, status="OPEN")
         existing_by_key = {
             (str(row.get("symbol") or ""), str(row.get("position_side") or "BOTH").upper()): row
             for row in existing_rows
@@ -1484,7 +1486,7 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
                 if sym:
                     binance_open.add((sym, side))
 
-            db_positions = db.get_positions(user_id=user_id)
+            db_positions = db.get_positions(user_id=user_id, status="OPEN")
             for pos in db_positions:
                 sym = str(pos.get("symbol") or "")
                 side = str(pos.get("position_side") or "BOTH").upper()
