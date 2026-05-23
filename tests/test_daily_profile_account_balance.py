@@ -107,7 +107,7 @@ class RebuildCursor:
         if normalized_sql.startswith("SELECT user_id, profile_date, account_balance FROM daily_profile"):
             self._fetchall_result = [{"user_id": 7, "profile_date": date(2026, 5, 19), "account_balance": 188.125}]
             self.rowcount = 1
-        elif normalized_sql.startswith("SELECT user_id,") and "AS username" in normalized_sql and "GROUP BY user_id, DATE(created_at)" in normalized_sql:
+        elif normalized_sql.startswith("SELECT user_id,") and "AS username" in normalized_sql and "GROUP BY user_id, trade_date" in normalized_sql:
             self._fetchall_result = [{"user_id": 7, "username": "alice", "profile_date": date(2026, 5, 19)}]
             self.rowcount = 1
         elif normalized_sql.startswith("DELETE FROM daily_profile"):

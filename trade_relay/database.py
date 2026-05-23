@@ -360,6 +360,23 @@ def _fetch_live_wallet_balance(username: str) -> float | None:
         return _fallback_cached_wallet_balance()
 
 
+_POSITION_HISTORY_TRADE_KEY_SQL = "COALESCE(NULLIF(position_id, 0), -id)"
+
+
+def _position_history_trade_groups_subquery(*, row_where_sql: str = "WHERE 1 = 1") -> str:
+    return f"""
+        SELECT user_id,
+               COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
+               {_POSITION_HISTORY_TRADE_KEY_SQL} AS trade_key,
+               DATE(MAX(created_at)) AS trade_date,
+               SUM(COALESCE(realized_pnl, 0)) AS trade_pnl,
+               SUM(COALESCE(commission, 0)) AS trade_commission
+        FROM position_history
+        {row_where_sql}
+        GROUP BY user_id, {_POSITION_HISTORY_TRADE_KEY_SQL}
+    """
+
+
 def _refresh_daily_profile_for_user_date(
     cur,
     user_id: int,
@@ -371,16 +388,19 @@ def _refresh_daily_profile_for_user_date(
     cur.execute(
         """
         SELECT COUNT(*) AS trade_count,
-               SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-               SUM(COALESCE(realized_pnl, 0)) AS pnl,
-               SUM(COALESCE(commission, 0)) AS commission,
+                             SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+                             SUM(COALESCE(trade_pnl, 0)) AS pnl,
+                             SUM(COALESCE(trade_commission, 0)) AS commission,
                MAX(NULLIF(TRIM(COALESCE(username, '')), '')) AS latest_username
-        FROM position_history
-        WHERE user_id = %s
-          AND created_at >= %s
-          AND created_at < %s
+                FROM (
+                """
+                + _position_history_trade_groups_subquery(row_where_sql="WHERE user_id = %s")
+                + """
+                ) trade_groups
+                WHERE trade_date >= %s
+                    AND trade_date < %s
         """,
-        (user_id, start_at, end_at),
+                (user_id, start_at.date(), end_at.date()),
     )
     row = cur.fetchone() or {}
     trade_count = int(row.get("trade_count") or 0)
@@ -464,32 +484,34 @@ def _rebuild_daily_profile_from_history(
     existing_balance_params: list[object] = []
     delete_sql = ["DELETE FROM daily_profile WHERE 1 = 1"]
     delete_params: list[object] = []
-    history_filters = ["WHERE 1 = 1"]
-    history_params: list[object] = []
+    trade_group_row_filters = ["WHERE 1 = 1"]
+    trade_group_row_params: list[object] = []
+    trade_date_filters = ["WHERE 1 = 1"]
+    trade_date_params: list[object] = []
 
     if user_id is not None:
         existing_balance_sql.append("AND user_id = %s")
         existing_balance_params.append(user_id)
         delete_sql.append("AND user_id = %s")
         delete_params.append(user_id)
-        history_filters.append("AND user_id = %s")
-        history_params.append(user_id)
+        trade_group_row_filters.append("AND user_id = %s")
+        trade_group_row_params.append(user_id)
 
     if start_date is not None:
         existing_balance_sql.append("AND profile_date >= %s")
         existing_balance_params.append(start_date)
         delete_sql.append("AND profile_date >= %s")
         delete_params.append(start_date)
-        history_filters.append("AND created_at >= %s")
-        history_params.append(datetime.combine(start_date, time.min))
+        trade_date_filters.append("AND trade_date >= %s")
+        trade_date_params.append(start_date)
 
     if end_date is not None:
         existing_balance_sql.append("AND profile_date <= %s")
         existing_balance_params.append(end_date)
         delete_sql.append("AND profile_date <= %s")
         delete_params.append(end_date)
-        history_filters.append("AND created_at < %s")
-        history_params.append(datetime.combine(end_date + timedelta(days=1), time.min))
+        trade_date_filters.append("AND trade_date <= %s")
+        trade_date_params.append(end_date)
 
     cur.execute("\n".join(existing_balance_sql), existing_balance_params)
     existing_balances = {
@@ -506,22 +528,26 @@ def _rebuild_daily_profile_from_history(
             (user_id, username, profile_date, pnl, account_balance, trade_count, win_count, win_rate, commission, updated_at)
         SELECT user_id,
                COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-               DATE(created_at) AS profile_date,
-               SUM(COALESCE(realized_pnl, 0)) AS pnl,
+               trade_date AS profile_date,
+               SUM(COALESCE(trade_pnl, 0)) AS pnl,
                NULL AS account_balance,
                COUNT(*) AS trade_count,
-               SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+               SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
                CASE
                    WHEN COUNT(*) = 0 THEN 0
-                   ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                   ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
                END AS win_rate,
-               SUM(COALESCE(commission, 0)) AS commission,
+               SUM(COALESCE(trade_commission, 0)) AS commission,
                %s AS updated_at
-        FROM position_history
+        FROM (
         """
-        + "\n".join(history_filters)
-        + "\nGROUP BY user_id, DATE(created_at)",
-        [_utc_now_naive(), *history_params],
+        + _position_history_trade_groups_subquery(row_where_sql="\n".join(trade_group_row_filters))
+        + """
+        ) trade_groups
+        """
+        + "\n".join(trade_date_filters)
+        + "\nGROUP BY user_id, trade_date",
+        [_utc_now_naive(), *trade_group_row_params, *trade_date_params],
     )
     rebuilt_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
@@ -529,12 +555,16 @@ def _rebuild_daily_profile_from_history(
         """
         SELECT user_id,
                COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-               DATE(created_at) AS profile_date
-        FROM position_history
+               trade_date AS profile_date
+        FROM (
         """
-        + "\n".join(history_filters)
-        + "\nGROUP BY user_id, DATE(created_at)",
-        history_params,
+        + _position_history_trade_groups_subquery(row_where_sql="\n".join(trade_group_row_filters))
+        + """
+        ) trade_groups
+        """
+        + "\n".join(trade_date_filters)
+        + "\nGROUP BY user_id, trade_date",
+        [*trade_group_row_params, *trade_date_params],
     )
     grouped_rows = cur.fetchall() or []
     for grouped_row in grouped_rows:
@@ -2617,7 +2647,7 @@ def get_user_filled_order_markers(
 
 
 def get_daily_pnl(user_id: int) -> list:
-    """Return daily realized P&L for a user from daily_profile.
+    """Return daily realized P&L for a user from grouped position_history trades.
 
     Each row: { date: str, pnl: float, account_balance: float | None, commission: float, trades: int, win_rate: float }
     """
@@ -2634,18 +2664,21 @@ def get_daily_pnl(user_id: int) -> list:
                        agg.win_rate,
                        agg.win_count
                 FROM (
-                    SELECT DATE(created_at) AS profile_date,
-                           SUM(COALESCE(realized_pnl, 0)) AS pnl,
-                           SUM(COALESCE(commission, 0)) AS commission,
+                    SELECT trade_date AS profile_date,
+                           SUM(COALESCE(trade_pnl, 0)) AS pnl,
+                           SUM(COALESCE(trade_commission, 0)) AS commission,
                            COUNT(*) AS trade_count,
-                           SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
+                           SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
                            CASE
                                WHEN COUNT(*) = 0 THEN 0
-                               ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                               ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
                            END AS win_rate
-                    FROM position_history
-                    WHERE user_id = %s
-                    GROUP BY DATE(created_at)
+                    FROM (
+                    """
+                    + _position_history_trade_groups_subquery(row_where_sql="WHERE user_id = %s")
+                    + """
+                    ) trade_groups
+                    GROUP BY trade_date
                 ) agg
                 LEFT JOIN daily_profile dp
                   ON dp.user_id = %s
@@ -2680,18 +2713,22 @@ def get_daily_profile_leaderboard(
                 FROM (
                     SELECT user_id,
                            COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                           DATE(created_at) AS profile_date,
-                           SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                                                     trade_date AS profile_date,
+                                                     SUM(COALESCE(trade_pnl, 0)) AS pnl,
                            COUNT(*) AS trade_count,
                            CASE
                                WHEN COUNT(*) = 0 THEN 0
-                               ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                                                             ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
                            END AS win_rate,
-                           SUM(COALESCE(commission, 0)) AS commission
-                    FROM position_history
-                    WHERE created_at >= %s
-                      AND created_at < %s
-                    GROUP BY user_id, DATE(created_at)
+                                                     SUM(COALESCE(trade_commission, 0)) AS commission
+                                        FROM (
+                                        """
+                                        + _position_history_trade_groups_subquery()
+                                        + """
+                                        ) trade_groups
+                                        WHERE trade_date >= %s
+                                            AND trade_date < %s
+                                        GROUP BY user_id, trade_date
                 ) agg
                 LEFT JOIN daily_profile dp
                   ON dp.user_id = agg.user_id
@@ -2728,16 +2765,20 @@ def get_all_time_profile_leaderboard_for_days(
             cur.execute(
                 """
                 SELECT COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                      SUM(COALESCE(realized_pnl, 0)) AS pnl,
+                      SUM(COALESCE(trade_pnl, 0)) AS pnl,
                        COUNT(*) AS trades,
                        CASE
                            WHEN COUNT(*) = 0 THEN 0
-                           ELSE SUM(CASE WHEN COALESCE(realized_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
+                           ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
                        END AS win_rate,
-                       SUM(COALESCE(commission, 0)) AS commission
-                FROM position_history
+                       SUM(COALESCE(trade_commission, 0)) AS commission
+                FROM (
                 """
-                + where_sql
+                + _position_history_trade_groups_subquery()
+                + """
+                ) trade_groups
+                """
+                + ("WHERE trade_date >= %s" if where_sql else "")
                 + """
                 GROUP BY user_id
                 ORDER BY pnl DESC, win_rate DESC, trades DESC, username ASC
