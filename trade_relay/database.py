@@ -35,6 +35,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 logger = logging.getLogger(__name__)
 
+_ACCOUNT_BALANCE_MISSING = object()
+
 _MYSQL_SESSION_UTC_SQL = "SET time_zone = '+00:00'"
 
 _PYMYSQL_SOCKET_PATCH_LOCK = RLock()
@@ -363,6 +365,7 @@ def _refresh_daily_profile_for_user_date(
     user_id: int,
     username: str,
     profile_date: date,
+    historical_account_balance=_ACCOUNT_BALANCE_MISSING,
 ) -> None:
     start_at, end_at = _get_profile_day_bounds(profile_date)
     cur.execute(
@@ -393,6 +396,8 @@ def _refresh_daily_profile_for_user_date(
     resolved_username = str(row.get("latest_username") or username or "")
     if profile_date == _utc_now_naive().date():
         account_balance = _fetch_live_wallet_balance(resolved_username)
+    elif historical_account_balance is not _ACCOUNT_BALANCE_MISSING:
+        account_balance = historical_account_balance
     else:
         cur.execute(
             "SELECT account_balance FROM daily_profile WHERE user_id = %s AND profile_date = %s LIMIT 1",
@@ -453,28 +458,44 @@ def _rebuild_daily_profile_from_history(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
 ) -> dict[str, int]:
+    existing_balance_sql = [
+        "SELECT user_id, profile_date, account_balance FROM daily_profile WHERE 1 = 1",
+    ]
+    existing_balance_params: list[object] = []
     delete_sql = ["DELETE FROM daily_profile WHERE 1 = 1"]
     delete_params: list[object] = []
     history_filters = ["WHERE 1 = 1"]
     history_params: list[object] = []
 
     if user_id is not None:
+        existing_balance_sql.append("AND user_id = %s")
+        existing_balance_params.append(user_id)
         delete_sql.append("AND user_id = %s")
         delete_params.append(user_id)
         history_filters.append("AND user_id = %s")
         history_params.append(user_id)
 
     if start_date is not None:
+        existing_balance_sql.append("AND profile_date >= %s")
+        existing_balance_params.append(start_date)
         delete_sql.append("AND profile_date >= %s")
         delete_params.append(start_date)
         history_filters.append("AND created_at >= %s")
         history_params.append(datetime.combine(start_date, time.min))
 
     if end_date is not None:
+        existing_balance_sql.append("AND profile_date <= %s")
+        existing_balance_params.append(end_date)
         delete_sql.append("AND profile_date <= %s")
         delete_params.append(end_date)
         history_filters.append("AND created_at < %s")
         history_params.append(datetime.combine(end_date + timedelta(days=1), time.min))
+
+    cur.execute("\n".join(existing_balance_sql), existing_balance_params)
+    existing_balances = {
+        (int(row["user_id"]), _coerce_utc_date(row["profile_date"])): row.get("account_balance")
+        for row in (cur.fetchall() or [])
+    }
 
     cur.execute("\n".join(delete_sql), delete_params)
     deleted_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
@@ -517,11 +538,17 @@ def _rebuild_daily_profile_from_history(
     )
     grouped_rows = cur.fetchall() or []
     for grouped_row in grouped_rows:
+        grouped_user_id = int(grouped_row["user_id"])
+        grouped_profile_date = _coerce_utc_date(grouped_row["profile_date"])
         _refresh_daily_profile_for_user_date(
             cur,
-            int(grouped_row["user_id"]),
+            grouped_user_id,
             str(grouped_row.get("username") or ""),
-            _coerce_utc_date(grouped_row["profile_date"]),
+            grouped_profile_date,
+            historical_account_balance=existing_balances.get(
+                (grouped_user_id, grouped_profile_date),
+                _ACCOUNT_BALANCE_MISSING,
+            ),
         )
 
     return {"deleted": int(deleted_rows), "rebuilt": int(rebuilt_rows)}
@@ -2665,7 +2692,7 @@ def get_all_time_profile_leaderboard_for_days(
             cur.execute(
                 """
                 SELECT COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                       SUM(COALESCE(pnl, 0)) AS pnl,
+                      SUM(COALESCE(realized_pnl, 0)) AS pnl,
                        COUNT(*) AS trades,
                        CASE
                            WHEN COUNT(*) = 0 THEN 0

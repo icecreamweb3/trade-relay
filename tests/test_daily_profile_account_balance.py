@@ -93,3 +93,59 @@ def test_refresh_historical_daily_profile_preserves_existing_account_balance(mon
         0.2,
         datetime(2026, 5, 20, 11, 30, 0),
     )
+
+
+class RebuildCursor:
+    def __init__(self):
+        self.executed: list[tuple[str, object]] = []
+        self.rowcount = 0
+        self._fetchall_result = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        normalized_sql = " ".join(sql.split())
+        if normalized_sql.startswith("SELECT user_id, profile_date, account_balance FROM daily_profile"):
+            self._fetchall_result = [{"user_id": 7, "profile_date": date(2026, 5, 19), "account_balance": 188.125}]
+            self.rowcount = 1
+        elif normalized_sql.startswith("SELECT user_id,") and "AS username" in normalized_sql and "GROUP BY user_id, DATE(created_at)" in normalized_sql:
+            self._fetchall_result = [{"user_id": 7, "username": "alice", "profile_date": date(2026, 5, 19)}]
+            self.rowcount = 1
+        elif normalized_sql.startswith("DELETE FROM daily_profile"):
+            self.rowcount = 1
+        elif normalized_sql.startswith("INSERT INTO daily_profile"):
+            self.rowcount = 1
+        else:
+            self._fetchall_result = []
+            self.rowcount = 0
+
+    def fetchall(self):
+        return list(self._fetchall_result)
+
+
+def test_rebuild_daily_profile_preserves_historical_account_balance(monkeypatch):
+    cursor = RebuildCursor()
+    refresh_calls: list[dict] = []
+
+    def fake_refresh(cur, user_id, username, profile_date, historical_account_balance=db._ACCOUNT_BALANCE_MISSING):
+        refresh_calls.append(
+            {
+                "user_id": user_id,
+                "username": username,
+                "profile_date": profile_date,
+                "historical_account_balance": historical_account_balance,
+            }
+        )
+
+    monkeypatch.setattr(db, "_refresh_daily_profile_for_user_date", fake_refresh)
+
+    result = db._rebuild_daily_profile_from_history(cursor, user_id=7)
+
+    assert result == {"deleted": 1, "rebuilt": 1}
+    assert refresh_calls == [
+        {
+            "user_id": 7,
+            "username": "alice",
+            "profile_date": date(2026, 5, 19),
+            "historical_account_balance": 188.125,
+        }
+    ]

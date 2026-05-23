@@ -173,6 +173,7 @@ def test_get_all_time_profile_leaderboard_aggregates_from_position_history(monke
     assert rows == []
     sql, params = queries[-1]
     assert "FROM position_history" in sql
+    assert "SUM(COALESCE(realized_pnl, 0)) AS pnl" in sql
     assert "GROUP BY user_id" in sql
     assert params[-1] == 20
 
