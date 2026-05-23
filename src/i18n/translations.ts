@@ -354,7 +354,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'orderbook.spread': '价差',
     'recentTrades.title': '最新成交',
     'recentTrades.kind': '类别',
-    'recentTrades.value': '成交额',
+    'recentTrades.value': '名义价值',
     'recentTrades.empty': '暂无最新成交',
     'recentTrades.filterUser': '全部用户',
 
@@ -711,7 +711,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'orderbook.spread': 'Spread',
     'recentTrades.title': 'Recent Trades',
     'recentTrades.kind': 'Kind',
-    'recentTrades.value': 'Value',
+    'recentTrades.value': 'Notional',
     'recentTrades.empty': 'No recent trades',
     'recentTrades.filterUser': 'All Users',
 

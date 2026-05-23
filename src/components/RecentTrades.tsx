@@ -30,7 +30,7 @@ function getEffectiveFillTimestamp(fill: Fill): string | undefined {
   return fill.updated_at || fill.created_at
 }
 
-const GRID_TEMPLATE = 'minmax(52px, 0.9fr) minmax(72px, 1fr) 52px 52px 58px 88px 84px 124px 148px 78px 96px'
+const GRID_TEMPLATE = 'minmax(48px, 0.85fr) minmax(68px, 0.95fr) 48px 50px 48px 80px 82px 84px 102px 98px 72px'
 
 function getTradeKind(fill: Fill, t: (key: string) => string): { label: string; className: string } {
   const orderCategory = String(fill.order_category || '').toUpperCase()
@@ -180,20 +180,20 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
         {/* Column labels */}
         <div className="sticky top-0 z-10 w-max min-w-full border-b border-[#2a2a2a] bg-[#161616]">
           <div
-            className="grid gap-x-[2px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wider whitespace-nowrap shrink-0"
+            className="grid gap-x-[1px] px-2 py-1 text-[9px] text-[#555] uppercase tracking-wide whitespace-nowrap shrink-0"
             style={{ gridTemplateColumns: GRID_TEMPLATE }}
           >
           <span className="text-left">{t('log.user')}</span>
-          <span className="pl-[5px] text-left">{t('log.symbol')}</span>
-          <span className="pl-[10px] text-left">{t('log.side')}</span>
-          <span className="pl-[15px] text-left">{t('log.qty')}</span>
-          <span className="pl-[15px] text-left">{t('log.dir')}</span>
+          <span className="pl-[4px] text-left">{t('log.symbol')}</span>
+          <span className="pl-[8px] text-left">{t('log.side')}</span>
+          <span className="pl-[10px] text-left">{t('log.qty')}</span>
+          <span className="pl-[8px] text-left">{t('log.dir')}</span>
           <span className="text-center">{t('log.price')}</span>
           <span className="text-right">{t('recentTrades.value')}</span>
           <span className="text-center">{t('pos.realizedPnl')}</span>
+          <span className="text-center">{t('log.time')}</span>
           <span className="text-center">{t('trade.commission')}</span>
           <span className="text-center">{t('recentTrades.kind')}</span>
-          <span className="text-center">{t('log.time')}</span>
           </div>
         </div>
 
@@ -220,26 +220,26 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
             return (
               <div
                 key={i}
-                className="grid w-max min-w-full gap-x-[2px] px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
+                className="grid w-max min-w-full gap-x-[1px] px-2 py-[2px] text-[10px] hover:bg-[#1e1e1e] font-mono tabular-nums"
                 style={{ gridTemplateColumns: GRID_TEMPLATE }}
               >
                 <span className="text-[#aaa] truncate pr-1">{f.username ?? '—'}</span>
-                <span className="pl-[5px] text-[#888] truncate pr-1">{f.symbol}</span>
-                <span className={`${isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'} truncate pl-[10px] text-left`}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
-                <span className="pl-[15px] text-left text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
-                <span className={`pl-[15px] text-left ${f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
+                <span className="pl-[4px] text-[#888] truncate pr-1">{f.symbol}</span>
+                <span className={`${isBuy ? 'text-[#0ecb81]' : 'text-[#f6465d]'} truncate pl-[8px] text-left`}>{f.side === 'BUY' ? t('side.buy') : t('side.sell')}</span>
+                <span className="pl-[10px] text-left text-[#aaa]">{fmtNum(f.quantity, 3)}</span>
+                <span className={`pl-[8px] text-left ${f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
                   {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </span>
                 <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
                 <span className="text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
                 <span className={`text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
-                <span className="text-center text-[#aaa]">{commissionText}</span>
+                <span className="truncate px-1 text-center text-[#aaa]" title={formatUtcTimestampToLocalString(getEffectiveFillTimestamp(f))}>{fmtTime(getEffectiveFillTimestamp(f))}</span>
+                <span className="truncate px-1 text-center text-[#aaa]" title={commissionText}>{commissionText}</span>
                 <span className="min-w-0 overflow-hidden pr-1">
                   <span className={`inline-flex w-full max-w-full min-w-0 items-center justify-center overflow-hidden text-ellipsis whitespace-nowrap rounded border px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wide ${tradeKind.className}`}>
                     {tradeKind.label}
                   </span>
                 </span>
-                <span className="text-right text-[#aaa]" title={formatUtcTimestampToLocalString(getEffectiveFillTimestamp(f))}>{fmtTime(getEffectiveFillTimestamp(f))}</span>
               </div>
             )
           })
