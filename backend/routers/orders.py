@@ -509,8 +509,9 @@ class ConditionalOrderOut(BaseModel):
     symbol: str
     side: str
     position_side: str
-    order_type: str       # TAKE_PROFIT_MARKET | STOP_MARKET
+    order_type: str       # TAKE_PROFIT_MARKET | STOP_MARKET | STOP
     quantity: float
+    price: Optional[float] = None
     trigger_price: float
     status: str
     created_at: str
@@ -653,7 +654,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     result: list[ConditionalOrderOut] = []
     seen_algo_ids: set[int] = set()
     client: FuturesBinanceClient | None = None
-    _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET"}
+    _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET", "STOP"}
     db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
     conditional_rows = [row for row in db_rows if str(row.get("order_type") or "") in _TPSL_TYPES]
     rows_by_algo_id = {
@@ -683,7 +684,17 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     local_row = rows_by_client_id.get(client_algo_id)
                 trade_direction = str(local_row.get("trade_direction") or "").upper() if local_row else None
                 order_type = str(o.get("orderType") or o.get("type") or "")
-                trigger_price = float(o.get("triggerPrice") or (local_row.get("stop_price") if local_row and str(local_row.get("order_type") or "") == "STOP_MARKET" else local_row.get("price") if local_row else 0) or 0)
+                local_order_type = str(local_row.get("order_type") or "") if local_row else ""
+                trigger_price = float(
+                    o.get("triggerPrice")
+                    or (
+                        local_row.get("stop_price")
+                        if local_row and local_order_type in {"STOP_MARKET", "STOP"}
+                        else local_row.get("price") if local_row else 0
+                    )
+                    or 0
+                )
+                limit_price = float(o.get("price") or (local_row.get("price") if local_row else 0) or 0)
                 if local_row:
                     backfill_fields = {}
                     if algo_id and not local_row.get("algo_id"):
@@ -691,10 +702,12 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     if client_algo_id and not local_row.get("algo_client_id"):
                         backfill_fields["algo_client_id"] = client_algo_id
                     if trigger_price > 0:
-                        if order_type == "STOP_MARKET" and local_row.get("stop_price") is None:
+                        if order_type in {"STOP_MARKET", "STOP"} and local_row.get("stop_price") is None:
                             backfill_fields["stop_price"] = trigger_price
                         if order_type == "TAKE_PROFIT_MARKET" and local_row.get("price") is None:
                             backfill_fields["price"] = trigger_price
+                    if order_type == "STOP" and limit_price > 0 and local_row.get("price") is None:
+                        backfill_fields["price"] = limit_price
                     if backfill_fields:
                         db_module.update_order_metadata(int(local_row["id"]), **backfill_fields)
                 seen_algo_ids.add(algo_id)
@@ -706,6 +719,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     position_side=str(o.get("positionSide") or _derive_conditional_position_side(o.get("side") or "", trade_direction)),
                     order_type=order_type,
                     quantity=float(o.get("quantity") or o.get("qty") or o.get("executedQty") or (local_row.get("quantity") if local_row else 0) or 0),
+                    price=limit_price if limit_price > 0 else None,
                     trigger_price=trigger_price,
                     status=str(o.get("algoStatus") or o.get("status") or ""),
                     created_at=serialize_utc_timestamp_required(o.get("createTime") or o.get("bookTime") or o.get("time") or (local_row.get("created_at") if local_row else None)),
@@ -728,11 +742,12 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             continue
         order_type = str(row.get("order_type") or "")
         side = str(row.get("side") or "")
-        # TP uses price as trigger; SL uses stop_price
+        # TP uses price as trigger; STOP/SL use stop_price.
         if order_type == "TAKE_PROFIT_MARKET":
             trigger = float(row["price"] or 0) if row.get("price") is not None else 0.0
         else:
             trigger = float(row["stop_price"] or 0) if row.get("stop_price") is not None else 0.0
+        limit_price = float(row["price"] or 0) if row.get("price") is not None else 0.0
 
         if trigger <= 0 and client and algo_id:
             try:
@@ -783,6 +798,8 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
             if order_type == str(row.get("order_type") or ""):
                 order_type = str(algo_detail.get("orderType") or order_type or "")
+            if limit_price <= 0:
+                limit_price = float(algo_detail.get("price") or limit_price or 0)
 
         if isinstance(algo_detail, dict) and algo_detail.get("_order_not_found"):
             db_module.update_order_status(int(row["id"]), "EXPIRED")
@@ -798,6 +815,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             position_side=position_side,
             order_type=order_type,
             quantity=float(row.get("quantity") or 0),
+            price=limit_price if limit_price > 0 else None,
             trigger_price=trigger,
             status=str(row.get("status") or "NEW"),
             created_at=serialize_utc_timestamp_required(row.get("created_at")),

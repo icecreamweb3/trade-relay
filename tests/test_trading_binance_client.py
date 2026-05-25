@@ -2718,6 +2718,60 @@ def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
     assert backfill_calls == [(42, {"algo_client_id": "client-algo-123", "stop_price": 80683.7})]
 
 
+def test_get_conditional_orders_includes_stop_limit_orders(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    db_row = {
+        "id": 52,
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "order_type": "STOP",
+        "quantity": 0.013,
+        "price": 77300.0,
+        "stop_price": 77300.0,
+        "status": "NEW",
+        "algo_id": "1000001751919185",
+        "algo_client_id": None,
+        "exchange_order_id": None,
+        "client_order_id": None,
+        "trade_direction": "CLOSE",
+        "created_at": "2026-05-25 18:54:48",
+    }
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_open_algo_orders(self):
+            return [{
+                "algoId": 1000001751919185,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "type": "STOP",
+                "quantity": "0.013",
+                "triggerPrice": "77300.0",
+                "price": "77300.0",
+                "algoStatus": "NEW",
+            }]
+
+    monkeypatch.setattr(orders_router.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row])
+    monkeypatch.setattr(orders_router.db_module, "update_order_metadata", lambda *args, **kwargs: True)
+    monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
+
+    assert len(result) == 1
+    assert result[0].order_type == "STOP"
+    assert result[0].price == 77300.0
+    assert result[0].trigger_price == 77300.0
+    assert result[0].trade_direction == "CLOSE"
+
+
 def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch):
     from backend.routers import orders as orders_router
 

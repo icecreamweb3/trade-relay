@@ -657,22 +657,20 @@ export function PositionsPanel({
                 {conditionalOrders.length === 0
                   ? <tr><td colSpan={8} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                   : conditionalOrders.map(o => {
-                    const isTp = o.order_type === 'TAKE_PROFIT_MARKET'
                     const actionLabel = formatConditionalAction(o, t)
                     const triggerOperator = getConditionalTriggerOperator(o)
-                    const isCloseOrder = (o.trade_direction ?? '').toUpperCase() === 'CLOSE'
                     return (
                       <tr key={o.algo_id}>
                         <td className="text-[#858585]">{formatTimestamp(o.created_at)}</td>
                         <td className="font-semibold">{o.symbol}<br/><span className="text-[10px] text-[#858585]">{t('order.perpetual')}</span></td>
-                        <td>{isTp ? t('type.takeProfitMarket') : t('type.stopMarket')}</td>
+                        <td>{formatOrderType(o.order_type, t)}</td>
                         <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>
                           {actionLabel}
                         </td>
                         <td className="font-mono">
                           {formatConditionalOrderSize(o, sizeUnit, activeSymbol, markPrice ?? currentPrice)}
                         </td>
-                        <td className="font-mono">{t('log.market')}</td>
+                        <td className="font-mono">{o.price != null && o.price > 0 ? o.price.toFixed(2) : t('log.market')}</td>
                         <td className="font-mono text-[11px]">
                           {t('pos.triggerConditionWithPrice', {
                             operator: triggerOperator,
@@ -1397,7 +1395,7 @@ function getConditionalTriggerOperator(order: ApiConditionalOrder) {
   if (order.order_type === 'TAKE_PROFIT_MARKET') {
     return side === 'BUY' ? '<=' : '>='
   }
-  if (order.order_type === 'STOP_MARKET') {
+  if (order.order_type === 'STOP_MARKET' || order.order_type === 'STOP') {
     return side === 'BUY' ? '>=' : '<='
   }
   return '—'

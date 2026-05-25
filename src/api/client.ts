@@ -98,6 +98,7 @@ export interface ApiConditionalOrder {
   position_side: string
   order_type: string
   quantity: number
+  price?: number | null
   trigger_price: number
   status: string
   created_at: string
