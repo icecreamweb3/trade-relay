@@ -248,15 +248,40 @@ def _fetch_current_trigger_price(user_id: int | None, username: str, symbol: str
 
 
 def _active_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
-    if user_id is not None:
-        return db_module.get_active_orders(user_id=user_id)
+    active_statuses = {"NEW", "PARTIALLY_FILLED", "PENDING", "PENDING_CANCEL"}
 
-    rows = db_module.query_orders(username=username, limit=500)
-    return [
-        row for row in rows
-        if str(row.get("order_category") or "Basic") == "Basic"
-        and str(row.get("status") or "").upper() in {"NEW", "PARTIALLY_FILLED", "PENDING", "PENDING_CANCEL"}
+    def _should_project_triggered_conditional_as_basic(row: dict) -> bool:
+        return (
+            str(row.get("order_category") or "").upper() == "CONDITIONAL"
+            and str(row.get("order_type") or "").upper() == "STOP"
+            and str(row.get("status") or "").upper() in active_statuses
+            and bool(str(row.get("exchange_order_id") or "").strip())
+        )
+
+    def _project_triggered_conditional_as_basic(row: dict) -> dict:
+        projected = dict(row)
+        projected["order_category"] = "Basic"
+        projected["order_type"] = "LIMIT"
+        projected["stop_price"] = None
+        return projected
+
+    if user_id is not None:
+        rows = db_module.get_active_orders(user_id=user_id)
+        recent_rows = db_module.query_orders(user_id=user_id, username=username, status="NEW", limit=500)
+    else:
+        recent_rows = db_module.query_orders(username=username, limit=500)
+        rows = [
+            row for row in recent_rows
+            if str(row.get("order_category") or "Basic") == "Basic"
+            and str(row.get("status") or "").upper() in active_statuses
+        ]
+
+    triggered_rows = [
+        _project_triggered_conditional_as_basic(row)
+        for row in recent_rows
+        if _should_project_triggered_conditional_as_basic(row)
     ]
+    return rows + triggered_rows
 
 
 def _conditional_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
@@ -266,6 +291,10 @@ def _conditional_order_rows_for_user(user_id: int | None, username: str) -> list
         row for row in rows
         if str(row.get("order_category") or "Basic") == "Conditional"
         and str(row.get("status") or "").upper() in active_statuses
+        and not (
+            str(row.get("order_type") or "").upper() == "STOP"
+            and str(row.get("exchange_order_id") or "").strip()
+        )
     ]
 
 

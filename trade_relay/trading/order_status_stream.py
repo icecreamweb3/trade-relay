@@ -23,6 +23,13 @@ from trade_relay.trading.tpsl_service import cancel_close_tp_sl_orders, place_tp
 logger = logging.getLogger(__name__)
 
 
+def _extract_client_order_id(order: Optional[dict]) -> str | None:
+    if not isinstance(order, dict):
+        return None
+    value = str(order.get("clientOrderId") or order.get("client_order_id") or "").strip()
+    return value or None
+
+
 def _derive_position_mode_from_position_side(raw_position_side: str | None) -> str:
     normalized = str(raw_position_side or "").upper()
     if normalized in ("LONG", "SHORT"):
@@ -587,6 +594,12 @@ class UserOrderStatusStream:
             result = None
             if actual_order_id:
                 result = self.client.get_order_status(symbol, actual_order_id)
+                actual_client_order_id = _extract_client_order_id(result)
+                if actual_client_order_id and str(row.get("client_order_id") or "").strip() != actual_client_order_id:
+                    db.update_order_metadata(int(order_id), client_order_id=actual_client_order_id)
+                    row = {**row, "client_order_id": actual_client_order_id}
+                    backfill_fields["client_order_id"] = actual_client_order_id
+                    notify_needed = True
 
             if isinstance(result, dict):
                 new_status = str(result.get("status") or "").upper()
@@ -688,6 +701,12 @@ class UserOrderStatusStream:
             backfill_fields["algo_client_id"] = client_algo_id
         if actual_order_id:
             backfill_fields["exchange_order_id"] = actual_order_id
+
+        if actual_order_id:
+            actual_order = self.client.get_order_status(str(row.get("symbol") or ""), actual_order_id)
+            actual_client_order_id = _extract_client_order_id(actual_order)
+            if actual_client_order_id:
+                backfill_fields["client_order_id"] = actual_client_order_id
 
         if backfill_fields and row.get("id"):
             db.update_order_metadata(int(row["id"]), **backfill_fields)

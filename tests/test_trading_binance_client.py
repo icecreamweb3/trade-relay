@@ -779,6 +779,7 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
             "quantity": 0.012,
         }],
     )
+    monkeypatch.setattr(order_status_stream.db, "query_orders", lambda **kwargs: [])
     monkeypatch.setattr(
         order_status_stream.db,
         "update_order_metadata",
@@ -818,13 +819,16 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
                 "status": "FILLED",
                 "executedQty": "0.012",
                 "avgPrice": "78391.7",
+                "clientOrderId": "real-order-client-1",
             }
 
     stream.client = _StubClient()
 
     stream._poll_open_orders_once()
 
-    assert metadata_updates == [(91, {"exchange_order_id": "4000001327195551"})]
+    assert metadata_updates == [
+        (91, {"exchange_order_id": "4000001327195551", "client_order_id": "real-order-client-1"}),
+    ]
     assert status_updates == [(
         "Will",
         "4000001327195551",
@@ -2663,6 +2667,53 @@ def test_order_status_stream_close_fill_updates_order_trade_fields_without_user_
     assert len(trade_sync_calls) == 1
 
 
+def test_resolve_monitored_exchange_order_id_backfills_client_order_id(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    metadata_updates = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_metadata",
+        lambda order_id, **kwargs: metadata_updates.append((order_id, kwargs)) or True,
+    )
+
+    class _StubClient:
+        def get_algo_order(self, algo_id=None, client_algo_id=None):
+            assert algo_id == 4000001326609744
+            return {
+                "algoId": 4000001326609744,
+                "actualOrderId": 4000001327195551,
+                "algoStatus": "TRIGGERED",
+            }
+
+        def get_order_status(self, symbol, order_id):
+            assert symbol == "BTCUSDC"
+            assert order_id == "4000001327195551"
+            return {
+                "status": "NEW",
+                "clientOrderId": "real-order-client-2",
+            }
+
+    stream.client = _StubClient()
+
+    resolved = stream._resolve_monitored_exchange_order_id({
+        "id": 92,
+        "symbol": "BTCUSDC",
+        "order_category": "Conditional",
+        "algo_id": "4000001326609744",
+        "algo_client_id": None,
+        "exchange_order_id": None,
+        "client_order_id": None,
+    })
+
+    assert resolved == "4000001327195551"
+    assert metadata_updates == [
+        (92, {"exchange_order_id": "4000001327195551", "client_order_id": "real-order-client-2"}),
+    ]
+
+
 def test_get_conditional_orders_merges_trade_direction_from_db(monkeypatch):
     from backend.routers import orders as orders_router
 
@@ -2770,6 +2821,101 @@ def test_get_conditional_orders_includes_stop_limit_orders(monkeypatch):
     assert result[0].price == 77300.0
     assert result[0].trigger_price == 77300.0
     assert result[0].trade_direction == "CLOSE"
+
+
+def test_get_conditional_orders_hides_triggered_stop_limit_orders(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    db_row = {
+        "id": 53,
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "order_type": "STOP",
+        "quantity": 0.001,
+        "price": 77368.0,
+        "stop_price": 77365.5,
+        "status": "NEW",
+        "algo_id": "1000001752027104",
+        "algo_client_id": "5oVx6bg338x5bioZX8QyBp",
+        "exchange_order_id": "59359101502",
+        "client_order_id": None,
+        "trade_direction": "CLOSE",
+        "created_at": "2026-05-25 19:00:00",
+        "order_category": "Conditional",
+    }
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            self.api_key = api_key
+            self.secret_key = secret_key
+            self.testnet = testnet
+
+        def get_open_algo_orders(self):
+            return [{
+                "algoId": 1000001752027104,
+                "clientAlgoId": "5oVx6bg338x5bioZX8QyBp",
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "type": "STOP",
+                "quantity": "0.001",
+                "triggerPrice": "77365.5",
+                "price": "77368.0",
+                "algoStatus": "TRIGGERED",
+            }]
+
+    monkeypatch.setattr(orders_router.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(orders_router.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(orders_router.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [db_row])
+    monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
+
+    result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
+
+    assert result == []
+
+
+def test_get_active_orders_projects_triggered_stop_limit_as_basic(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    conditional_row = {
+        "id": 397,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "order_type": "STOP",
+        "trade_direction": "CLOSE",
+        "quantity": 0.001,
+        "price": 77368.0,
+        "stop_price": 77365.5,
+        "reduce_only": False,
+        "post_only": False,
+        "order_category": "Conditional",
+        "status": "NEW",
+        "filled_qty": 0.0,
+        "avg_price": None,
+        "realized_pnl": None,
+        "commission": None,
+        "commission_asset": None,
+        "algo_id": "1000001752027104",
+        "algo_client_id": "5oVx6bg338x5bioZX8QyBp",
+        "exchange_order_id": "59359101502",
+        "error_message": None,
+        "created_at": "2026-05-25 19:00:00",
+        "updated_at": None,
+        "client_order_id": None,
+    }
+
+    monkeypatch.setattr(orders_router.db_module, "get_active_orders", lambda user_id=None: [])
+    monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [conditional_row])
+
+    result = orders_router.get_active_orders({"username": "Will", "sub": "5", "role": "user"})
+
+    assert len(result) == 1
+    assert result[0].order_category == "Basic"
+    assert result[0].order_type == "LIMIT"
+    assert result[0].price == 77368.0
+    assert result[0].stop_price is None
+    assert result[0].exchange_order_id == "59359101502"
 
 
 def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch):

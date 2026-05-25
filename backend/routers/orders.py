@@ -126,6 +126,35 @@ def _row_to_out(r: dict) -> OrderOut:
     )
 
 
+def _should_project_triggered_conditional_as_basic(row: dict) -> bool:
+    if str(row.get("order_category") or "").upper() != "CONDITIONAL":
+        return False
+    if str(row.get("order_type") or "").upper() != "STOP":
+        return False
+    if str(row.get("status") or "").upper() not in {"NEW", "PARTIALLY_FILLED", "PENDING", "PENDING_CANCEL"}:
+        return False
+    return bool(str(row.get("exchange_order_id") or "").strip())
+
+
+def _project_triggered_conditional_as_basic(row: dict) -> dict:
+    projected = dict(row)
+    projected["order_category"] = "Basic"
+    projected["order_type"] = "LIMIT"
+    projected["stop_price"] = None
+    return projected
+
+
+def _active_order_rows_with_triggered_conditionals(user_id: int | None, username: str | None = None) -> list[dict]:
+    rows = db_module.get_active_orders(user_id=user_id)
+    recent_rows = db_module.query_orders(user_id=user_id, username=username, status="NEW", limit=500)
+    triggered_rows = [
+        _project_triggered_conditional_as_basic(row)
+        for row in recent_rows
+        if _should_project_triggered_conditional_as_basic(row)
+    ]
+    return rows + triggered_rows
+
+
 def _recent_fill_to_out(r: dict) -> OrderOut:
     return OrderOut(
         id=0,
@@ -258,7 +287,7 @@ def list_order_users(user: dict = Depends(get_current_user)):
 @router.get("/active", response_model=list[OrderOut])
 def get_active_orders(user: dict = Depends(get_current_user)):
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    rows = db_module.get_active_orders(user_id=user_id)
+    rows = _active_order_rows_with_triggered_conditionals(user_id=user_id, username=user.get("username"))
     return [_row_to_out(r) for r in rows]
 
 
@@ -684,6 +713,8 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     local_row = rows_by_client_id.get(client_algo_id)
                 trade_direction = str(local_row.get("trade_direction") or "").upper() if local_row else None
                 order_type = str(o.get("orderType") or o.get("type") or "")
+                if order_type == "STOP" and local_row and str(local_row.get("exchange_order_id") or "").strip():
+                    continue
                 local_order_type = str(local_row.get("order_type") or "") if local_row else ""
                 trigger_price = float(
                     o.get("triggerPrice")
@@ -732,6 +763,8 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
 
     # 2. Merge DB-stored conditional orders when Algo Order openOrders API is unavailable.
     for row in conditional_rows:
+        if _should_project_triggered_conditional_as_basic(row):
+            continue
         exchange_id = row.get("algo_id") or row.get("exchange_order_id")
         try:
             algo_id = int(exchange_id) if exchange_id else 0
