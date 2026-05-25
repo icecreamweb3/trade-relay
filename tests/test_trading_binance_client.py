@@ -350,6 +350,7 @@ def test_submit_order_persists_requested_tp_sl_prices(monkeypatch):
     assert captured["sl_price"] == 79000.0
 
 
+
 def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
     from trade_relay.trading import order_status_stream
 
@@ -1653,6 +1654,47 @@ def test_place_order_omits_reduce_only_for_single_mode_stop_market_open(monkeypa
     assert result.success is True
     assert captured['position_side'] is None
     assert captured['reduce_only'] is False
+
+
+def test_exchange_place_conditional_order_surfaces_http_200_empty_body(monkeypatch):
+    from trade_relay.exchange.binance_client import BinanceClient
+
+    class StubResponse:
+        status_code = 200
+        content = b''
+        text = ''
+
+        def json(self):
+            raise AssertionError('json() should not be called for an empty body')
+
+    client = BinanceClient.__new__(BinanceClient)
+    client.MAX_TIMESTAMP_RETRIES = 0
+    client.MAX_RETRIES = 0
+    client.base_url = 'https://fapi.binance.com'
+    client.default_headers = {}
+    client.proxy_config = None
+    client.CONNECT_TIMEOUT = 5
+    client.READ_TIMEOUT = 10
+    client.set_timestamp_offset = lambda force=False: None
+    client.format_price_by_precision = lambda value, symbol: f'{value:.1f}'
+    client.get_position_mode = lambda: False
+    client._generate_signed_request_body = lambda params, debug=False: ('sig', 'body')
+
+    monkeypatch.setattr('requests.post', lambda *args, **kwargs: StubResponse())
+
+    result = client.place_conditional_order(
+        symbol='BTCUSDC',
+        side='SELL',
+        quantity=0.01,
+        stop_price=77000.0,
+        price=76950.0,
+        position_side=None,
+        reduce_only=True,
+    )
+
+    assert result['error'] is True
+    assert result['error_type'] == 'EmptyBody'
+    assert result['error_message'] == 'STOP order returned HTTP 200 with empty body'
 
 
 def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
@@ -2985,7 +3027,7 @@ def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):
     monkeypatch.setattr(
         positions_router.db_module,
         "get_positions",
-        lambda user_id=None: [{
+        lambda user_id=None, status=None: [{
             "id": 7,
             "symbol": "BTCUSDC",
             "position_side": "LONG",
@@ -3039,7 +3081,7 @@ def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeyp
     monkeypatch.setattr(
         positions_router.db_module,
         "get_positions",
-        lambda user_id=None: [{
+        lambda user_id=None, status=None: [{
             "id": 15,
             "symbol": "BTCUSDC",
             "position_side": "SHORT",

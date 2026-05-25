@@ -1274,10 +1274,53 @@ class BinanceClient:
                             timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
                         )
                         if resp.status_code == 200:
-                            return resp.json()
-                        body = resp.json() if resp.content else {}
+                            if not resp.content or not resp.text.strip():
+                                logger.warning(
+                                    "place_conditional_order got HTTP 200 with empty body symbol=%s side=%s type=%s",
+                                    symbol,
+                                    side,
+                                    order_type,
+                                )
+                                return {
+                                    'error': True,
+                                    'error_type': 'EmptyBody',
+                                    'error_message': f'{order_type} order returned HTTP 200 with empty body',
+                                    'symbol': symbol,
+                                    'side': side,
+                                }
+                            try:
+                                result = resp.json()
+                            except ValueError as exc:
+                                body_preview = (resp.text or '').strip()[:300]
+                                logger.warning(
+                                    "place_conditional_order got invalid JSON symbol=%s side=%s type=%s body=%r",
+                                    symbol,
+                                    side,
+                                    order_type,
+                                    body_preview,
+                                )
+                                return {
+                                    'error': True,
+                                    'error_type': type(exc).__name__,
+                                    'error_message': f'{order_type} order returned invalid JSON: {body_preview or str(exc)}',
+                                    'symbol': symbol,
+                                    'side': side,
+                                }
+                            if result is None:
+                                return {
+                                    'error': True,
+                                    'error_type': 'NoneResult',
+                                    'error_message': f'{order_type} order returned no JSON body',
+                                    'symbol': symbol,
+                                    'side': side,
+                                }
+                            return result
+                        try:
+                            body = resp.json() if resp.content else {}
+                        except ValueError:
+                            body = {}
                         code = body.get("code", resp.status_code)
-                        msg  = body.get("msg", resp.text)
+                        msg  = body.get("msg", (resp.text or '').strip() or f'HTTP {resp.status_code}')
                         # Timestamp error → retry at outer loop
                         if code in (-1021,):
                             raise Exception(f"TIMESTAMP_ERROR: {msg}")
@@ -1298,10 +1341,22 @@ class BinanceClient:
                     continue
                 logger.exception("place_conditional_order failed symbol=%s side=%s type=%s qty=%s stop=%s price=%s: %s",
                                  symbol, side, order_type, quantity, stop_price, price, exc)
-                return None
+                return {
+                    'error': True,
+                    'error_type': type(exc).__name__,
+                    'error_message': msg_str,
+                    'symbol': symbol,
+                    'side': side,
+                }
 
-        logger.error("place_conditional_order: max timestamp retries exceeded symbol=%s", symbol)
-        return None
+        logger.error("place_conditional_order: max timestamp retries exceeded symbol=%s side=%s type=%s", symbol, side, order_type)
+        return {
+            'error': True,
+            'error_type': 'MaxRetriesExceeded',
+            'error_message': f'{order_type} order failed after timestamp retries',
+            'symbol': symbol,
+            'side': side,
+        }
 
     def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None, reduce_only: bool = False) -> Optional[dict]:
         """Place a limit order
