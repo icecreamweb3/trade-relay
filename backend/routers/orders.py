@@ -145,7 +145,7 @@ def _project_triggered_conditional_as_basic(row: dict) -> dict:
 
 
 def _active_order_rows_with_triggered_conditionals(user_id: int | None, username: str | None = None) -> list[dict]:
-    rows = db_module.get_active_orders(user_id=user_id)
+    rows = list(db_module.get_active_orders(user_id=user_id))
     recent_rows = db_module.query_orders(user_id=user_id, username=username, status="NEW", limit=500)
     triggered_rows = [
         _project_triggered_conditional_as_basic(row)

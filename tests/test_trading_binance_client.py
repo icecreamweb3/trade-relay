@@ -2905,7 +2905,7 @@ def test_get_active_orders_projects_triggered_stop_limit_as_basic(monkeypatch):
         "client_order_id": None,
     }
 
-    monkeypatch.setattr(orders_router.db_module, "get_active_orders", lambda user_id=None: [])
+    monkeypatch.setattr(orders_router.db_module, "get_active_orders", lambda user_id=None: ())
     monkeypatch.setattr(orders_router.db_module, "query_orders", lambda **kwargs: [conditional_row])
 
     result = orders_router.get_active_orders({"username": "Will", "sub": "5", "role": "user"})

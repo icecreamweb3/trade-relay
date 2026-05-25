@@ -266,7 +266,7 @@ def _active_order_rows_for_user(user_id: int | None, username: str) -> list[dict
         return projected
 
     if user_id is not None:
-        rows = db_module.get_active_orders(user_id=user_id)
+        rows = list(db_module.get_active_orders(user_id=user_id))
         recent_rows = db_module.query_orders(user_id=user_id, username=username, status="NEW", limit=500)
     else:
         recent_rows = db_module.query_orders(username=username, limit=500)
