@@ -137,7 +137,7 @@ async def place_order(
                 symbol, side, position_side, quantity, stop_price, price, testnet,
             )
             response = await asyncio.to_thread(
-                client.place_conditional_order,
+                client.place_stop_limit_order,
                 symbol, side, quantity, stop_price, price, position_side, reduce_only,
             )
         elif order_type == "STOP_MARKET":

@@ -1571,7 +1571,7 @@ def test_place_order_uses_reduce_only_for_single_mode_stop_close(monkeypatch):
         def set_leverage(self, symbol, leverage):
             return None
 
-        def place_conditional_order(self, symbol, side, quantity, stop_price, price=None, position_side=None, reduce_only=False):
+        def place_stop_limit_order(self, symbol, side, quantity, stop_price, price=None, position_side=None, reduce_only=False):
             captured.update({
                 'symbol': symbol,
                 'side': side,
@@ -1605,6 +1605,57 @@ def test_place_order_uses_reduce_only_for_single_mode_stop_close(monkeypatch):
     assert result.success is True
     assert captured['position_side'] is None
     assert captured['reduce_only'] is True
+
+
+def test_exchange_place_stop_limit_order_uses_algo_endpoint(monkeypatch):
+    import requests
+    from trade_relay.exchange import binance_client as exchange_binance_client
+
+    post_calls = []
+
+    class StubSdkClient:
+        API_URL = 'https://api.binance.com/api'
+        FUTURES_URL = 'https://fapi.binance.com/fapi'
+
+        def __init__(self, api_key=None, api_secret=None, requests_params=None, testnet=False):
+            self.API_KEY = api_key
+            self.API_SECRET = api_secret
+
+    class StubResponse:
+        status_code = 200
+        text = 'ok'
+
+        def json(self):
+            return {"algoId": 8001, "type": "STOP"}
+
+    def fake_post(url, headers=None, data=None, proxies=None, timeout=None):
+        post_calls.append({"url": url, "data": data, "timeout": timeout})
+        return StubResponse()
+
+    monkeypatch.setattr(exchange_binance_client, 'BinanceClientBase', StubSdkClient)
+    monkeypatch.setattr(exchange_binance_client, 'load_env', lambda override=True: None)
+    monkeypatch.setattr(requests, 'post', fake_post)
+
+    client = exchange_binance_client.BinanceClient(api_key='key', secret_key='secret', testnet=False)
+    monkeypatch.setattr(client, 'get_position_mode', lambda: False)
+    monkeypatch.setattr(client, 'format_price_by_precision', lambda value, symbol: f'{value:.1f}')
+    monkeypatch.setattr(client, 'format_quantity_by_precision', lambda value, symbol: f'{value:.3f}')
+    monkeypatch.setattr(
+        client,
+        '_generate_signed_request_body',
+        lambda params, debug=False: ('sig', '&'.join(f"{k}={v}" for k, v in sorted(params.items())) + '&signature=sig'),
+    )
+
+    result = client.place_stop_limit_order('BTCUSDC', 'SELL', 0.013, 77300.0, 77300.0, None, True)
+
+    assert result == {"algoId": 8001, "type": "STOP"}
+    assert len(post_calls) == 1
+    assert post_calls[0]['url'].endswith('/fapi/v1/algoOrder')
+    assert 'algoType=CONDITIONAL' in post_calls[0]['data']
+    assert 'type=STOP' in post_calls[0]['data']
+    assert 'triggerPrice=77300.0' in post_calls[0]['data']
+    assert 'price=77300.0' in post_calls[0]['data']
+    assert 'reduceOnly=true' in post_calls[0]['data']
 
 
 def test_place_order_omits_reduce_only_for_single_mode_stop_market_open(monkeypatch):

@@ -1358,6 +1358,126 @@ class BinanceClient:
             'side': side,
         }
 
+    def place_stop_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        price: float,
+        position_side: str = None,
+        reduce_only: bool = False,
+    ) -> Optional[dict]:
+        """Place a trigger-limit STOP order via Binance algo order API."""
+        try:
+            position_mode = self.get_position_mode()
+
+            stop_price_str = self.format_price_by_precision(stop_price, symbol)
+            if not stop_price_str or stop_price_str.strip() == '':
+                raise ValueError(f"Formatted stop_price is empty for {symbol} (original: {stop_price})")
+
+            price_str = self.format_price_by_precision(price, symbol)
+            if not price_str or price_str.strip() == '':
+                raise ValueError(f"Formatted price is empty for {symbol} (original: {price})")
+
+            quantity_str = self.format_quantity_by_precision(quantity, symbol)
+            if not quantity_str or quantity_str.strip() == '':
+                raise ValueError(f"Formatted quantity is empty for {symbol} (original: {quantity})")
+
+            import requests
+            import time
+            from requests.exceptions import Timeout, ConnectionError, RequestException
+
+            url = f"{self.base_url}/fapi/v1/algoOrder"
+            params = {
+                'algoType': 'CONDITIONAL',
+                'symbol': symbol,
+                'side': side.upper(),
+                'type': 'STOP',
+                'quantity': quantity_str,
+                'triggerPrice': stop_price_str,
+                'price': price_str,
+                'timeInForce': 'GTC',
+                'workingType': 'CONTRACT_PRICE',
+                'timestamp': str(int(time.time() * 1000)),
+            }
+
+            if position_mode is True:
+                if position_side:
+                    params['positionSide'] = position_side
+                else:
+                    params['positionSide'] = 'SHORT' if side.upper() == 'BUY' else 'LONG'
+            else:
+                params['positionSide'] = 'BOTH'
+                if reduce_only:
+                    params['reduceOnly'] = 'true'
+
+            _, request_body = self._generate_signed_request_body(params, debug=False)
+
+            max_retries = self.MAX_RETRIES
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        url,
+                        headers=self.default_headers,
+                        data=request_body,
+                        proxies=self.proxy_config,
+                        timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result is None:
+                            return {
+                                'error': True,
+                                'error_type': 'NoneResult',
+                                'error_message': 'STOP algo order returned no JSON body',
+                                'symbol': symbol,
+                                'side': side,
+                            }
+                        return result
+
+                    error_text = response.text
+                    if response.status_code in [500, 502, 503, 504]:
+                        logger.warning(f"⚠️ 下止损限价单失败 (服务器错误, status={response.status_code}, attempt={attempt + 1}/{max_retries + 1}): {error_text}")
+                        if attempt < max_retries:
+                            time.sleep(2 ** attempt)
+                            continue
+
+                    try:
+                        error_json = response.json()
+                        error_msg = error_json.get('msg', error_text)
+                        error_code = error_json.get('code', 'UNKNOWN')
+                        raise Exception(f"APIError(code={error_code}): {error_msg}")
+                    except Exception:
+                        raise Exception(f"HTTP {response.status_code}: {error_text}")
+
+                except (Timeout, ConnectionError, RequestException) as exc:
+                    last_exception = exc
+                    logger.warning(f"⚠️ 下止损限价单失败 (网络/请求异常, attempt={attempt + 1}/{max_retries + 1}): {str(exc)}")
+                    if attempt < max_retries:
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise
+
+            if last_exception:
+                raise last_exception
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.debug(f"Failed to place stop limit order for {symbol}: [{error_type}] {error_msg}")
+            if 'params' in locals():
+                logger.debug(f"  请求参数: {params}")
+            logger.exception("下止损限价单异常详情")
+            return {
+                'error': True,
+                'error_type': error_type,
+                'error_message': error_msg,
+                'symbol': symbol,
+                'side': side,
+            }
+
     def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None, reduce_only: bool = False) -> Optional[dict]:
         """Place a limit order
         
