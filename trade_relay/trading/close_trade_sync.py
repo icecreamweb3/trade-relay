@@ -376,6 +376,28 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
         str(latest_order_row.get("status") or "FILLED"),
         **update_kwargs,
     )
+    requested_qty = abs(_safe_float(latest_order_row.get("quantity")))
+    latest_exchange_status = str(latest_order_row.get("status") or "").upper()
+    if (
+        total_qty > 0
+        and abs(requested_qty - total_qty) > 1e-12
+        and hasattr(client, "get_order_status")
+    ):
+        try:
+            status_row = client.get_order_status(symbol, exchange_order_id)
+        except Exception:
+            status_row = None
+        queried_status = str((status_row or {}).get("status") or "").upper()
+        if queried_status:
+            latest_exchange_status = queried_status
+    if (
+        trade_direction == "CLOSE"
+        and latest_exchange_status == "FILLED"
+        and bool(latest_order_row.get("reduce_only"))
+        and total_qty > 0
+        and abs(requested_qty - total_qty) > 1e-12
+    ):
+        db.update_order_metadata(int(latest_order_row["id"]), quantity=total_qty)
     db.clear_order_trade_details_sync_state(int(latest_order_row["id"]))
     if trade_direction == "CLOSE":
         sync_position_history_from_filled_close_order(

@@ -289,6 +289,7 @@ _ORDER_DATETIME_FIELDS = {
 }
 
 _ORDER_NUMERIC_FIELDS = {
+    "quantity",
     "filled_qty",
     "avg_price",
     "realized_pnl",
@@ -2489,6 +2490,7 @@ def has_pending_close_tpsl_refresh(*, user_id: int, symbol: str, position_side: 
 def update_order_metadata(order_id: int, **fields_to_update) -> bool:
     """Update selected order fields by primary key."""
     allowed_fields = {
+        "quantity",
         "price",
         "stop_price",
         "algo_id",

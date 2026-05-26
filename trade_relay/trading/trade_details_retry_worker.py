@@ -45,6 +45,18 @@ def _order_needs_trade_details_sync(order_row: dict) -> bool:
     filled_qty = abs(float(order_row.get("filled_qty") or 0.0))
     quantity_incomplete = abs(quantity - filled_qty) > _QTY_SYNC_TOLERANCE
 
+    # Some Binance CLOSE fills can settle with a final filled_qty that differs slightly
+    # from the original requested quantity. Once a CLOSE order has realized PnL and
+    # commission metadata, retrying trade-details sync will only churn updated_at.
+    close_trade_details_complete = (
+        trade_direction == "CLOSE"
+        and order_row.get("realized_pnl") is not None
+        and order_row.get("commission") is not None
+        and str(order_row.get("commission_asset") or "").strip()
+    )
+    if close_trade_details_complete:
+        quantity_incomplete = False
+
     return (
         order_row.get("commission") is None
         or not str(order_row.get("commission_asset") or "").strip()
