@@ -51,6 +51,106 @@ def test_build_profile_overview_uses_daily_profile_for_win_rate(monkeypatch):
     assert overview.all_time_days is None
 
 
+def test_get_daily_pnl_prefers_daily_profile_position_based_amounts(monkeypatch):
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return [{
+                "date": date(2026, 5, 26),
+                "pnl": 12.34,
+                "account_balance": 121.05,
+                "commission": 0.45,
+                "trades": 3,
+                "win_rate": 66.6667,
+                "win_count": 2,
+            }]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    rows = db_module.get_daily_pnl(5)
+
+    assert len(queries) == 1
+    assert rows == [{
+        "date": date(2026, 5, 26),
+        "pnl": 12.34,
+        "account_balance": 121.05,
+        "commission": 0.45,
+        "net_pnl": 11.89,
+        "trades": 3,
+        "win_rate": 66.6667,
+        "win_count": 2,
+    }]
+
+
+def test_get_daily_profile_leaderboard_prefers_daily_profile_position_based_amounts(monkeypatch):
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return [{
+                "user_id": 5,
+                "username": "Will",
+                "date": date(2026, 5, 26),
+                "pnl": 12.34,
+                "account_balance": 121.05,
+                "trades": 3,
+                "win_rate": 66.6667,
+                "win_count": 2,
+                "commission": 0.45,
+            }]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+    monkeypatch.setattr(db_module, "_utc_now_naive", lambda: date(2026, 5, 26))
+
+    rows = db_module.get_daily_profile_leaderboard(profile_date=date(2026, 5, 26))
+
+    assert len(queries) == 1
+    assert rows == [{
+        "user_id": 5,
+        "username": "Will",
+        "date": date(2026, 5, 26),
+        "pnl": 12.34,
+        "trades": 3,
+        "win_rate": 66.6667,
+        "commission": 0.45,
+        "net_pnl": 11.89,
+        "account_balance": 121.05,
+    }]
+
+
 def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypatch):
     monkeypatch.setattr(
         profile_router.db_module,

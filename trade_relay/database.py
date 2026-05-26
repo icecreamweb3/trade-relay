@@ -2880,7 +2880,7 @@ def get_user_filled_order_markers(
 
 
 def get_daily_pnl(user_id: int) -> list:
-    """Return daily profile rows with monetary amounts sourced from income_history when available."""
+    """Return daily profile rows using the position_id-based daily_profile aggregation."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -2900,41 +2900,18 @@ def get_daily_pnl(user_id: int) -> list:
                 (user_id,),
             )
             daily_profile_rows = cur.fetchall() or []
-            cur.execute(
-                """
-                SELECT DATE(income_time) AS date,
-                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS pnl,
-                      SUM(CASE WHEN income_type = 'COMMISSION' THEN ABS(COALESCE(income, 0)) ELSE 0 END) AS commission,
-                      SUM(COALESCE(income, 0)) AS net_pnl
-                FROM income_history
-                WHERE user_id = %s
-                GROUP BY DATE(income_time)
-                ORDER BY DATE(income_time) ASC
-                """,
-                (user_id,),
-            )
-            income_rows = cur.fetchall() or []
     finally:
         conn.close()
 
-    daily_profile_by_date = {_coerce_utc_date(row["date"]): row for row in daily_profile_rows}
-    income_by_date = {_coerce_utc_date(row["date"]): row for row in income_rows}
-    all_dates = sorted(set(daily_profile_by_date) | set(income_by_date))
-
     merged_rows: list[dict] = []
-    for profile_date in all_dates:
-        daily_row = daily_profile_by_date.get(profile_date, {})
-        income_row = income_by_date.get(profile_date, {})
+    for daily_row in daily_profile_rows:
         merged_rows.append(
             {
-                "date": profile_date,
-                "pnl": income_row.get("pnl", daily_row.get("pnl") or 0),
+                "date": _coerce_utc_date(daily_row["date"]),
+                "pnl": daily_row.get("pnl") or 0,
                 "account_balance": daily_row.get("account_balance"),
-                "commission": income_row.get("commission", daily_row.get("commission") or 0),
-                "net_pnl": income_row.get(
-                    "net_pnl",
-                    (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
-                ),
+                "commission": daily_row.get("commission") or 0,
+                "net_pnl": (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
                 "trades": int(daily_row.get("trades") or 0),
                 "win_rate": float(daily_row.get("win_rate") or 0),
                 "win_count": int(daily_row.get("win_count") or 0),
@@ -2969,45 +2946,21 @@ def get_daily_profile_leaderboard(
                 (leaderboard_date,),
             )
             daily_profile_rows = cur.fetchall() or []
-            cur.execute(
-                """
-                SELECT user_id,
-                       COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-                       DATE(income_time) AS date,
-                       SUM(CASE WHEN income_type = 'REALIZED_PNL' THEN COALESCE(income, 0) ELSE 0 END) AS pnl,
-                      SUM(CASE WHEN income_type = 'COMMISSION' THEN ABS(COALESCE(income, 0)) ELSE 0 END) AS commission,
-                      SUM(COALESCE(income, 0)) AS net_pnl
-                FROM income_history
-                WHERE DATE(income_time) = %s
-                GROUP BY user_id, DATE(income_time)
-                """,
-                (leaderboard_date,),
-            )
-            income_rows = cur.fetchall() or []
     finally:
         conn.close()
 
-    daily_profile_by_user = {int(row["user_id"]): row for row in daily_profile_rows}
-    income_by_user = {int(row["user_id"]): row for row in income_rows}
-    user_ids = set(daily_profile_by_user) | set(income_by_user)
-
     merged_rows = []
-    for ranked_user_id in user_ids:
-        daily_row = daily_profile_by_user.get(ranked_user_id, {})
-        income_row = income_by_user.get(ranked_user_id, {})
+    for daily_row in daily_profile_rows:
         merged_rows.append(
             {
-                "user_id": ranked_user_id,
-                "username": str(income_row.get("username") or daily_row.get("username") or ""),
+                "user_id": int(daily_row.get("user_id") or 0),
+                "username": str(daily_row.get("username") or ""),
                 "date": leaderboard_date,
-                "pnl": income_row.get("pnl", daily_row.get("pnl") or 0),
+                "pnl": daily_row.get("pnl") or 0,
                 "trades": int(daily_row.get("trades") or 0),
                 "win_rate": float(daily_row.get("win_rate") or 0),
-                "commission": income_row.get("commission", daily_row.get("commission") or 0),
-                "net_pnl": income_row.get(
-                    "net_pnl",
-                    (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
-                ),
+                "commission": daily_row.get("commission") or 0,
+                "net_pnl": (daily_row.get("pnl") or 0) - (daily_row.get("commission") or 0),
                 "account_balance": daily_row.get("account_balance"),
             }
         )
