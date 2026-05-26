@@ -3107,6 +3107,156 @@ def test_get_position_history_orders_by_latest_updated_at(monkeypatch):
     assert params == [5, 20]
 
 
+def test_update_order_status_skips_noop_update(monkeypatch):
+    from datetime import datetime
+
+    from trade_relay import database as db_module
+
+    writes = []
+
+    class _StubCursor:
+        rowcount = 0
+
+        def execute(self, sql, params):
+            writes.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        db_module,
+        "get_order_by_id",
+        lambda order_id: {
+            "id": order_id,
+            "status": "FILLED",
+            "filled_qty": 0.01,
+            "avg_price": 78000.0,
+            "filled_at": datetime(2026, 5, 26, 12, 0, 0),
+            "realized_pnl": 5.5,
+            "commission": 0.2,
+            "commission_asset": "USDC",
+        },
+    )
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    updated = db_module.update_order_status(
+        88,
+        "FILLED",
+        filled_qty=0.01,
+        avg_price=78000.0,
+        filled_at=datetime(2026, 5, 26, 12, 0, 0),
+        realized_pnl=5.5,
+        commission=0.2,
+        commission_asset="USDC",
+    )
+
+    assert updated is False
+    assert writes == []
+
+
+def test_clear_order_trade_details_sync_state_skips_noop_update(monkeypatch):
+    from trade_relay import database as db_module
+
+    writes = []
+
+    class _StubCursor:
+        rowcount = 0
+
+        def execute(self, sql, params):
+            writes.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        db_module,
+        "get_order_by_id",
+        lambda order_id: {
+            "id": order_id,
+            "trade_details_sync_attempts": 0,
+            "trade_details_sync_next_retry_at": None,
+            "trade_details_sync_last_error": None,
+        },
+    )
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    updated = db_module.clear_order_trade_details_sync_state(88)
+
+    assert updated is False
+    assert writes == []
+
+
+def test_clear_order_close_tpsl_sync_state_skips_noop_update(monkeypatch):
+    from trade_relay import database as db_module
+
+    writes = []
+
+    class _StubCursor:
+        rowcount = 0
+
+        def execute(self, sql, params):
+            writes.append((sql, params))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        db_module,
+        "get_order_by_id",
+        lambda order_id: {
+            "id": order_id,
+            "close_tpsl_sync_attempts": 0,
+            "close_tpsl_sync_next_retry_at": None,
+            "close_tpsl_sync_last_error": None,
+        },
+    )
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    updated = db_module.clear_order_close_tpsl_sync_state(88)
+
+    assert updated is False
+    assert writes == []
+
+
 def test_create_mysql_connection_sets_session_timezone_to_utc(monkeypatch):
     from trade_relay import database as db_module
 

@@ -282,6 +282,53 @@ def _coerce_utc_naive_datetime(value) -> Optional[datetime]:
     return None
 
 
+_ORDER_DATETIME_FIELDS = {
+    "filled_at",
+    "trade_details_sync_next_retry_at",
+    "close_tpsl_sync_next_retry_at",
+}
+
+_ORDER_NUMERIC_FIELDS = {
+    "filled_qty",
+    "avg_price",
+    "realized_pnl",
+    "commission",
+}
+
+
+def _normalize_order_field_value(field: str, value):
+    if field in _ORDER_DATETIME_FIELDS:
+        return _coerce_utc_naive_datetime(value)
+    if field in _ORDER_NUMERIC_FIELDS:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _order_field_value_changed(current_row: Optional[dict], field: str, new_value) -> bool:
+    if current_row is None:
+        return True
+
+    current_value = _normalize_order_field_value(field, current_row.get(field))
+    next_value = _normalize_order_field_value(field, new_value)
+
+    if isinstance(current_value, float) and isinstance(next_value, float):
+        return abs(current_value - next_value) > 1e-12
+    return current_value != next_value
+
+
+def _filter_changed_order_updates(current_row: Optional[dict], updates: list[tuple[str, object]]) -> list[tuple[str, object]]:
+    return [
+        (field, value)
+        for field, value in updates
+        if _order_field_value_changed(current_row, field, value)
+    ]
+
+
 def _get_profile_day_bounds(profile_date: date) -> tuple[datetime, datetime]:
     start_at = datetime.combine(profile_date, time.min)
     return start_at, start_at + timedelta(days=1)
@@ -2138,39 +2185,39 @@ def update_order_status(
     error_message: Optional[str] = None,
 ) -> bool:
     """更新订单状态及成交信息。"""
-    fields = ["status = %s"]
-    params: list = [status]
+    current_row = get_order_by_id(order_id)
+    if not current_row:
+        return False
+
+    updates: list[tuple[str, object]] = [("status", status)]
     if filled_qty is not None:
-        fields.append("filled_qty = %s"); params.append(filled_qty)
+        updates.append(("filled_qty", filled_qty))
     if avg_price is not None:
-        fields.append("avg_price = %s"); params.append(avg_price)
+        updates.append(("avg_price", avg_price))
     normalized_filled_at = _coerce_utc_naive_datetime(filled_at)
     if normalized_filled_at is not None:
-        fields.append("filled_at = %s"); params.append(normalized_filled_at)
+        updates.append(("filled_at", normalized_filled_at))
     if realized_pnl is not None:
-        fields.append("realized_pnl = %s"); params.append(realized_pnl)
+        updates.append(("realized_pnl", realized_pnl))
     if commission is not None:
-        fields.append("commission = %s"); params.append(commission)
+        updates.append(("commission", commission))
     if commission_asset is not None:
-        fields.append("commission_asset = %s"); params.append(commission_asset)
+        updates.append(("commission_asset", commission_asset))
     if error_message is not None:
-        fields.append("error_message = %s"); params.append(error_message)
+        updates.append(("error_message", error_message))
+
+    changed_updates = _filter_changed_order_updates(current_row, updates)
+    if not changed_updates:
+        return False
+
+    fields = [f"{field} = %s" for field, _ in changed_updates]
+    params: list = [value for _, value in changed_updates]
     params.append(order_id)
 
     _log_db_write(
         "update",
         "orders",
-        {
-            "order_id": order_id,
-            "status": status,
-            "filled_qty": filled_qty,
-            "avg_price": avg_price,
-            "filled_at": normalized_filled_at,
-            "realized_pnl": realized_pnl,
-            "commission": commission,
-            "commission_asset": commission_asset,
-            "error_message": error_message,
-        },
+        {"order_id": order_id, **dict(changed_updates)},
     )
 
     conn = get_connection()
@@ -2194,37 +2241,36 @@ def update_order_trade_details_sync_state(
     next_retry_at=...,
     last_error=...,
 ) -> bool:
-    fields = []
-    params: list = []
+    current_row = get_order_by_id(order_id)
+    if not current_row:
+        return False
+
+    updates: list[tuple[str, object]] = []
 
     if attempts is not None:
-        fields.append("trade_details_sync_attempts = %s")
-        params.append(max(0, int(attempts)))
+        updates.append(("trade_details_sync_attempts", max(0, int(attempts))))
 
     if next_retry_at is not ...:
         normalized_next_retry_at = _coerce_utc_naive_datetime(next_retry_at)
-        fields.append("trade_details_sync_next_retry_at = %s")
-        params.append(normalized_next_retry_at)
+        updates.append(("trade_details_sync_next_retry_at", normalized_next_retry_at))
     else:
         normalized_next_retry_at = None
 
     if last_error is not ...:
-        fields.append("trade_details_sync_last_error = %s")
-        params.append(last_error)
+        updates.append(("trade_details_sync_last_error", last_error))
 
-    if not fields:
+    changed_updates = _filter_changed_order_updates(current_row, updates)
+    if not changed_updates:
         return False
+
+    fields = [f"{field} = %s" for field, _ in changed_updates]
+    params: list = [value for _, value in changed_updates]
 
     params.append(order_id)
     _log_db_write(
         "update",
         "orders",
-        {
-            "order_id": order_id,
-            "trade_details_sync_attempts": attempts,
-            "trade_details_sync_next_retry_at": normalized_next_retry_at if next_retry_at is not ... else None,
-            "trade_details_sync_last_error": last_error if last_error is not ... else None,
-        },
+        {"order_id": order_id, **dict(changed_updates)},
     )
 
     conn = get_connection()
@@ -2308,37 +2354,36 @@ def update_order_close_tpsl_sync_state(
     next_retry_at=...,
     last_error=...,
 ) -> bool:
-    fields = []
-    params: list = []
+    current_row = get_order_by_id(order_id)
+    if not current_row:
+        return False
+
+    updates: list[tuple[str, object]] = []
 
     if attempts is not None:
-        fields.append("close_tpsl_sync_attempts = %s")
-        params.append(max(0, int(attempts)))
+        updates.append(("close_tpsl_sync_attempts", max(0, int(attempts))))
 
     if next_retry_at is not ...:
         normalized_next_retry_at = _coerce_utc_naive_datetime(next_retry_at)
-        fields.append("close_tpsl_sync_next_retry_at = %s")
-        params.append(normalized_next_retry_at)
+        updates.append(("close_tpsl_sync_next_retry_at", normalized_next_retry_at))
     else:
         normalized_next_retry_at = None
 
     if last_error is not ...:
-        fields.append("close_tpsl_sync_last_error = %s")
-        params.append(last_error)
+        updates.append(("close_tpsl_sync_last_error", last_error))
 
-    if not fields:
+    changed_updates = _filter_changed_order_updates(current_row, updates)
+    if not changed_updates:
         return False
+
+    fields = [f"{field} = %s" for field, _ in changed_updates]
+    params: list = [value for _, value in changed_updates]
 
     params.append(order_id)
     _log_db_write(
         "update",
         "orders",
-        {
-            "order_id": order_id,
-            "close_tpsl_sync_attempts": attempts,
-            "close_tpsl_sync_next_retry_at": normalized_next_retry_at if next_retry_at is not ... else None,
-            "close_tpsl_sync_last_error": last_error if last_error is not ... else None,
-        },
+        {"order_id": order_id, **dict(changed_updates)},
     )
 
     conn = get_connection()
@@ -2457,10 +2502,22 @@ def update_order_metadata(order_id: int, **fields_to_update) -> bool:
     if not fields:
         return False
 
-    assignments = [f"{key} = %s" for key in fields]
-    params = list(fields.values()) + [order_id]
+    current_row = get_order_by_id(order_id)
+    if not current_row:
+        return False
 
-    _log_db_write("update", "orders", {"order_id": order_id, **fields})
+    changed_fields = {
+        key: value
+        for key, value in fields.items()
+        if _order_field_value_changed(current_row, key, value)
+    }
+    if not changed_fields:
+        return False
+
+    assignments = [f"{key} = %s" for key in changed_fields]
+    params = list(changed_fields.values()) + [order_id]
+
+    _log_db_write("update", "orders", {"order_id": order_id, **changed_fields})
 
     conn = get_connection()
     try:
@@ -2490,40 +2547,39 @@ def update_order_status_by_exchange_id(
     error_message: Optional[str] = None,
 ) -> bool:
     """Update an order row by username + exchange_order_id."""
-    fields = ["status = %s"]
-    params: list = [status]
+    current_row = get_order_by_exchange_id(username, exchange_order_id)
+    if not current_row:
+        return False
+
+    updates: list[tuple[str, object]] = [("status", status)]
     if filled_qty is not None:
-        fields.append("filled_qty = %s"); params.append(filled_qty)
+        updates.append(("filled_qty", filled_qty))
     if avg_price is not None:
-        fields.append("avg_price = %s"); params.append(avg_price)
+        updates.append(("avg_price", avg_price))
     normalized_filled_at = _coerce_utc_naive_datetime(filled_at)
     if normalized_filled_at is not None:
-        fields.append("filled_at = %s"); params.append(normalized_filled_at)
+        updates.append(("filled_at", normalized_filled_at))
     if realized_pnl is not None:
-        fields.append("realized_pnl = %s"); params.append(realized_pnl)
+        updates.append(("realized_pnl", realized_pnl))
     if commission is not None:
-        fields.append("commission = %s"); params.append(commission)
+        updates.append(("commission", commission))
     if commission_asset is not None:
-        fields.append("commission_asset = %s"); params.append(commission_asset)
+        updates.append(("commission_asset", commission_asset))
     if error_message is not None:
-        fields.append("error_message = %s"); params.append(error_message)
+        updates.append(("error_message", error_message))
+
+    changed_updates = _filter_changed_order_updates(current_row, updates)
+    if not changed_updates:
+        return False
+
+    fields = [f"{field} = %s" for field, _ in changed_updates]
+    params: list = [value for _, value in changed_updates]
     params.extend([username, exchange_order_id])
 
     _log_db_write(
         "update",
         "orders",
-        {
-            "username": username,
-            "exchange_order_id": exchange_order_id,
-            "status": status,
-            "filled_qty": filled_qty,
-            "avg_price": avg_price,
-            "filled_at": normalized_filled_at,
-            "realized_pnl": realized_pnl,
-            "commission": commission,
-            "commission_asset": commission_asset,
-            "error_message": error_message,
-        },
+        {"username": username, "exchange_order_id": exchange_order_id, **dict(changed_updates)},
     )
 
     conn = get_connection()
