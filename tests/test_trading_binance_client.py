@@ -835,27 +835,7 @@ def test_order_status_stream_resolves_actual_order_id_for_triggered_conditional_
         "FILLED",
         {"filled_qty": 0.012, "avg_price": 78391.7, "filled_at": None},
     )]
-    assert history_creations == [{
-        "symbol": "BTCUSDC",
-        "position_side": "LONG",
-        "position_mode": "UNKNOWN",
-        "fill_qty": 0.012,
-        "fill_price": 78391.7,
-        "order_row": {
-            "id": 91,
-            "username": "Will",
-            "user_id": 1,
-            "symbol": "BTCUSDC",
-            "side": "SELL",
-            "trade_direction": "CLOSE",
-            "order_type": "TAKE_PROFIT_MARKET",
-            "order_category": "Conditional",
-            "status": "NEW",
-            "algo_id": "4000001326609744",
-            "exchange_order_id": "4000001327195551",
-            "quantity": 0.012,
-        },
-    }]
+    assert history_creations == []
     assert trade_sync_calls == [{
         "username": "Will",
         "client": stream.client,
@@ -1083,27 +1063,7 @@ def test_poll_open_orders_backfills_finished_conditional_algo_after_local_cancel
         "FILLED",
         {"filled_qty": 0.037, "avg_price": 77673.7, "filled_at": 1779342519111},
     )]
-    assert history_creations == [{
-        "symbol": "BTCUSDC",
-        "position_side": "LONG",
-        "position_mode": "UNKNOWN",
-        "fill_qty": 0.037,
-        "fill_price": 77673.7,
-        "order_row": {
-            "id": 227,
-            "username": "Will",
-            "user_id": 5,
-            "symbol": "BTCUSDC",
-            "side": "SELL",
-            "trade_direction": "CLOSE",
-            "order_type": "STOP_MARKET",
-            "order_category": "Conditional",
-            "status": "CANCELED",
-            "algo_id": "1000001711252489",
-            "exchange_order_id": "58819962882",
-            "quantity": 0.037,
-        },
-    }]
+    assert history_creations == []
     assert trade_sync_calls == [{
         "username": "Will",
         "client": stream.client,

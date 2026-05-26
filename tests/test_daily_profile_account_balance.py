@@ -16,16 +16,44 @@ class FakeCursor:
             return None
         return self._rows.pop(0)
 
+    def fetchall(self):
+        if not self._rows:
+            return []
+        rows = list(self._rows)
+        self._rows = []
+        return rows
+
 
 def test_refresh_daily_profile_persists_live_account_balance(monkeypatch):
     cursor = FakeCursor([
         {
-            "trade_count": 2,
-            "win_count": 1,
-            "pnl": 3.5,
-            "commission": 0.2,
-            "latest_username": "alice",
-        }
+            "id": 1,
+            "user_id": 7,
+            "username": "alice",
+            "symbol": "BTCUSDC",
+            "side": "LONG",
+            "quantity": 0.01,
+            "realized_pnl": 1.5,
+            "commission": 0.1,
+            "position_id": 51,
+            "close_order_id": 101,
+            "close_price": 80100.0,
+            "created_at": datetime(2026, 5, 19, 8, 0, 0),
+        },
+        {
+            "id": 2,
+            "user_id": 7,
+            "username": "alice",
+            "symbol": "BTCUSDC",
+            "side": "SHORT",
+            "quantity": 0.02,
+            "realized_pnl": 2.0,
+            "commission": 0.1,
+            "position_id": 52,
+            "close_order_id": 102,
+            "close_price": 80200.0,
+            "created_at": datetime(2026, 5, 19, 9, 0, 0),
+        },
     ])
 
     monkeypatch.setattr(db, "_fetch_live_wallet_balance", lambda username: 205.4321)
@@ -43,8 +71,8 @@ def test_refresh_daily_profile_persists_live_account_balance(monkeypatch):
         3.5,
         205.4321,
         2,
-        1,
-        50.0,
+        2,
+        100.0,
         0.2,
         datetime(2026, 5, 19, 11, 30, 0),
     )
@@ -53,11 +81,32 @@ def test_refresh_daily_profile_persists_live_account_balance(monkeypatch):
 def test_refresh_historical_daily_profile_preserves_existing_account_balance(monkeypatch):
     cursor = FakeCursor([
         {
-            "trade_count": 2,
-            "win_count": 1,
-            "pnl": 3.5,
-            "commission": 0.2,
-            "latest_username": "alice",
+            "id": 1,
+            "user_id": 7,
+            "username": "alice",
+            "symbol": "BTCUSDC",
+            "side": "LONG",
+            "quantity": 0.01,
+            "realized_pnl": 1.5,
+            "commission": 0.1,
+            "position_id": 51,
+            "close_order_id": 101,
+            "close_price": 80100.0,
+            "created_at": datetime(2026, 5, 19, 8, 0, 0),
+        },
+        {
+            "id": 2,
+            "user_id": 7,
+            "username": "alice",
+            "symbol": "BTCUSDC",
+            "side": "SHORT",
+            "quantity": 0.02,
+            "realized_pnl": 2.0,
+            "commission": 0.1,
+            "position_id": 52,
+            "close_order_id": 102,
+            "close_price": 80200.0,
+            "created_at": datetime(2026, 5, 19, 9, 0, 0),
         },
         {"account_balance": 188.125},
     ])
@@ -88,11 +137,29 @@ def test_refresh_historical_daily_profile_preserves_existing_account_balance(mon
         3.5,
         188.125,
         2,
-        1,
-        50.0,
+        2,
+        100.0,
         0.2,
         datetime(2026, 5, 20, 11, 30, 0),
     )
+
+
+def test_aggregate_position_history_trade_groups_deduplicates_shadow_rows_and_counts_by_position_id():
+    rows = [
+        {"id": 93, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.013, "realized_pnl": 5.577, "commission": 0.0, "position_id": 719, "close_order_id": 406, "close_price": 0, "created_at": datetime(2026, 5, 26, 0, 41, 41)},
+        {"id": 94, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.013, "realized_pnl": 5.577, "commission": 0.0, "position_id": 719, "close_order_id": 406, "close_price": 0, "created_at": datetime(2026, 5, 26, 0, 41, 41)},
+        {"id": 95, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.012, "realized_pnl": 7.872, "commission": 0.0, "position_id": 719, "close_order_id": 408, "close_price": 0, "created_at": datetime(2026, 5, 26, 0, 52, 23)},
+        {"id": 96, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.012, "realized_pnl": 7.872, "commission": 0.0, "position_id": None, "close_order_id": 408, "close_price": 0, "created_at": datetime(2026, 5, 26, 0, 52, 23)},
+        {"id": 101, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.026, "realized_pnl": -1.0998, "commission": 0.0, "position_id": 729, "close_order_id": 416, "close_price": 0, "created_at": datetime(2026, 5, 26, 3, 35, 50)},
+        {"id": 102, "user_id": 5, "username": "Will", "symbol": "BTCUSDC", "side": "SHORT", "quantity": 0.026, "realized_pnl": -1.0998, "commission": 0.0, "position_id": None, "close_order_id": 416, "close_price": 0, "created_at": datetime(2026, 5, 26, 3, 35, 50)},
+    ]
+
+    groups = db._aggregate_position_history_trade_groups(rows)
+    groups_by_key = {row["trade_key"]: row for row in groups}
+
+    assert set(groups_by_key) == {"position:719", "position:729"}
+    assert groups_by_key["position:719"]["trade_pnl"] == 13.449
+    assert groups_by_key["position:729"]["trade_pnl"] == -1.0998
 
 
 class RebuildCursor:

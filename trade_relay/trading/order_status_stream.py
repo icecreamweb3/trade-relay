@@ -498,28 +498,11 @@ class UserOrderStatusStream:
             else:
                 position_side = "LONG" if order_side == "BUY" else "SHORT"
 
-            if trade_direction == "CLOSE" and avg_price and avg_price > 0:
+            if trade_direction == "CLOSE" and new_status == "FILLED":
                 exchange_order_id = str(db_row.get("exchange_order_id") or "").strip()
-                already_handled = False
                 if exchange_order_id:
                     with self._handled_close_fills_lock:
-                        if exchange_order_id in self._handled_close_fills:
-                            logger.debug(
-                                "position_history already created for order=%s (poll loop), skipping",
-                                exchange_order_id,
-                            )
-                            already_handled = True
-                        else:
-                            self._handled_close_fills.add(exchange_order_id)
-                if not already_handled:
-                    self._create_position_history_from_poll(
-                        symbol=symbol,
-                        position_side=position_side,
-                        position_mode=position_mode,
-                        fill_qty=executed_qty,
-                        fill_price=avg_price,
-                        order_row=db_row,
-                    )
+                        self._handled_close_fills.add(exchange_order_id)
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
             elif trade_direction == "OPEN" and new_status == "FILLED":
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)

@@ -366,6 +366,127 @@ def _fetch_live_wallet_balance(username: str) -> float | None:
 _POSITION_HISTORY_TRADE_KEY_SQL = "COALESCE(NULLIF(position_id, 0), -id)"
 
 
+def _safe_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fetch_position_history_rows_for_daily_profile(
+    cur,
+    *,
+    user_id: Optional[int] = None,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
+) -> list[dict]:
+    sql = [
+        """
+        SELECT id,
+               user_id,
+               username,
+               symbol,
+               side,
+               quantity,
+               realized_pnl,
+               commission,
+               position_id,
+               close_order_id,
+               close_price,
+               created_at
+        FROM position_history
+        WHERE 1 = 1
+        """
+    ]
+    params: list[object] = []
+    if user_id is not None:
+        sql.append("AND user_id = %s")
+        params.append(user_id)
+    if start_at is not None:
+        sql.append("AND created_at >= %s")
+        params.append(start_at)
+    if end_at is not None:
+        sql.append("AND created_at < %s")
+        params.append(end_at)
+    sql.append("ORDER BY created_at ASC, id ASC")
+    cur.execute("\n".join(sql), params)
+    return cur.fetchall() or []
+
+
+def _aggregate_position_history_trade_groups(rows: list[dict]) -> list[dict]:
+    position_id_by_close_order: dict[tuple[int, int], int] = {}
+    for row in rows:
+        user_id = int(row.get("user_id") or 0)
+        close_order_id = int(row["close_order_id"]) if row.get("close_order_id") else None
+        position_id = int(row["position_id"]) if row.get("position_id") else None
+        if user_id > 0 and close_order_id is not None and position_id is not None:
+            position_id_by_close_order[(user_id, close_order_id)] = position_id
+
+    normalized_rows: list[dict] = []
+    seen_exact_rows: set[tuple] = set()
+    for row in rows:
+        user_id = int(row.get("user_id") or 0)
+        close_order_id = int(row["close_order_id"]) if row.get("close_order_id") else None
+        position_id = int(row["position_id"]) if row.get("position_id") else None
+        normalized_position_id = position_id or (
+            position_id_by_close_order.get((user_id, close_order_id))
+            if user_id > 0 and close_order_id is not None
+            else None
+        )
+
+        # Drop unassigned shadow rows when the same close order already has a linked position.
+        if position_id is None and normalized_position_id is not None and close_order_id is not None:
+            continue
+
+        exact_key = (
+            user_id,
+            normalized_position_id or 0,
+            close_order_id or 0,
+            str(row.get("symbol") or "").upper(),
+            str(row.get("side") or "").upper(),
+            round(_safe_float(row.get("quantity")), 12),
+            round(_safe_float(row.get("realized_pnl")), 12),
+            round(_safe_float(row.get("commission")), 12),
+        )
+        if exact_key in seen_exact_rows:
+            continue
+        seen_exact_rows.add(exact_key)
+        normalized_rows.append({**row, "_normalized_position_id": normalized_position_id})
+
+    grouped: dict[tuple[int, str], dict] = {}
+    for row in normalized_rows:
+        user_id = int(row.get("user_id") or 0)
+        normalized_position_id = row.get("_normalized_position_id")
+        close_order_id = int(row["close_order_id"]) if row.get("close_order_id") else None
+        if normalized_position_id is not None:
+            trade_key = f"position:{int(normalized_position_id)}"
+        elif close_order_id is not None:
+            trade_key = f"close_order:{close_order_id}"
+        else:
+            trade_key = f"history:{int(row.get('id') or 0)}"
+
+        group = grouped.setdefault(
+            (user_id, trade_key),
+            {
+                "user_id": user_id,
+                "username": str(row.get("username") or ""),
+                "trade_key": trade_key,
+                "trade_date": _coerce_utc_date(row.get("created_at")),
+                "trade_pnl": 0.0,
+                "trade_commission": 0.0,
+            },
+        )
+        group["trade_pnl"] += _safe_float(row.get("realized_pnl"))
+        group["trade_commission"] += _safe_float(row.get("commission"))
+        row_date = _coerce_utc_date(row.get("created_at"))
+        if row_date >= group["trade_date"]:
+            group["trade_date"] = row_date
+            if row.get("username"):
+                group["username"] = str(row.get("username") or "")
+
+    return list(grouped.values())
+
+
 def _position_history_trade_groups_subquery(*, row_where_sql: str = "WHERE 1 = 1") -> str:
     return f"""
         SELECT user_id,
@@ -388,24 +509,23 @@ def _refresh_daily_profile_for_user_date(
     historical_account_balance=_ACCOUNT_BALANCE_MISSING,
 ) -> None:
     start_at, end_at = _get_profile_day_bounds(profile_date)
-    cur.execute(
-        """
-        SELECT COUNT(*) AS trade_count,
-                             SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-                             SUM(COALESCE(trade_pnl, 0)) AS pnl,
-                             SUM(COALESCE(trade_commission, 0)) AS commission,
-               MAX(NULLIF(TRIM(COALESCE(username, '')), '')) AS latest_username
-                FROM (
-                """
-                + _position_history_trade_groups_subquery(row_where_sql="WHERE user_id = %s")
-                + """
-                ) trade_groups
-                WHERE trade_date >= %s
-                    AND trade_date < %s
-        """,
-                (user_id, start_at.date(), end_at.date()),
+    raw_rows = _fetch_position_history_rows_for_daily_profile(
+        cur,
+        user_id=user_id,
+        start_at=start_at,
+        end_at=end_at,
     )
-    row = cur.fetchone() or {}
+    trade_groups = [
+        row for row in _aggregate_position_history_trade_groups(raw_rows)
+        if row.get("trade_date") == profile_date
+    ]
+    row = {
+        "trade_count": len(trade_groups),
+        "win_count": sum(1 for trade in trade_groups if _safe_float(trade.get("trade_pnl")) > 0),
+        "pnl": sum(_safe_float(trade.get("trade_pnl")) for trade in trade_groups),
+        "commission": sum(_safe_float(trade.get("trade_commission")) for trade in trade_groups),
+        "latest_username": next((str(trade.get("username") or "") for trade in reversed(trade_groups) if trade.get("username")), username),
+    }
     trade_count = int(row.get("trade_count") or 0)
     if trade_count <= 0:
         cur.execute(
@@ -525,51 +645,24 @@ def _rebuild_daily_profile_from_history(
     cur.execute("\n".join(delete_sql), delete_params)
     deleted_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
-    cur.execute(
-        """
-        INSERT INTO daily_profile
-            (user_id, username, profile_date, pnl, account_balance, trade_count, win_count, win_rate, commission, updated_at)
-        SELECT user_id,
-               COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-               trade_date AS profile_date,
-               SUM(COALESCE(trade_pnl, 0)) AS pnl,
-               NULL AS account_balance,
-               COUNT(*) AS trade_count,
-               SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) AS win_count,
-               CASE
-                   WHEN COUNT(*) = 0 THEN 0
-                   ELSE SUM(CASE WHEN COALESCE(trade_pnl, 0) > 0 THEN 1 ELSE 0 END) / COUNT(*) * 100
-               END AS win_rate,
-               SUM(COALESCE(trade_commission, 0)) AS commission,
-               %s AS updated_at
-        FROM (
-        """
-        + _position_history_trade_groups_subquery(row_where_sql="\n".join(trade_group_row_filters))
-        + """
-        ) trade_groups
-        """
-        + "\n".join(trade_date_filters)
-        + "\nGROUP BY user_id, trade_date",
-        [_utc_now_naive(), *trade_group_row_params, *trade_date_params],
-    )
-    rebuilt_rows = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
-
-    cur.execute(
-        """
-        SELECT user_id,
-               COALESCE(MAX(NULLIF(TRIM(COALESCE(username, '')), '')), '') AS username,
-               trade_date AS profile_date
-        FROM (
-        """
-        + _position_history_trade_groups_subquery(row_where_sql="\n".join(trade_group_row_filters))
-        + """
-        ) trade_groups
-        """
-        + "\n".join(trade_date_filters)
-        + "\nGROUP BY user_id, trade_date",
-        [*trade_group_row_params, *trade_date_params],
-    )
-    grouped_rows = cur.fetchall() or []
+    raw_rows = _fetch_position_history_rows_for_daily_profile(cur, user_id=user_id)
+    trade_groups = _aggregate_position_history_trade_groups(raw_rows)
+    grouped_rows = []
+    for trade in trade_groups:
+        trade_date = _coerce_utc_date(trade.get("trade_date"))
+        if start_date is not None and trade_date < start_date:
+            continue
+        if end_date is not None and trade_date > end_date:
+            continue
+        grouped_rows.append(
+            {
+                "user_id": int(trade.get("user_id") or 0),
+                "username": str(trade.get("username") or ""),
+                "profile_date": trade_date,
+            }
+        )
+    grouped_rows = list({(row["user_id"], row["profile_date"]): row for row in grouped_rows}.values())
+    rebuilt_rows = len(grouped_rows)
     for grouped_row in grouped_rows:
         grouped_user_id = int(grouped_row["user_id"])
         grouped_profile_date = _coerce_utc_date(grouped_row["profile_date"])
