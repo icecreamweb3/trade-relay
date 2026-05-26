@@ -153,6 +153,7 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
                 initial_balance = db_module.get_profile_initial_balance(leaderboard_user_id)
                 if current_balance is not None and initial_balance is not None:
                     net_pnl = round(current_balance - initial_balance, 4)
+                    pnl = round(net_pnl + commission, 4)
 
         all_time_leaderboard.append(
             AllTimeLeaderboardEntry(
@@ -185,6 +186,9 @@ def _build_profile_overview(user_id: int, all_time_days: int | None = None) -> P
     win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
     account_balance_raw = account_summary.get("wallet_balance")
     account_balance = round(float(account_balance_raw), 4) if account_balance_raw is not None else None
+    initial_balance = db_module.get_profile_initial_balance(user_id)
+    if account_balance is not None and initial_balance is not None:
+        total_pnl = round(account_balance - initial_balance + total_commission, 4)
 
     return ProfileOverview(
         stats=ProfileStats(

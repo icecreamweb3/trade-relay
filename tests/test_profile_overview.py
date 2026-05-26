@@ -97,6 +97,37 @@ def test_build_profile_overview_totals_follow_daily_profile_aggregation(monkeypa
     assert overview.daily_pnl[1].commission == 0.25
 
 
+def test_build_profile_overview_stats_use_balance_based_gross_pnl(monkeypatch):
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_daily_pnl",
+        lambda user_id: [
+            {"date": "2026-05-16", "pnl": 12.5, "net_pnl": 11.8, "account_balance": 1288.3366, "commission": 0.7, "trades": 5, "win_rate": 60.0},
+        ],
+    )
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_total_commission_by_asset",
+        lambda user_id: [{"asset": "USDC", "total": 15.67}],
+    )
+    monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_all_active_users_with_api_keys", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_all_time_profile_leaderboard_for_days", lambda *, days=None, limit=20: [])
+    monkeypatch.setattr(profile_router.db_module, "get_profile_current_balance", lambda user_id: 121.05)
+    monkeypatch.setattr(profile_router.db_module, "get_profile_initial_balance", lambda user_id: 200.0)
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_account_summary_from_db",
+        lambda user_id, symbol: {"wallet_balance": 121.05} if user_id == 5 and symbol is None else None,
+    )
+
+    overview = profile_router._build_profile_overview(5)
+
+    assert overview.stats.account_balance == 121.05
+    assert overview.stats.total_commission == 15.67
+    assert overview.stats.total_pnl == -63.28
+
+
 def test_build_profile_overview_uses_win_count_for_total_win_rate(monkeypatch):
     monkeypatch.setattr(
         profile_router.db_module,
@@ -279,6 +310,27 @@ def test_build_profile_overview_uses_balance_based_net_pnl_for_all_time(monkeypa
     overview = profile_router._build_profile_overview(5, all_time_days=None)
 
     assert overview.all_time_leaderboard[0].net_pnl == 22.4231
+    assert overview.all_time_leaderboard[0].pnl == 36.7031
+
+
+def test_build_profile_overview_uses_balance_based_gross_pnl_for_all_time(monkeypatch):
+    monkeypatch.setattr(profile_router.db_module, "get_daily_pnl", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_total_commission_by_asset", lambda user_id: [])
+    monkeypatch.setattr(profile_router.db_module, "get_daily_profile_leaderboard", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_all_active_users_with_api_keys", lambda: [])
+    monkeypatch.setattr(profile_router.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
+    monkeypatch.setattr(
+        profile_router.db_module,
+        "get_all_time_profile_leaderboard_for_days",
+        lambda *, days=None, limit=20: [{"user_id": 5, "username": "Will", "pnl": 33.14, "trades": 41, "win_rate": 46.3, "commission": 15.67}],
+    )
+    monkeypatch.setattr(profile_router.db_module, "get_profile_current_balance", lambda user_id: 121.05)
+    monkeypatch.setattr(profile_router.db_module, "get_profile_initial_balance", lambda user_id: 200.0)
+
+    overview = profile_router._build_profile_overview(5, all_time_days=None)
+
+    assert overview.all_time_leaderboard[0].net_pnl == -78.95
+    assert overview.all_time_leaderboard[0].pnl == -63.28
 
 
 def test_build_profile_overview_supplements_daily_leaderboard_with_active_users(monkeypatch):
