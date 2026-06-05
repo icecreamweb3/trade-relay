@@ -881,6 +881,14 @@ class UserOrderStatusStream:
                         "entry_price fallback from cache: user=%s symbol=%s side=%s entry=%.4f",
                         self.username, symbol, position_side, entry_price,
                     )
+            # Fallback 3: the position was already marked CLOSE by _sync_position_from_rest
+            # before this poll path ran.  Query the most recent row regardless of status.
+            if position_id is None:
+                closed_pos = db.get_position(user_id, symbol, position_side, status="ALL")
+                if closed_pos and closed_pos.get("id"):
+                    position_id = int(closed_pos["id"])
+                    if not entry_price and closed_pos.get("avg_entry_price"):
+                        entry_price = float(closed_pos["avg_entry_price"])
             order_realized_pnl_raw = (order_row or {}).get("realized_pnl")
             has_order_realized_pnl = order_realized_pnl_raw not in (None, "")
             order_realized_pnl = _safe_float(order_realized_pnl_raw)
@@ -1060,6 +1068,14 @@ class UserOrderStatusStream:
                     "entry_price fallback from cache (WS): user=%s symbol=%s side=%s entry=%.4f",
                     self.username, symbol, position_side, entry_price,
                 )
+        # Fallback 3: the position was already marked CLOSE by _sync_position_from_rest
+        # before this WS handler ran.  Query the most recent row regardless of status.
+        if position_id is None:
+            closed_pos = db.get_position(user_id, symbol, position_side, status="ALL")
+            if closed_pos and closed_pos.get("id"):
+                position_id = int(closed_pos["id"])
+                if not entry_price and closed_pos.get("avg_entry_price"):
+                    entry_price = _safe_float(closed_pos["avg_entry_price"]) or 0.0
 
         # Realized PnL for this fill
         websocket_realized_pnl = _safe_float(order.get("rp") or order.get("realizedPnl"))
