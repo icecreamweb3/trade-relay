@@ -3751,6 +3751,23 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
         conn.close()
 
 
+def get_order_by_client_order_id(username: str, client_order_id: str) -> Optional[dict]:
+    """按 client_order_id 或 algo_client_id 查询订单（覆盖条件单触发场景）。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM orders
+                   WHERE username = %s
+                     AND (client_order_id = %s OR algo_client_id = %s)
+                   ORDER BY id ASC LIMIT 1""",
+                (username, client_order_id, client_order_id),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) -> Optional[int]:
     """将外部工具（TradingView / Binance 客户端等）产生的订单写入本地 orders 表。
 
@@ -3834,6 +3851,16 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
     existing = get_order_by_exchange_id(username, exchange_order_id)
     if existing:
         return int(existing["id"])
+
+    # Also check by client_order_id to avoid duplicating triggered conditional orders.
+    client_oid = str(ws_event.get("c") or "").strip()
+    if client_oid:
+        existing = get_order_by_client_order_id(username, client_oid)
+        if existing:
+            # Back-fill exchange_order_id if missing
+            if not str(existing.get("exchange_order_id") or "").strip():
+                update_order_metadata(int(existing["id"]), exchange_order_id=exchange_order_id)
+            return int(existing["id"])
 
     conn = get_connection()
     try:

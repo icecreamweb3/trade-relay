@@ -1360,6 +1360,20 @@ class UserOrderStatusStream:
         # adopted external orders).  Only fall through to adopt when genuinely absent.
         db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
         if db_order is None:
+            # Not found by exchange_order_id — check client_order_id as well.
+            # This covers triggered conditional (STOP_MARKET) orders: the DB row was created
+            # with algo_client_id matching the WS client_order_id, but exchange_order_id
+            # is only filled in after the trigger event arrives.
+            client_order_id = str(order.get("c") or "").strip()
+            if client_order_id:
+                db_order = db.get_order_by_client_order_id(self.username, client_order_id)
+                if db_order is not None:
+                    # Back-fill exchange_order_id on the conditional order row so future
+                    # lookups by exchange_order_id will succeed.
+                    if not str(db_order.get("exchange_order_id") or "").strip():
+                        db.update_order_metadata(int(db_order["id"]), exchange_order_id=exchange_order_id)
+
+        if db_order is None:
             # Order not in DB — placed via an external tool; adopt it now.
             adopted_id = db.adopt_external_order(self.username, exchange_order_id, order)
             if adopted_id:
