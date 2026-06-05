@@ -990,8 +990,23 @@ class UserOrderStatusStream:
         if not db_order:
             return
         trade_direction = str(db_order.get("trade_direction") or "").upper()
+        # For external orders in single-position mode the adopt logic may have missed
+        # trade_direction=CLOSE if the position wasn't in DB yet at adopt time.
+        # Fall back to WS reduce_only flag or side-vs-positionSide check.
         if trade_direction != "CLOSE":
-            return
+            ws_reduce_only = bool(order.get("R") or order.get("reduceOnly") or False)
+            ws_ps = str(order.get("ps") or "BOTH").upper()
+            ws_side = str(order.get("S") or "").upper()
+            inferred_close = (
+                ws_reduce_only
+                or (ws_ps == "LONG" and ws_side == "SELL")
+                or (ws_ps == "SHORT" and ws_side == "BUY")
+            )
+            if not inferred_close:
+                return
+            # Correct the persisted trade_direction so downstream logic is consistent
+            if db_order.get("id"):
+                db.update_order_metadata(int(db_order["id"]), trade_direction="CLOSE")
 
         # Fields from the WS event for THIS fill (not cumulative):
         # l = last filled qty, L = last fill price, n = commission for this fill

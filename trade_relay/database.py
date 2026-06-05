@@ -3753,9 +3753,34 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
     filled_qty    = float(ws_event.get("z") or 0)
     avg_price     = _f("ap")
     reduce_only   = bool(ws_event.get("R") or False)
-    trade_direction = "CLOSE" if reduce_only else "OPEN"
     raw_ps        = str(ws_event.get("ps") or "BOTH").upper()
     position_mode = "DUAL" if raw_ps in ("LONG", "SHORT") else "SINGLE"
+
+    # Infer trade_direction:
+    # 1. reduce_only=True  → always CLOSE
+    # 2. Dual (LONG/SHORT) → can match side vs position_side:
+    #    LONG position closed by SELL, SHORT position closed by BUY
+    # 3. Single (BOTH) without reduce_only: query current DB position to check
+    #    if the order side opposes the open position direction.
+    if reduce_only:
+        trade_direction: Optional[str] = "CLOSE"
+    elif raw_ps == "LONG":
+        trade_direction = "CLOSE" if side == "SELL" else "OPEN"
+    elif raw_ps == "SHORT":
+        trade_direction = "CLOSE" if side == "BUY" else "OPEN"
+    else:
+        # Single / BOTH mode: inspect the current position in DB
+        trade_direction = "OPEN"  # default
+        user_row = get_user_by_username(username)
+        if user_row:
+            pos = get_position(int(user_row["id"]), symbol, "BOTH")
+            if pos:
+                pos_qty = float(pos.get("quantity") or 0)
+                # Long position (qty > 0) is closed by SELL; short (qty < 0) by BUY
+                if pos_qty > 0 and side == "SELL":
+                    trade_direction = "CLOSE"
+                elif pos_qty < 0 and side == "BUY":
+                    trade_direction = "CLOSE"
     order_category = _normalize_order_category(order_type, "")
     # filled_at from trade time field 'T' (millisecond epoch)
     filled_at = None
