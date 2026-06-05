@@ -167,13 +167,30 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
   const locale = useUiPreferencesStore((state) => state.locale)
   const orderBookDepthMode = useUiPreferencesStore((state) => state.orderBookDepthMode)
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice } = useMarketStore()
+  // Only subscribe to symbol — avoids re-rendering on every aggTrade price tick
+  const symbol = useMarketStore((state) => state.symbol)
   const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
   const [spreadStep, setSpreadStep] = useState<number>(SPREAD_OPTIONS[0].step)
   const [isSpreadMenuOpen, setIsSpreadMenuOpen] = useState(false)
   const [rawAsks, setRawAsks] = useState<RawLevel[]>([])
   const [rawBids, setRawBids] = useState<RawLevel[]>([])
   const spreadMenuRef = useRef<HTMLDivElement | null>(null)
+  // Ref for direct DOM updates of center price — bypasses React render cycle entirely
+  const centerPriceRef = useRef<HTMLSpanElement>(null)
+  const priceDpRef = useRef<number>(getPriceDecimals(SPREAD_OPTIONS[0].step))
+
+  // Subscribe to currentPrice outside React — write directly to DOM on every tick
+  useEffect(() => {
+    const initial = useMarketStore.getState().currentPrice
+    if (centerPriceRef.current) {
+      centerPriceRef.current.textContent = initial != null ? fmt(initial, priceDpRef.current) : '—'
+    }
+    return useMarketStore.subscribe((state) => {
+      if (centerPriceRef.current && state.currentPrice != null) {
+        centerPriceRef.current.textContent = fmt(state.currentPrice, priceDpRef.current)
+      }
+    })
+  }, []) // runs once; priceDpRef always reflects latest via the spread-step effect below
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -478,6 +495,15 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     }
   }, [symbol])
 
+  // Keep priceDpRef in sync with spreadStep so the center-price DOM subscriber uses correct decimals
+  useEffect(() => {
+    priceDpRef.current = getPriceDecimals(spreadStep)
+    const price = useMarketStore.getState().currentPrice
+    if (centerPriceRef.current && price != null) {
+      centerPriceRef.current.textContent = fmt(price, priceDpRef.current)
+    }
+  }, [spreadStep])
+
   const asks = [...buildLevels(rawAsks, 'ask', spreadStep)].reverse()
   const bids = buildLevels(rawBids, 'bid', spreadStep)
   const getDepthValue = (level: Level) => orderBookDepthMode === 'level' ? level.quoteQty : level.sum
@@ -570,9 +596,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       </div>
 
       <div className="px-2 py-1 bg-[#1a1a1a] border-y border-[#3e3e42] shrink-0 flex items-center justify-between">
-        <span className="text-[#cccccc] font-bold font-mono tabular-nums text-[12px]">
-          {currentPrice != null ? fmt(currentPrice, 1) : '—'}
-        </span>
+        <span ref={centerPriceRef} className="text-[#cccccc] font-bold font-mono tabular-nums text-[12px]">—</span>
         {spread != null && (
           <span className="text-[9px] text-[#555]">
             {t('orderbook.spread')} {fmt(spread, 1)} ({spreadPct}%)
