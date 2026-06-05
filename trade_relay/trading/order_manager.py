@@ -170,31 +170,53 @@ async def submit_order(
 
     order_category = "Conditional" if order_type in ("STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET") else "Basic"
 
-    # Persist order record
-    order_db_id = db.create_order(
-        user_id=session.user_id,
-        username=username,
-        symbol=symbol,
-        side=side,
-        order_type=order_type,
-        quantity=quantity,
-        price=price,
-        stop_price=stop_price,
-        tp_price=tp_price,
-        sl_price=sl_price,
-        status=result.status if result.success else "FAILED",
-        binance_order_id=None if order_category == "Conditional" else result.order_id,
-        algo_id=result.order_id if order_category == "Conditional" else None,
-        algo_client_id=result.algo_client_id if order_category == "Conditional" else None,
-        client_order_id=result.client_order_id,
-        error_message=result.error,
-        trade_direction=position_direction.upper() if position_direction else None,
-        position_mode=normalized_position_mode or "UNKNOWN",
-        position_id=position_id,
-        reduce_only=(position_direction or "").upper() == "CLOSE",
-        post_only=post_only,
-        order_category=order_category,
-    )
+    # Guard against the race where a fast-fill WS event arrives before this DB write
+    # and adopt_external_order() has already created a row for this exchange_order_id.
+    # In that case, correct the adopted row's metadata instead of inserting a duplicate.
+    adopted_exchange_id = None if order_category == "Conditional" else (result.order_id and str(result.order_id))
+    if adopted_exchange_id and result.success:
+        existing = db.get_order_by_exchange_id(username, adopted_exchange_id)
+        if existing and existing.get("source") == "external":
+            # Row was pre-created by adopt_external_order; take ownership of it.
+            order_db_id = int(existing["id"])
+            db.update_order_metadata(
+                order_db_id,
+                trade_direction=position_direction.upper() if position_direction else None,
+            )
+            db.update_order_source(order_db_id, source="trade_relay")
+            _log.info(
+                "[ORDER_FLOW] phase=reclaim_adopted_row username=%s order_db_id=%s exchange_order_id=%s",
+                username, order_db_id, adopted_exchange_id,
+            )
+        else:
+            existing = None  # proceed to normal create_order below
+
+    if not (adopted_exchange_id and result.success and existing):
+        # Persist order record
+        order_db_id = db.create_order(
+            user_id=session.user_id,
+            username=username,
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            stop_price=stop_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            status=result.status if result.success else "FAILED",
+            binance_order_id=None if order_category == "Conditional" else result.order_id,
+            algo_id=result.order_id if order_category == "Conditional" else None,
+            algo_client_id=result.algo_client_id if order_category == "Conditional" else None,
+            client_order_id=result.client_order_id,
+            error_message=result.error,
+            trade_direction=position_direction.upper() if position_direction else None,
+            position_mode=normalized_position_mode or "UNKNOWN",
+            position_id=position_id,
+            reduce_only=(position_direction or "").upper() == "CLOSE",
+            post_only=post_only,
+            order_category=order_category,
+        )
     _log.info(
         "[ORDER_FLOW] phase=db_recorded username=%s order_db_id=%s exchange_order_id=%s algo_id=%s status=%s success=%s",
         username,

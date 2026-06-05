@@ -2491,6 +2491,18 @@ def has_pending_close_tpsl_refresh(*, user_id: int, symbol: str, position_side: 
         conn.close()
 
 
+def update_order_source(order_id: int, source: str) -> bool:
+    """Flip orders.source for an adopted external order that was later confirmed as a trade_relay order."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE orders SET source = %s WHERE id = %s AND source != %s", (source, order_id, source))
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def update_order_metadata(order_id: int, **fields_to_update) -> bool:
     """Update selected order fields by primary key."""
     allowed_fields = {
@@ -3709,12 +3721,14 @@ def update_position_history_values(
 
 
 def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[dict]:
-    """按 username + exchange_order_id 查询单条订单，失败返回 None。"""
+    """按 username + exchange_order_id 查询单条订单，失败返回 None。
+    ORDER BY id ASC 确保有重复行时始终返回最早创建的那条（原始行）。
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM orders WHERE username = %s AND exchange_order_id = %s LIMIT 1",
+                "SELECT * FROM orders WHERE username = %s AND exchange_order_id = %s ORDER BY id ASC LIMIT 1",
                 (username, exchange_order_id),
             )
             return cur.fetchone()

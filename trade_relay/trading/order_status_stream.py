@@ -1356,6 +1356,19 @@ class UserOrderStatusStream:
         reject_reason = str(order.get("r") or "").strip()
         error_message = reject_reason if reject_reason and reject_reason != "NONE" else None
 
+        # First check if the order already exists in DB (covers both trade-relay and previously
+        # adopted external orders).  Only fall through to adopt when genuinely absent.
+        db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
+        if db_order is None:
+            # Order not in DB — placed via an external tool; adopt it now.
+            adopted_id = db.adopt_external_order(self.username, exchange_order_id, order)
+            if adopted_id:
+                logger.info(
+                    "External order adopted: user=%s exchange_order_id=%s status=%s",
+                    self.username, exchange_order_id, status,
+                )
+            return
+
         updated = db.update_order_status_by_exchange_id(
             username=self.username,
             exchange_order_id=exchange_order_id,
@@ -1375,16 +1388,6 @@ class UserOrderStatusStream:
                 status,
                 filled_qty,
                 avg_price,
-            )
-            return
-
-        # Order not found in local DB — may have been placed via an external tool.
-        # Adopt it so all downstream logic (position_history, daily_profile, etc.) works normally.
-        adopted_id = db.adopt_external_order(self.username, exchange_order_id, order)
-        if adopted_id:
-            logger.info(
-                "External order adopted: user=%s exchange_order_id=%s status=%s",
-                self.username, exchange_order_id, status,
             )
 
     def _on_open(self, _ws) -> None:
