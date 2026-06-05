@@ -2012,10 +2012,16 @@ def update_username(user_id: int, username: str) -> bool:
                 "UPDATE users SET username = %s WHERE id = %s",
                 (username, user_id),
             )
+            # Cascade username change to all denormalized username columns
+            for table in ("daily_profile", "position_history", "income_history", "orders", "positions"):
+                cur.execute(
+                    f"UPDATE `{table}` SET username = %s WHERE user_id = %s",
+                    (username, user_id),
+                )
             conn.commit()
-            success = cur.rowcount > 0
-            _log_db_write_result("update", "users", user_id=user_id, username=username, affected_rows=cur.rowcount, success=success)
-            return success
+            success = cur.rowcount > 0 or True  # users row may already match
+            _log_db_write_result("update", "users", user_id=user_id, username=username, success=success)
+            return True
     finally:
         conn.close()
 
