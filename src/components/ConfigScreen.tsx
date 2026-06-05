@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import { api } from '../api/client'
 import { useToastStore } from '../store/toastStore'
 import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
-type SettingsCategory = 'language' | 'password' | 'orderbook' | 'chart'
+type SettingsCategory = 'language' | 'password' | 'orderbook' | 'chart' | 'apikey'
 
 export function ConfigScreen() {
   const locale = useUiPreferencesStore((state) => state.locale)
@@ -21,6 +22,27 @@ export function ConfigScreen() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [saving, setSaving] = useState(false)
+
+  // API Key settings
+  const [apiKey, setApiKey] = useState('')
+  const [apiSecret, setApiSecret] = useState('')
+  const [apiTestnet, setApiTestnet] = useState(false)
+  const [apiKeyLoading, setApiKeyLoading] = useState(false)
+  const [apiKeySaving, setApiKeySaving] = useState(false)
+  const [showApiSecret, setShowApiSecret] = useState(false)
+
+  useEffect(() => {
+    if (activeCategory !== 'apikey') return
+    setApiKeyLoading(true)
+    api.getMyConfig()
+      .then(data => {
+        setApiKey(data.api_key || '')
+        setApiSecret(data.api_secret || '')
+        setApiTestnet(data.testnet || false)
+      })
+      .catch(() => {/* silently ignore */})
+      .finally(() => setApiKeyLoading(false))
+  }, [activeCategory])
   const showToast = useToastStore((state) => state.showToast)
 
   const translateForLocale = (targetLocale: Locale, key: string) => {
@@ -83,6 +105,22 @@ export function ConfigScreen() {
     setSaving(false)
   }
 
+  const handleSaveApiKey = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!apiKey.trim()) {
+      showToast('error', t('config.placeholder.apiKey'))
+      return
+    }
+    setApiKeySaving(true)
+    try {
+      await api.saveMyConfig({ api_key: apiKey.trim(), api_secret: apiSecret.trim(), testnet: apiTestnet })
+      showToast('success', t('config.apiKeySaved'))
+    } catch (err: unknown) {
+      showToast('error', (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.required'))
+    }
+    setApiKeySaving(false)
+  }
+
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e]">
       <div className="px-4 py-2 border-b border-[#3e3e42] shrink-0">
@@ -94,6 +132,7 @@ export function ConfigScreen() {
             {([
               ['language', t('config.category.language')],
               ['password', t('config.category.password')],
+              ['apikey', t('config.category.apikey')],
               ['orderbook', t('config.category.orderbook')],
               ['chart', t('config.category.chart')],
             ] as Array<[SettingsCategory, string]>).map(([category, label]) => (
@@ -169,6 +208,69 @@ export function ConfigScreen() {
                   {saving ? t('config.saving') : t('config.save')}
                 </button>
               </form>
+            </section>
+          )}
+
+          {activeCategory === 'apikey' && (
+            <section className="max-w-lg space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-[#e6ebf2]">{t('config.category.apikey')}</h2>
+                <p className="mt-1 text-sm text-[#8b94a5]">{t('config.apiKeyDescription')}</p>
+              </div>
+              {apiKeyLoading ? (
+                <p className="text-sm text-[#8b94a5]">{t('config.apiKeyLoading')}</p>
+              ) : (
+                <form onSubmit={handleSaveApiKey} className="space-y-4">
+                  <Field label={t('config.apiKey')}>
+                    <input
+                      type="text"
+                      value={apiKey}
+                      onChange={e => setApiKey(e.target.value)}
+                      placeholder={t('config.placeholder.apiKey')}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className={INPUT_CLS}
+                    />
+                  </Field>
+                  <Field label={t('config.apiSecret')}>
+                    <div className="relative">
+                      <input
+                        type={showApiSecret ? 'text' : 'password'}
+                        value={apiSecret}
+                        onChange={e => setApiSecret(e.target.value)}
+                        placeholder={t('config.placeholder.apiSecret')}
+                        autoComplete="off"
+                        spellCheck={false}
+                        className={`${INPUT_CLS} pr-10`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiSecret(v => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-[#858585] hover:text-[#cccccc] transition-colors"
+                        tabIndex={-1}
+                      >
+                        {showApiSecret ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                  </Field>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={apiTestnet}
+                      onChange={e => setApiTestnet(e.target.checked)}
+                      className="w-4 h-4 accent-[#007acc] cursor-pointer"
+                    />
+                    <span className="text-sm text-[#c5ccd8]">{t('config.apiKeyTestnet')}</span>
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={apiKeySaving}
+                    className="px-6 py-2 bg-[#007acc] hover:bg-blue-600 disabled:opacity-50 text-white text-sm rounded"
+                  >
+                    {apiKeySaving ? t('config.saving') : t('config.saveApiKey')}
+                  </button>
+                </form>
+              )}
             </section>
           )}
 

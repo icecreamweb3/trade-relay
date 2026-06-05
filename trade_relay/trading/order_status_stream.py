@@ -218,7 +218,83 @@ class UserOrderStatusStream:
             name=f"order-status-health-{self.username}",
         )
         self.health_check_thread.start()
+        # Adopt any open orders that were placed via external tools before this stream started
+        bootstrap_thread = threading.Thread(
+            target=self._bootstrap_open_orders,
+            daemon=True,
+            name=f"order-status-bootstrap-{self.username}",
+        )
+        bootstrap_thread.start()
         logger.info("Started order status stream for user=%s", self.username)
+
+    def _bootstrap_open_orders(self) -> None:
+        """On stream start, fetch all open orders from Binance and adopt any that are
+        not yet in the local DB (i.e. placed via external tools)."""
+        try:
+            # Basic open orders (LIMIT / MARKET / STOP_MARKET etc.)
+            open_orders = self.client.get_open_orders()
+            adopted = 0
+            for raw in (open_orders or []):
+                oid = str(raw.get("orderId") or "")
+                if not oid:
+                    continue
+                if db.get_order_by_exchange_id(self.username, oid):
+                    continue  # already tracked
+                # Build a WS-compatible dict from the REST response fields
+                ws_like = {
+                    "i": oid,
+                    "s": raw.get("symbol") or raw.get("s"),
+                    "S": raw.get("side") or raw.get("S"),
+                    "o": raw.get("type") or raw.get("o"),
+                    "q": raw.get("origQty") or raw.get("q"),
+                    "p": raw.get("price") or raw.get("p"),
+                    "sp": raw.get("stopPrice") or raw.get("sp"),
+                    "X": raw.get("status") or raw.get("X", "NEW"),
+                    "c": raw.get("clientOrderId") or raw.get("c"),
+                    "z": raw.get("executedQty") or raw.get("z", "0"),
+                    "ap": raw.get("avgPrice") or raw.get("ap"),
+                    "R": raw.get("reduceOnly") or raw.get("R", False),
+                    "ps": raw.get("positionSide") or raw.get("ps", "BOTH"),
+                    "T": raw.get("updateTime") or raw.get("T"),
+                }
+                if db.adopt_external_order(self.username, oid, ws_like):
+                    adopted += 1
+
+            # Conditional (algo) open orders
+            algo_orders = self.client.get_open_algo_orders()
+            for raw in (algo_orders or []):
+                algo_id = str(raw.get("algoId") or raw.get("orderId") or "")
+                if not algo_id:
+                    continue
+                if db.get_order_by_algo_id(self.username, algo_id):
+                    continue
+                ws_like = {
+                    "i": str(raw.get("orderId") or algo_id),
+                    "s": raw.get("symbol"),
+                    "S": raw.get("side"),
+                    "o": raw.get("type", "STOP_MARKET"),
+                    "q": raw.get("qty") or raw.get("origQty"),
+                    "p": raw.get("price"),
+                    "sp": raw.get("stopPrice") or raw.get("triggerPrice"),
+                    "X": raw.get("status", "NEW"),
+                    "c": raw.get("clientAlgoId"),
+                    "z": "0",
+                    "R": raw.get("reduceOnly", True),
+                    "ps": raw.get("positionSide", "BOTH"),
+                    "T": raw.get("updateTime"),
+                }
+                if db.adopt_external_order(self.username, ws_like["i"], ws_like):
+                    adopted += 1
+
+            if adopted:
+                logger.info(
+                    "Bootstrap adopted %d external open order(s) for user=%s",
+                    adopted, self.username,
+                )
+        except Exception:
+            logger.warning(
+                "Bootstrap open orders failed for user=%s", self.username, exc_info=True
+            )
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -1284,6 +1360,16 @@ class UserOrderStatusStream:
                 status,
                 filled_qty,
                 avg_price,
+            )
+            return
+
+        # Order not found in local DB — may have been placed via an external tool.
+        # Adopt it so all downstream logic (position_history, daily_profile, etc.) works normally.
+        adopted_id = db.adopt_external_order(self.username, exchange_order_id, order)
+        if adopted_id:
+            logger.info(
+                "External order adopted: user=%s exchange_order_id=%s status=%s",
+                self.username, exchange_order_id, status,
             )
 
     def _on_open(self, _ws) -> None:

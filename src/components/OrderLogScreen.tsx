@@ -20,6 +20,7 @@ interface Order {
   stop_price?: number | null
   algo_id?: string | null
   exchange_order_id?: string; created_at?: string; updated_at?: string | null; error_message?: string
+  source?: 'trade_relay' | 'external'
 }
 
 interface UserOption {
@@ -220,7 +221,12 @@ export function OrderLogScreen() {
               <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
-                <td className="font-semibold">{o.symbol}</td>
+                <td className="font-semibold">
+                  {o.symbol}
+                  {o.source === 'external' && (
+                    <span className="ml-1 rounded px-1 py-0.5 text-[9px] font-medium bg-[#2B3139] text-[#F0B90B] border border-[#F0B90B33]">{t('order.source.external')}</span>
+                  )}
+                </td>
                 <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.created_at)}</td>
                 <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.updated_at || undefined)}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>

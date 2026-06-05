@@ -88,6 +88,7 @@ interface ApiOrder {
   created_at?: string
   updated_at?: string | null
   error_message?: string
+  source?: 'trade_relay' | 'external'
 }
 
 export interface ApiConditionalOrder {
@@ -105,6 +106,7 @@ export interface ApiConditionalOrder {
   trade_direction?: string | null
   exchange_order_id?: string | null
   client_order_id?: string | null
+  source?: 'trade_relay' | 'external'
 }
 
 interface ApiTrade {
@@ -124,6 +126,7 @@ interface ApiTrade {
   username?: string
   created_at?: string
   updated_at?: string | null
+  source?: 'trade_relay' | 'external'
 }
 
 export interface ApiOrderMarker {
@@ -504,15 +507,14 @@ export const api = {
   },
 
   // ── Config ────────────────────────────────────────────────────────────────
-  async getMyConfig(): Promise<ApiResult> {
-    return request<ApiResult>('GET', '/api/config')
+  async getMyConfig(): Promise<{ api_key: string; api_secret: string; testnet: boolean; mock_mode: boolean }> {
+    return request<{ api_key: string; api_secret: string; testnet: boolean; mock_mode: boolean }>('GET', '/api/config/me')
   },
 
   async saveMyConfig(data: {
-    binance_api_key?: string; binance_api_secret?: string
-    testnet?: boolean; mock_mode?: boolean
-  }): Promise<ApiResult> {
-    return request<ApiResult>('POST', '/api/config', { body: data })
+    api_key: string; api_secret: string; testnet?: boolean; mock_mode?: boolean
+  }): Promise<{ api_key: string; api_secret: string; testnet: boolean; mock_mode: boolean }> {
+    return request<{ api_key: string; api_secret: string; testnet: boolean; mock_mode: boolean }>('POST', '/api/config/me', { body: data })
   },
 
   async changeMyPassword(data: {

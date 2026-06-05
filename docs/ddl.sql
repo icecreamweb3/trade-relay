@@ -16,6 +16,7 @@ CREATE TABLE orders (
     user_id           BIGINT          NOT NULL COMMENT '用户ID',
     username          VARCHAR(64)     NOT NULL COMMENT '用户名',
     exchange          VARCHAR(32)     NOT NULL DEFAULT 'binance' COMMENT '交易所',
+    source            ENUM('trade_relay','external') NOT NULL DEFAULT 'trade_relay' COMMENT '订单来源: trade_relay=本系统下单, external=外部工具下单',
     symbol            VARCHAR(32)     NOT NULL COMMENT '交易对',
     side              ENUM('BUY','SELL') NOT NULL COMMENT '方向',
     order_type        VARCHAR(32)     NOT NULL COMMENT '订单类型',
@@ -223,6 +224,7 @@ ALTER TABLE users
     ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at;
 
 ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS source ENUM('trade_relay','external') NOT NULL DEFAULT 'trade_relay' COMMENT '订单来源: trade_relay=本系统下单, external=外部工具下单' AFTER exchange,
     ADD COLUMN IF NOT EXISTS algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status,
     ADD COLUMN IF NOT EXISTS algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id,
     ADD COLUMN IF NOT EXISTS trade_direction ENUM('OPEN','CLOSE') DEFAULT NULL COMMENT '开仓/平仓' AFTER commission_asset,

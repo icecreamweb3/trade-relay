@@ -1227,6 +1227,7 @@ def init_db() -> None:
                     post_only         TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '只做Maker',
                     position_id       BIGINT          DEFAULT NULL COMMENT '关联持仓ID',
                     order_category    ENUM('Basic','Conditional') NOT NULL DEFAULT 'Basic' COMMENT '订单分类',
+                    source            ENUM('trade_relay','external') NOT NULL DEFAULT 'trade_relay' COMMENT '订单来源: trade_relay=本系统下单, external=外部工具下单',
                     error_message     TEXT            COMMENT '错误信息',
                     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1266,6 +1267,7 @@ def init_db() -> None:
                 ("close_tpsl_sync_last_error", "ALTER TABLE orders ADD COLUMN close_tpsl_sync_last_error TEXT COMMENT '平仓TP/SL最近刷新错误' AFTER close_tpsl_sync_next_retry_at"),
                 ("algo_id",         "ALTER TABLE orders ADD COLUMN algo_id VARCHAR(64) DEFAULT NULL COMMENT '条件单算法订单ID' AFTER status"),
                 ("algo_client_id",  "ALTER TABLE orders ADD COLUMN algo_client_id VARCHAR(64) DEFAULT NULL COMMENT '条件单客户端算法订单ID' AFTER algo_id"),
+                ("source",          "ALTER TABLE orders ADD COLUMN source ENUM('trade_relay','external') NOT NULL DEFAULT 'trade_relay' COMMENT '订单来源: trade_relay=本系统下单, external=外部工具下单' AFTER exchange"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -2096,6 +2098,7 @@ def create_order(
     reduce_only: bool = False,
     post_only: bool = False,
     order_category: str = 'Basic',             # Basic | Conditional
+    source: str = 'trade_relay',               # trade_relay | external
 ) -> int:
     conn = get_connection()
     try:
@@ -2139,18 +2142,19 @@ def create_order(
                     "post_only": int(post_only),
                     "position_id": position_id,
                     "order_category": normalized_order_category,
+                    "source": source,
                     "error_message": error_message,
                 },
             )
             cur.execute(
                 """INSERT INTO orders
-                   (user_id, username, exchange, symbol, side, order_type,
+                   (user_id, username, exchange, source, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     algo_id, algo_client_id, exchange_order_id, client_order_id,
                     trade_direction, position_mode, reduce_only, post_only, position_id, realized_pnl, order_category, error_message)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    user_id, username, exchange, symbol, side, order_type,
+                    user_id, username, exchange, source, symbol, side, order_type,
                     quantity, price, stop_price, tp_price, sl_price, status,
                     normalized_algo_id, normalized_algo_client_id, normalized_exchange_order_id, normalized_client_order_id,
                     trade_direction, position_mode, int(reduce_only), int(post_only), position_id, realized_pnl, normalized_order_category, error_message,
@@ -3714,6 +3718,110 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
                 (username, exchange_order_id),
             )
             return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) -> Optional[int]:
+    """将外部工具（TradingView / Binance 客户端等）产生的订单写入本地 orders 表。
+
+    从 Binance User Data Stream ORDER_TRADE_UPDATE 的 ``o`` 字段提取字段，
+    使用 INSERT ... ON DUPLICATE KEY UPDATE 保证幂等（WS 重连时不重复写入）。
+    返回写入/已存在记录的主键 id，失败返回 None。
+    """
+    user = get_user_by_username(username)
+    if not user:
+        logger.warning("adopt_external_order: user not found for username=%s", username)
+        return None
+    user_id = int(user["id"])
+
+    def _f(key: str) -> Optional[float]:
+        v = ws_event.get(key)
+        try:
+            return float(v) if v not in (None, "", "0", 0) else None
+        except (TypeError, ValueError):
+            return None
+
+    symbol        = str(ws_event.get("s") or "")
+    side          = str(ws_event.get("S") or "").upper()
+    order_type    = str(ws_event.get("o") or "MARKET").upper()
+    quantity      = float(ws_event.get("q") or 0)
+    price         = _f("p")
+    stop_price    = _f("sp")
+    status        = str(ws_event.get("X") or "NEW").upper()
+    client_order_id = str(ws_event.get("c") or "").strip() or None
+    filled_qty    = float(ws_event.get("z") or 0)
+    avg_price     = _f("ap")
+    reduce_only   = bool(ws_event.get("R") or False)
+    trade_direction = "CLOSE" if reduce_only else "OPEN"
+    raw_ps        = str(ws_event.get("ps") or "BOTH").upper()
+    position_mode = "DUAL" if raw_ps in ("LONG", "SHORT") else "SINGLE"
+    order_category = _normalize_order_category(order_type, "")
+    # filled_at from trade time field 'T' (millisecond epoch)
+    filled_at = None
+    trade_time = ws_event.get("T")
+    if trade_time and status in ("FILLED", "PARTIALLY_FILLED"):
+        try:
+            import datetime as _dt
+            filled_at = _dt.datetime.utcfromtimestamp(int(trade_time) / 1000)
+        except Exception:
+            pass
+
+    if not symbol or not side or not order_type or quantity <= 0:
+        logger.warning(
+            "adopt_external_order: incomplete WS event for exchange_order_id=%s, skipping",
+            exchange_order_id,
+        )
+        return None
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO orders
+                   (user_id, username, exchange, source, symbol, side, order_type,
+                    quantity, price, stop_price, status,
+                    exchange_order_id, client_order_id,
+                    filled_qty, avg_price, filled_at,
+                    trade_direction, position_mode, reduce_only,
+                    order_category)
+                   VALUES (%s, %s, 'binance', 'external', %s, %s, %s,
+                           %s, %s, %s, %s,
+                           %s, %s,
+                           %s, %s, %s,
+                           %s, %s, %s,
+                           %s)
+                   ON DUPLICATE KEY UPDATE
+                       status       = IF(VALUES(status) IN ('FILLED','CANCELED','EXPIRED','REJECTED'), VALUES(status), status),
+                       filled_qty   = GREATEST(filled_qty, VALUES(filled_qty)),
+                       avg_price    = COALESCE(VALUES(avg_price), avg_price),
+                       filled_at    = COALESCE(VALUES(filled_at), filled_at)
+                """,
+                (
+                    user_id, username, symbol, side, order_type,
+                    quantity, price, stop_price, status,
+                    exchange_order_id, client_order_id,
+                    filled_qty, avg_price, filled_at,
+                    trade_direction, position_mode, int(reduce_only),
+                    order_category,
+                ),
+            )
+            conn.commit()
+            if cur.lastrowid:
+                logger.info(
+                    "adopt_external_order: adopted order exchange_order_id=%s for user=%s symbol=%s side=%s status=%s",
+                    exchange_order_id, username, symbol, side, status,
+                )
+                return cur.lastrowid
+            # ON DUPLICATE KEY UPDATE: lastrowid is 0 when no insert occurred
+            row = get_order_by_exchange_id(username, exchange_order_id)
+            return int(row["id"]) if row else None
+    except Exception:
+        logger.exception(
+            "adopt_external_order: failed to adopt exchange_order_id=%s for user=%s",
+            exchange_order_id, username,
+        )
+        return None
     finally:
         conn.close()
 

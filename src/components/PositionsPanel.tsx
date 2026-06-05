@@ -33,6 +33,7 @@ interface Order {
   trade_direction?: string | null
   commission?: number | null; commission_asset?: string | null
   status: string; username?: string; created_at?: string; updated_at?: string | null; exchange_order_id?: string
+  source?: 'trade_relay' | 'external'
 }
 
 interface Trade {
@@ -589,7 +590,12 @@ export function PositionsPanel({
                   : (tab === 'openOrders' ? openOrders : history).map(o => (
                     <tr key={o.id}>
                       <td className="text-[#858585]">{formatTimestamp(tab === 'history' ? (o.updated_at || o.created_at) : o.created_at)}</td>
-                      <td className="font-semibold">{o.symbol}</td>
+                      <td className="font-semibold">
+                        {o.symbol}
+                        {o.source === 'external' && (
+                          <span className="ml-1 rounded px-1 py-0.5 text-[9px] font-medium bg-[#2B3139] text-[#F0B90B] border border-[#F0B90B33]">{t('order.source.external')}</span>
+                        )}
+                      </td>
                       <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                       {tab === 'history' && <td className="text-[#858585]">{formatTradeDirection(o.trade_direction, t)}</td>}
