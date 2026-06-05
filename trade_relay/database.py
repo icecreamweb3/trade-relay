@@ -3813,6 +3813,13 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
         )
         return None
 
+    # Guard: check if this exchange_order_id is already in DB (race between concurrent WS events
+    # or between WS and order_manager write).  orders.exchange_order_id has no UNIQUE constraint
+    # so ON DUPLICATE KEY UPDATE would not fire — do the dedup at application level instead.
+    existing = get_order_by_exchange_id(username, exchange_order_id)
+    if existing:
+        return int(existing["id"])
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -3830,11 +3837,6 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                            %s, %s, %s,
                            %s, %s, %s,
                            %s)
-                   ON DUPLICATE KEY UPDATE
-                       status       = IF(VALUES(status) IN ('FILLED','CANCELED','EXPIRED','REJECTED'), VALUES(status), status),
-                       filled_qty   = GREATEST(filled_qty, VALUES(filled_qty)),
-                       avg_price    = COALESCE(VALUES(avg_price), avg_price),
-                       filled_at    = COALESCE(VALUES(filled_at), filled_at)
                 """,
                 (
                     user_id, username, symbol, side, order_type,
@@ -3846,13 +3848,13 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                 ),
             )
             conn.commit()
-            if cur.lastrowid:
+            new_id = cur.lastrowid
+            if new_id:
                 logger.info(
                     "adopt_external_order: adopted order exchange_order_id=%s for user=%s symbol=%s side=%s status=%s",
                     exchange_order_id, username, symbol, side, status,
                 )
-                return cur.lastrowid
-            # ON DUPLICATE KEY UPDATE: lastrowid is 0 when no insert occurred
+                return new_id
             row = get_order_by_exchange_id(username, exchange_order_id)
             return int(row["id"]) if row else None
     except Exception:
