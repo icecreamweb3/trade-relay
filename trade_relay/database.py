@@ -1953,8 +1953,9 @@ def get_user_by_username(username: str) -> Optional[dict]:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Use BINARY for case-sensitive match to prevent e.g. 'simba' matching 'Simba_d'
             cur.execute(
-                "SELECT * FROM users WHERE username = %s AND is_active = 1",
+                "SELECT * FROM users WHERE BINARY username = %s AND is_active = 1",
                 (username,),
             )
             return cur.fetchone()
