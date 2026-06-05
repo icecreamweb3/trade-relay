@@ -2053,6 +2053,21 @@ def deactivate_user(user_id: int) -> bool:
         conn.close()
 
 
+def hard_delete_user(user_id: int) -> bool:
+    """Permanently delete a user row. Caller must ensure no FK-constrained child rows remain."""
+    _log_db_write("delete", "users", {"user_id": user_id})
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            conn.commit()
+            success = cur.rowcount > 0
+            _log_db_write_result("delete", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
+            return success
+    finally:
+        conn.close()
+
+
 def activate_user(user_id: int) -> bool:
     _log_db_write("update", "users", {"user_id": user_id, "is_active": 1})
     conn = get_connection()

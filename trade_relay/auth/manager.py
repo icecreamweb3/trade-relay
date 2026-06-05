@@ -95,7 +95,7 @@ def create_user(
 
 
 def delete_user(session: Session, target_user_id: int) -> tuple[bool, str]:
-    """Deactivate a user. Only admins may call this."""
+    """Permanently delete a user. Only admins may call this."""
     if not session.is_admin:
         return False, t("unauthorized")
     if target_user_id == session.user_id:
@@ -107,9 +107,11 @@ def delete_user(session: Session, target_user_id: int) -> tuple[bool, str]:
     if target["role"] == "admin":
         return False, t("cannot_delete_admin")
 
-    db.deactivate_user(target_user_id)
+    ok = db.hard_delete_user(target_user_id)
+    if not ok:
+        return False, t("error")
     db.log_operation(session.user_id, session.username, "DELETE_USER",
-                     f"Deactivated user '{target['username']}'")
+                     f"Deleted user '{target['username']}'")
     return True, t("user_deleted", target["username"])
 
 

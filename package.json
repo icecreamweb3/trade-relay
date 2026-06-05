@@ -1,6 +1,6 @@
 {
   "name": "trade-relay",
-  "version": "1.0.2",
+  "version": "1.0.0.3",
   "description": "Trade Relay — Multi-user trading terminal",
   "author": {
     "name": "Trade Relay"

@@ -71,6 +71,7 @@ export function AdminScreen() {
     if (!confirm(t('admin.confirmDelete', { username: selectedUser.username }))) return
     try {
       await api.deleteUser(selectedUser.id)
+      setSelectedUserId(null)
       await loadUsers()
       showToast('success', t('admin.success.deleted'))
     } catch (err: unknown) {
