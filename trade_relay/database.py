@@ -3666,6 +3666,25 @@ def add_position_history(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Dedup guard: if close_order_id is set, check for an existing row first.
+            # This prevents duplicate rows when WS and REST poll paths race each other.
+            if close_order_id is not None:
+                cur.execute(
+                    "SELECT id FROM position_history WHERE close_order_id = %s AND username = %s LIMIT 1",
+                    (close_order_id, username),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    _log_db_write_result(
+                        "insert_skipped_duplicate",
+                        "position_history",
+                        history_id=existing["id"],
+                        user_id=user_id,
+                        symbol=symbol,
+                        side=side.upper(),
+                    )
+                    return existing["id"]
+
             cur.execute(
                 """INSERT INTO position_history
                          (user_id, username, symbol, side, position_mode, entry_price, close_price, quantity, realized_pnl, commission, commission_asset, position_id, close_order_id, created_at, updated_at)
