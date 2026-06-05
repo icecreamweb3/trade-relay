@@ -413,7 +413,11 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
           : pendingEvents.findIndex((event) => event.U <= lastAppliedUpdateId + 1 && event.u >= lastAppliedUpdateId + 1)
 
         if (pendingEvents.length > 0 && startIndex === -1) {
-          scheduleSnapshotRetry()
+          // No buffered event bridges the snapshot — buffer is stale (snapshot took too long).
+          // Accept the snapshot as-is and discard stale events; the next WS message
+          // will carry on from here without triggering a retry loop.
+          snapshotLoaded = true
+          bufferedEvents = []
           return
         }
 
@@ -422,7 +426,9 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
 
         for (const event of pendingEvents.slice(startIndex)) {
           if (!applyDepthEvent(event)) {
-            scheduleSnapshotRetry()
+            // Sequence gap in buffered events — discard remainder and accept current state.
+            snapshotLoaded = true
+            bufferedEvents = []
             return
           }
         }
@@ -459,7 +465,12 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
             return
           }
           if (!applyDepthEvent(data)) {
-            void syncSnapshot()
+            // Sequence gap on live stream \u2014 accept current book state and reset update id
+            // so the next event is accepted as a fresh starting point.
+            lastAppliedUpdateId = data.u
+            applyBookUpdates(bidsBook, data.b)
+            applyBookUpdates(asksBook, data.a)
+            schedulePublishOrderBook()
           }
         } catch {
           return

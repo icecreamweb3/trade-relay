@@ -246,6 +246,8 @@ def get_order_book_depth(
     limit: int = Query(default=1000, ge=5, le=1000),
 ):
     normalized_symbol = symbol.upper()
+    proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    proxy_cfg = {"http": proxy_url, "https": proxy_url} if proxy_url else None
     try:
         response = requests.get(
             "https://fapi.binance.com/fapi/v1/depth",
@@ -254,6 +256,7 @@ def get_order_book_depth(
                 "User-Agent": "Mozilla/5.0",
                 "Accept": "application/json",
             },
+            proxies=proxy_cfg,
             timeout=10,
         )
         response.raise_for_status()
@@ -266,6 +269,93 @@ def get_order_book_depth(
         bids=payload.get("bids") or [],
         asks=payload.get("asks") or [],
     )
+
+
+@router.websocket("/depth/ws")
+async def depth_ws(
+    websocket: WebSocket,
+    symbol: str = Query(..., min_length=1),
+    token: str | None = Query(default=None),
+):
+    """Proxies Binance @depth@100ms stream through the backend so the frontend
+    does not need a direct connection to fstream.binance.com."""
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
+        return
+    if decode_token(token) is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token")
+        return
+
+    await websocket.accept()
+
+    import threading
+    import websocket as _ws_lib  # websocket-client
+
+    normalized_symbol = symbol.lower()
+    binance_url = f"wss://fstream.binance.com/stream?streams={normalized_symbol}@depth@100ms"
+    proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _parse_proxy(url: str):
+        """Return (host, port, proxy_type) from a socks5/http proxy URL."""
+        import socks as _socks
+        url = url.strip()
+        if url.startswith("socks5://"):
+            rest = url[len("socks5://"):]
+            host, _, port_str = rest.rpartition(":")
+            return host or "127.0.0.1", int(port_str or 10808), _socks.SOCKS5
+        if url.startswith("http://"):
+            rest = url[len("http://"):]
+            host, _, port_str = rest.rpartition(":")
+            return host or "127.0.0.1", int(port_str or 8080), _socks.HTTP
+        return None, None, None
+
+    proxy_host, proxy_port, proxy_type = (None, None, None)
+    if proxy_url:
+        try:
+            proxy_host, proxy_port, proxy_type = _parse_proxy(proxy_url)
+        except Exception:
+            pass
+
+    def on_message(_ws, msg):
+        loop.call_soon_threadsafe(queue.put_nowait, msg)
+
+    def on_close(_ws, *_):
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    def on_error(_ws, err):
+        _log.debug("depth_ws proxy: binance error %s", err)
+
+    ws_kwargs: dict = dict(
+        url=binance_url,
+        on_message=on_message,
+        on_close=on_close,
+        on_error=on_error,
+    )
+    if proxy_host and proxy_port:
+        ws_kwargs["http_proxy_host"] = proxy_host
+        ws_kwargs["http_proxy_port"] = proxy_port
+        ws_kwargs["proxy_type"] = "socks5" if proxy_type and proxy_type == 2 else "http"
+
+    bws = _ws_lib.WebSocketApp(**ws_kwargs)
+    t = threading.Thread(target=bws.run_forever, daemon=True)
+    t.start()
+
+    try:
+        while True:
+            msg = await asyncio.wait_for(queue.get(), timeout=30.0)
+            if msg is None:
+                break
+            await websocket.send_text(msg)
+    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+        pass
+    finally:
+        try:
+            bws.close()
+        except Exception:
+            pass
 
 
 @router.get("/summary", response_model=AccountSummaryOut)
