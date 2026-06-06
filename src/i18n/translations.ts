@@ -334,6 +334,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'config.placeholder.apiSecret': '请输入 Binance API Secret',
     'config.saveApiKey': '保存',
     'config.apiKeySaved': 'API Key 已更新',
+    'config.error.apiKeyRequired': '请填写 API Key',
+    'config.error.apiSecretRequired': '请填写 API Secret',
+    'config.error.saveApiKeyFailed': '保存失败，请重试',
     'config.apiKeyLoading': '加载中...',
     'config.apiKeyTestnet': '使用测试网络 (Testnet)',
 
@@ -705,6 +708,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'config.placeholder.apiSecret': 'Enter Binance API Secret',
     'config.saveApiKey': 'Save',
     'config.apiKeySaved': 'API Key updated',
+    'config.error.apiKeyRequired': 'Please enter your API Key',
+    'config.error.apiSecretRequired': 'Please enter your API Secret',
+    'config.error.saveApiKeyFailed': 'Save failed, please try again',
     'config.apiKeyLoading': 'Loading...',
     'config.apiKeyTestnet': 'Use Testnet',
 

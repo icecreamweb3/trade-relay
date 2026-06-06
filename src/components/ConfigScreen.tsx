@@ -110,7 +110,11 @@ export function ConfigScreen() {
   const handleSaveApiKey = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!apiKey.trim()) {
-      showToast('error', t('config.placeholder.apiKey'))
+      showToast('error', t('config.error.apiKeyRequired'))
+      return
+    }
+    if (!apiSecretMasked && !apiSecret.trim()) {
+      showToast('error', t('config.error.apiSecretRequired'))
       return
     }
     setApiKeySaving(true)
@@ -118,7 +122,7 @@ export function ConfigScreen() {
       await api.saveMyConfig({ api_key: apiKey.trim(), api_secret: apiSecretMasked ? '***keep***' : apiSecret.trim(), testnet: apiTestnet })
       showToast('success', t('config.apiKeySaved'))
     } catch (err: unknown) {
-      showToast('error', (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.required'))
+      showToast('error', (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.saveApiKeyFailed'))
     }
     setApiKeySaving(false)
   }

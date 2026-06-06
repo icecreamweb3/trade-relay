@@ -48,7 +48,7 @@ def get_my_config(user: dict = Depends(get_current_user)):
 @router.post("/me", response_model=ConfigOut)
 def save_my_config(body: ConfigIn, user: dict = Depends(get_current_user)):
     username = user["username"]
-    user_id = int(user["id"])
+    user_id = int(user["sub"])
 
     # Resolve final values: keep existing when client sends masked placeholder
     existing_key = cfg_module.get_api_key(username) or ""
