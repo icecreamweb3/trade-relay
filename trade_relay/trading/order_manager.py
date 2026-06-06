@@ -227,6 +227,19 @@ async def submit_order(
         result.success,
     )
 
+    # Post-create cleanup: the WS thread may have raced our INSERT and created an 'external'
+    # duplicate row.  Delete any extra external rows for this exchange_order_id now that we
+    # own the authoritative trade_relay row.
+    if adopted_exchange_id and result.success and order_db_id:
+        all_rows = db.get_all_orders_by_exchange_id(username, adopted_exchange_id)
+        for dup in (all_rows or []):
+            if int(dup["id"]) != order_db_id and str(dup.get("source")) == "external":
+                db.delete_order_by_id(int(dup["id"]))
+                _log.info(
+                    "[ORDER_FLOW] phase=remove_external_duplicate username=%s dup_id=%s exchange_order_id=%s",
+                    username, dup["id"], adopted_exchange_id,
+                )
+
     if result.success and not mock and result.order_id and api_key and api_secret and order_category == "Basic":
         # Start the per-user user-data stream and do one immediate REST sync to
         # close the race where an order fills before the websocket is fully up.

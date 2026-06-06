@@ -3785,6 +3785,32 @@ def get_order_by_exchange_id(username: str, exchange_order_id: str) -> Optional[
         conn.close()
 
 
+def get_all_orders_by_exchange_id(username: str, exchange_order_id: str) -> list:
+    """返回同一 exchange_order_id 的所有行（用于检测并清理重复行）。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, source FROM orders WHERE username = %s AND exchange_order_id = %s ORDER BY id ASC",
+                (username, exchange_order_id),
+            )
+            return cur.fetchall() or []
+    finally:
+        conn.close()
+
+
+def delete_order_by_id(order_id: int) -> bool:
+    """硬删除指定 id 的 orders 行，返回是否成功。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def get_order_by_client_order_id(username: str, client_order_id: str) -> Optional[dict]:
     """按 client_order_id 或 algo_client_id 查询订单（覆盖条件单触发场景）。"""
     conn = get_connection()
@@ -3899,6 +3925,9 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Use INSERT ... SELECT ... WHERE NOT EXISTS so the existence check and the insert
+            # are atomic at the InnoDB row-locking level.  This prevents duplicates even when
+            # order_manager commits its INSERT between our SELECT check above and this INSERT.
             cur.execute(
                 """INSERT INTO orders
                    (user_id, username, exchange, source, symbol, side, order_type,
@@ -3907,12 +3936,17 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     filled_qty, avg_price, filled_at,
                     trade_direction, position_mode, reduce_only,
                     order_category)
-                   VALUES (%s, %s, 'binance', 'external', %s, %s, %s,
+                   SELECT %s, %s, 'binance', 'external', %s, %s, %s,
                            %s, %s, %s, %s,
                            %s, %s,
                            %s, %s, %s,
                            %s, %s, %s,
-                           %s)
+                           %s
+                   FROM DUAL
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM orders
+                       WHERE username = %s AND exchange_order_id = %s
+                   )
                 """,
                 (
                     user_id, username, symbol, side, order_type,
@@ -3921,6 +3955,7 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     filled_qty, avg_price, filled_at,
                     trade_direction, position_mode, int(reduce_only),
                     order_category,
+                    username, exchange_order_id,  # WHERE NOT EXISTS params
                 ),
             )
             conn.commit()
