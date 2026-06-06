@@ -1,5 +1,5 @@
 """
-Configuration management: per-user YAML config files for Binance keys.
+Configuration management: per-user Binance API credentials stored in database.
 """
 import os
 from pathlib import Path
@@ -7,107 +7,85 @@ from typing import Optional
 
 from trade_relay import database as db_module
 
+# ---------------------------------------------------------------------------
+# Legacy YAML helpers — kept only for one-time migration tooling.
+# New code must NOT call load_user_config / save_user_config.
+# ---------------------------------------------------------------------------
 try:
-    import yaml
+    import yaml as _yaml
 except ImportError:
-    yaml = None  # type: ignore
+    _yaml = None  # type: ignore
 
 CONFIGS_DIR = Path(__file__).parent.parent / "configs" / "users"
 
 
-def _ensure_dir() -> None:
-    CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
-
-
 def _config_path(username: str) -> Path:
-    # Sanitize username to prevent path traversal
     safe = "".join(c for c in username if c.isalnum() or c in ("_", "-"))
     return CONFIGS_DIR / f"{safe}.yaml"
 
 
-def load_user_config(username: str) -> dict:
-    """Load user Binance config. Returns defaults if not found."""
-    _ensure_dir()
+def _load_yaml_config(username: str) -> dict:
+    """Read legacy YAML config. Returns empty dict when not available."""
     path = _config_path(username)
-    defaults = {
-        "binance": {
-            "api_key": "",
-            "api_secret": "",
-            "testnet": False,
-        },
-        "trading": {
-            "mock_mode": False,
-        },
-    }
-    if not path.exists():
-        return defaults
+    if not path.exists() or _yaml is None:
+        return {}
     try:
-        if yaml is None:
-            raise RuntimeError("pyyaml not installed")
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        # Merge with defaults
-        for section, values in defaults.items():
-            if section not in data:
-                data[section] = values
-            else:
-                for k, v in values.items():
-                    if k not in data[section]:
-                        data[section][k] = v
-        return data
+            return _yaml.safe_load(f) or {}
     except Exception:
-        return defaults
+        return {}
 
 
-def save_user_config(username: str, config: dict) -> None:
-    """Save user config to YAML file."""
-    _ensure_dir()
-    path = _config_path(username)
-    if yaml is None:
-        raise RuntimeError("pyyaml not installed")
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-
+# ---------------------------------------------------------------------------
+# Public API — DB is the single source of truth.
+# ---------------------------------------------------------------------------
 
 def get_api_key(username: str) -> Optional[str]:
-    """Return API key: DB encrypted value → per-user YAML → env."""
+    """Return Binance API key from DB, falling back to env var."""
     row = db_module.get_user_by_username(username)
     if row is not None:
         db_value = db_module.decrypt_api_credential(row.get("binance_api_key") or "")
         if db_value:
             return db_value
-    cfg = load_user_config(username)
-    return (cfg.get("binance", {}).get("api_key")
-            or os.environ.get("TRADE_RELAY_BINANCE_API_KEY", "").strip()
-            or None)
+    return os.environ.get("TRADE_RELAY_BINANCE_API_KEY", "").strip() or None
 
 
 def get_api_secret(username: str) -> Optional[str]:
-    """Return API secret: DB encrypted value → per-user YAML → env."""
+    """Return Binance API secret from DB, falling back to env var."""
     row = db_module.get_user_by_username(username)
     if row is not None:
         db_value = db_module.decrypt_api_credential(row.get("binance_api_secret") or "")
         if db_value:
             return db_value
-    cfg = load_user_config(username)
-    return (cfg.get("binance", {}).get("api_secret")
-            or os.environ.get("TRADE_RELAY_BINANCE_API_SECRET", "").strip()
-            or None)
+    return os.environ.get("TRADE_RELAY_BINANCE_API_SECRET", "").strip() or None
 
 
 def is_testnet(username: str) -> bool:
-    """Testnet flag: per-user YAML → env TRADE_RELAY_BINANCE_TESTNET."""
-    cfg = load_user_config(username)
-    yaml_val = cfg.get("binance", {}).get("testnet")
-    if yaml_val:
-        return True
+    """Return testnet flag from DB, falling back to env var."""
+    row = db_module.get_user_by_username(username)
+    if row is not None and row.get("testnet") is not None:
+        return bool(row["testnet"])
     return os.environ.get("TRADE_RELAY_BINANCE_TESTNET", "false").strip().lower() in ("1", "true", "yes")
 
 
 def is_mock_mode(username: str) -> bool:
-    """Mock mode flag: per-user YAML → env TRADE_RELAY_MOCK_MODE."""
-    cfg = load_user_config(username)
-    yaml_val = cfg.get("trading", {}).get("mock_mode")
-    if yaml_val:
-        return True
+    """Return mock_mode flag from DB, falling back to env var."""
+    row = db_module.get_user_by_username(username)
+    if row is not None and row.get("mock_mode") is not None:
+        return bool(row["mock_mode"])
     return os.environ.get("TRADE_RELAY_MOCK_MODE", "false").strip().lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Deprecated stubs — do not call from new code.
+# ---------------------------------------------------------------------------
+
+def load_user_config(username: str) -> dict:
+    """Deprecated: reads legacy YAML file only. Use DB functions instead."""
+    return _load_yaml_config(username)
+
+
+def save_user_config(username: str, config: dict) -> None:
+    """Deprecated: no-op. Config is now stored in the database."""
+    pass
+

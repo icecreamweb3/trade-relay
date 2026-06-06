@@ -1168,6 +1168,8 @@ def init_db() -> None:
                     is_active         TINYINT(1)   NOT NULL DEFAULT 1,
                     binance_api_key   TEXT         DEFAULT NULL COMMENT 'Binance API Key (encrypted)',
                     binance_api_secret TEXT        DEFAULT NULL COMMENT 'Binance API Secret (encrypted)',
+                    testnet           TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否使用测试网',
+                    mock_mode         TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否模拟交易',
                     created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     PRIMARY KEY (id),
@@ -1179,6 +1181,8 @@ def init_db() -> None:
             for col, definition in [
                 ("binance_api_key",    "TEXT DEFAULT NULL COMMENT 'Binance API Key (encrypted)'"),
                 ("binance_api_secret", "TEXT DEFAULT NULL COMMENT 'Binance API Secret (encrypted)'"),
+                ("testnet",            "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否使用测试网'"),
+                ("mock_mode",          "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否模拟交易'"),
                 ("updated_at",         "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
             ]:
                 try:
@@ -1925,6 +1929,8 @@ def update_user_api_credentials(
     user_id: int,
     binance_api_key: str,
     binance_api_secret: str,
+    testnet: bool = False,
+    mock_mode: bool = False,
 ) -> bool:
     """Encrypt and persist Binance API credentials for a user."""
     enc_key = encrypt_api_credential(binance_api_key) if binance_api_key else None
@@ -1932,14 +1938,16 @@ def update_user_api_credentials(
     _log_db_write(
         "update",
         "users",
-        {"user_id": user_id, "binance_api_key": enc_key, "binance_api_secret": enc_secret},
+        {"user_id": user_id, "binance_api_key": enc_key, "binance_api_secret": enc_secret,
+         "testnet": testnet, "mock_mode": mock_mode},
     )
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET binance_api_key = %s, binance_api_secret = %s WHERE id = %s",
-                (enc_key, enc_secret, user_id),
+                "UPDATE users SET binance_api_key = %s, binance_api_secret = %s,"
+                " testnet = %s, mock_mode = %s WHERE id = %s",
+                (enc_key, enc_secret, int(testnet), int(mock_mode), user_id),
             )
             conn.commit()
             success = cur.rowcount > 0

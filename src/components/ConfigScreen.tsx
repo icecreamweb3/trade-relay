@@ -26,6 +26,7 @@ export function ConfigScreen() {
   // API Key settings
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
+  const [apiSecretMasked, setApiSecretMasked] = useState(false)
   const [apiTestnet, setApiTestnet] = useState(false)
   const [apiKeyLoading, setApiKeyLoading] = useState(false)
   const [apiKeySaving, setApiKeySaving] = useState(false)
@@ -38,6 +39,7 @@ export function ConfigScreen() {
       .then(data => {
         setApiKey(data.api_key || '')
         setApiSecret(data.api_secret || '')
+        setApiSecretMasked(data.api_secret?.includes('*') ?? false)
         setApiTestnet(data.testnet || false)
       })
       .catch(() => {/* silently ignore */})
@@ -113,7 +115,7 @@ export function ConfigScreen() {
     }
     setApiKeySaving(true)
     try {
-      await api.saveMyConfig({ api_key: apiKey.trim(), api_secret: apiSecret.trim(), testnet: apiTestnet })
+      await api.saveMyConfig({ api_key: apiKey.trim(), api_secret: apiSecretMasked ? '***keep***' : apiSecret.trim(), testnet: apiTestnet })
       showToast('success', t('config.apiKeySaved'))
     } catch (err: unknown) {
       showToast('error', (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || t('config.error.required'))
@@ -237,7 +239,8 @@ export function ConfigScreen() {
                       <input
                         type={showApiSecret ? 'text' : 'password'}
                         value={apiSecret}
-                        onChange={e => setApiSecret(e.target.value)}
+                        onChange={e => { setApiSecret(e.target.value); setApiSecretMasked(false) }}
+                        onFocus={() => { if (apiSecretMasked) { setApiSecret(''); setApiSecretMasked(false) } }}
                         placeholder={t('config.placeholder.apiSecret')}
                         autoComplete="off"
                         spellCheck={false}
