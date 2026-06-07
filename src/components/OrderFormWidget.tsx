@@ -729,8 +729,11 @@ export function OrderFormWidget({
     }
   }
 
+  const prevOrderBookPriceRef = useRef<typeof selectedOrderBookPrice>(null)
   useEffect(() => {
     if (selectedOrderBookPrice?.value == null) return
+    if (selectedOrderBookPrice === prevOrderBookPriceRef.current) return
+    prevOrderBookPriceRef.current = selectedOrderBookPrice
     const nextValue = String(selectedOrderBookPrice.value)
     if (orderType === 'CONDITIONAL') {
       setStopPrice(nextValue)
