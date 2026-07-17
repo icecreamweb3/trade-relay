@@ -32,6 +32,7 @@ import os
 import sys
 import shutil
 import logging
+import threading
 
 from trade_relay.env_loader import load_env
 
@@ -71,6 +72,16 @@ def _fix_ssl_cert_env():
 
 
 _fix_ssl_cert_env()
+
+
+# ── 杠杆 / 持仓模式缓存 ─────────────────────────────────────────────────────
+# 下单前每次都调用 set_leverage / get_position_mode 会多两次 HTTP 往返；
+# 这两个设置极少变化，按凭证缓存（TTL 300s），成功写入时同步刷新。
+_SETTINGS_CACHE_TTL = 300.0
+_leverage_cache: dict[tuple, tuple] = {}
+_leverage_cache_lock = threading.Lock()
+_position_mode_cache: dict[tuple, tuple] = {}
+_position_mode_cache_lock = threading.Lock()
 
 
 
@@ -877,9 +888,9 @@ class BinanceClient:
         import requests as _requests
         for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
             try:
-                # positionRisk is a signed direct HTTP call; force a fresh time sync
-                # before each attempt to reduce -1021 timestamp drift under proxies.
-                self.set_timestamp_offset(force=True)
+                # positionRisk is a signed direct HTTP call. 首次尝试按 60s 间隔同步即可，
+                # 只有 -1021 重试时才强制同步，避免高频轮询打爆 /api/v3/time。
+                self.set_timestamp_offset(force=(attempt > 0))
                 url = f"{self.base_url}/fapi/v2/positionRisk"
                 params: dict[str, object] = {
                     "recvWindow": recv_window or self.DEFAULT_RECV_WINDOW,
@@ -927,7 +938,7 @@ class BinanceClient:
         if symbol:
             request_kwargs['symbol'] = symbol
         try:
-            self.set_timestamp_offset(force=True)
+            self.set_timestamp_offset()
             rows = self.client.futures_position_information(**request_kwargs)
             return rows or []
         except Exception as e:
@@ -944,9 +955,18 @@ class BinanceClient:
         return 0.0
 
     def set_leverage(self, symbol: str, leverage: int) -> dict:
-        """Set leverage for a symbol and return Binance's response payload."""
+        """Set leverage for a symbol and return Binance's response payload.
+
+        杠杆极少变化：缓存值与目标一致且在 TTL 内时跳过交易所调用，省去一次 HTTP 往返。
+        """
+        cache_key = (self.api_key, self.testnet, str(symbol).upper())
+        now = time.time()
+        with _leverage_cache_lock:
+            cached = _leverage_cache.get(cache_key)
+            if cached and cached[1] == leverage and now - cached[0] < _SETTINGS_CACHE_TTL:
+                return {"symbol": symbol, "leverage": leverage, "cached": True}
         try:
-            return self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
+            result = self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
         except Exception as e:
             status_code = getattr(e, 'status_code', None)
             error_code = getattr(e, 'code', None)
@@ -960,23 +980,40 @@ class BinanceClient:
                 error_message,
             )
             raise RuntimeError(error_message) from e
+        with _leverage_cache_lock:
+            _leverage_cache[cache_key] = (now, leverage)
+        return result
     
     def get_position_mode(self) -> Optional[bool]:
-        """Get position mode: True = Hedge Mode, False = One-way Mode"""
+        """Get position mode: True = Hedge Mode, False = One-way Mode
+
+        持仓模式极少变化：TTL 内直接返回缓存值，避免每次下单都多一次 HTTP 往返。
+        """
+        cache_key = (self.api_key, self.testnet)
+        now = time.time()
+        with _position_mode_cache_lock:
+            cached = _position_mode_cache.get(cache_key)
+            if cached and now - cached[0] < _SETTINGS_CACHE_TTL:
+                return cached[1]
         try:
-            # 在请求前强制同步时间戳（确保时间准确）
-            self.set_timestamp_offset(force=True)
+            # 按 60s 间隔同步时间戳（高频调用，强制同步会造成 /api/v3/time 风暴）
+            self.set_timestamp_offset()
             result = self.client.futures_get_position_mode()
             # result is a dict with 'dualSidePosition' key
-            return result.get('dualSidePosition', False)
+            mode = result.get('dualSidePosition', False)
         except Exception as e:
             logger.debug(f"Failed to get position mode: {e}")
             return None
+        with _position_mode_cache_lock:
+            _position_mode_cache[cache_key] = (now, mode)
+        return mode
     
     def set_position_mode(self, hedge_mode: bool = False) -> bool:
         """Set position mode: True = Hedge Mode, False = One-way Mode"""
         try:
             self.client.futures_change_position_mode(dualSidePosition=hedge_mode)
+            with _position_mode_cache_lock:
+                _position_mode_cache[(self.api_key, self.testnet)] = (time.time(), hedge_mode)
             return True
         except Exception as e:
             error_message = f"Failed to set position mode: {e}"
@@ -1110,8 +1147,8 @@ class BinanceClient:
                     logger.debug(f"   🔑 API Key前缀: {self.api_key[:10] if self.api_key else 'N/A'}...")
                     logger.debug(f"   🌐 Base URL: {self.base_url}")
                     
-                    # 在下单前强制同步时间戳（确保时间准确）
-                    self.set_timestamp_offset(force=True)
+                    # 下单前按 60s 间隔同步时间戳（本方法开头已同步过，此处通常为空操作）
+                    self.set_timestamp_offset()
                     
                     # 使用 SDK 的 futures 下单方法
                     result = self.client.futures_create_order(**order_params)

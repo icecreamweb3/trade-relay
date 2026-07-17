@@ -387,7 +387,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
         body.exchange_order_id,
     )
 
-    order_row = db_module.get_order_by_id(order_id)
+    order_row = await asyncio.to_thread(db_module.get_order_by_id, order_id)
     if not order_row:
         raise HTTPException(status_code=404, detail="Order not found")
     if user["role"] != "admin" and order_row.get("username") != username:
@@ -398,18 +398,18 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
     # Determine whose credentials to use (admin acts on behalf of order owner)
     target_username = order_row["username"]
 
-    mock = cfg.is_mock_mode(target_username)
+    mock = await asyncio.to_thread(cfg.is_mock_mode, target_username)
     if mock:
-        db_module.update_order_status(order_id, "CANCELED")
+        await asyncio.to_thread(db_module.update_order_status, order_id, "CANCELED")
         _log.info("[ORDER_FLOW] phase=cancel_mock_success order_id=%s username=%s", order_id, username)
         return {"ok": True}
 
-    api_key = cfg.get_api_key(target_username)
-    api_secret = cfg.get_api_secret(target_username)
+    api_key = await asyncio.to_thread(cfg.get_api_key, target_username)
+    api_secret = await asyncio.to_thread(cfg.get_api_secret, target_username)
     if not api_key or not api_secret:
         raise HTTPException(status_code=400, detail="No API credentials configured")
 
-    testnet = cfg.is_testnet(target_username)
+    testnet = await asyncio.to_thread(cfg.is_testnet, target_username)
     try:
         client = _get_futures_client(api_key, api_secret, testnet)
         import asyncio
@@ -419,7 +419,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
         _log.warning("[ORDER_FLOW] phase=cancel_exchange_error order_id=%s username=%s error=%s", order_id, username, exc)
         raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
 
-    db_module.update_order_status(order_id, "CANCELED")
+    await asyncio.to_thread(db_module.update_order_status, order_id, "CANCELED")
     _log.info("[ORDER_FLOW] phase=cancel_db_success order_id=%s username=%s", order_id, username)
     return {"ok": True}
 
@@ -428,7 +428,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
 async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depends(get_current_user)):
     """Amend an open basic LIMIT order by canceling it and placing a replacement order."""
     username = user["username"]
-    order_row = db_module.get_order_by_id(order_id)
+    order_row = await asyncio.to_thread(db_module.get_order_by_id, order_id)
     if not order_row:
         raise HTTPException(status_code=404, detail="Order not found")
     if user["role"] != "admin" and order_row.get("username") != username:
@@ -462,7 +462,7 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
 
     target_username = str(order_row.get("username") or username)
     target_user_id = int(order_row.get("user_id") or user["sub"])
-    mock = cfg.is_mock_mode(target_username)
+    mock = await asyncio.to_thread(cfg.is_mock_mode, target_username)
 
     _log.info(
         "[ORDER_FLOW] phase=amend_request username=%s order_id=%s symbol=%s old_qty=%s filled_qty=%s target_qty=%s replacement_qty=%s old_price=%s new_price=%s",
@@ -478,7 +478,7 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
     )
 
     if mock:
-        db_module.update_order_status(order_id, "CANCELED")
+        await asyncio.to_thread(db_module.update_order_status, order_id, "CANCELED")
         session = Session(target_user_id, target_username, user["role"])
         result = await submit_order(
             session,
@@ -498,12 +498,12 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
             raise HTTPException(status_code=400, detail=result.message)
         return {"ok": True, "order_id": result.order_id, "message": result.message}
 
-    api_key = cfg.get_api_key(target_username)
-    api_secret = cfg.get_api_secret(target_username)
+    api_key = await asyncio.to_thread(cfg.get_api_key, target_username)
+    api_secret = await asyncio.to_thread(cfg.get_api_secret, target_username)
     if not api_key or not api_secret:
         raise HTTPException(status_code=400, detail="No API credentials configured")
 
-    testnet = cfg.is_testnet(target_username)
+    testnet = await asyncio.to_thread(cfg.is_testnet, target_username)
     symbol = str(order_row.get("symbol") or "").upper()
     try:
         client = _get_futures_client(api_key, api_secret, testnet)
@@ -519,7 +519,7 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
         )
         raise HTTPException(status_code=502, detail=f"Binance cancel failed: {exc}")
 
-    db_module.update_order_status(order_id, "CANCELED")
+    await asyncio.to_thread(db_module.update_order_status, order_id, "CANCELED")
 
     leverage = await asyncio.to_thread(_get_symbol_leverage, client, symbol)
     session = Session(target_user_id, target_username, user["role"])
@@ -709,7 +709,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     seen_algo_ids: set[int] = set()
     client: FuturesBinanceClient | None = None
     _TPSL_TYPES = {"TAKE_PROFIT_MARKET", "STOP_MARKET", "STOP"}
-    db_rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+    db_rows = await asyncio.to_thread(db_module.query_orders, user_id=user_id, status="NEW", limit=500)
     conditional_rows = [row for row in db_rows if str(row.get("order_type") or "") in _TPSL_TYPES]
     rows_by_algo_id = {
         str(row.get("algo_id") or row.get("exchange_order_id")): row
@@ -723,10 +723,10 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     }
 
     # 1. Try Binance Algo Order API (may not be available for all accounts)
-    api_key = cfg.get_api_key(username)
-    api_secret = cfg.get_api_secret(username)
+    api_key = await asyncio.to_thread(cfg.get_api_key, username)
+    api_secret = await asyncio.to_thread(cfg.get_api_secret, username)
     if api_key and api_secret:
-        testnet = cfg.is_testnet(username)
+        testnet = await asyncio.to_thread(cfg.is_testnet, username)
         client = _get_futures_client(api_key, api_secret, testnet)
         binance_orders = await asyncio.to_thread(client.get_open_algo_orders)
         for o in binance_orders:
@@ -765,7 +765,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                     if order_type == "STOP" and limit_price > 0 and local_row.get("price") is None:
                         backfill_fields["price"] = limit_price
                     if backfill_fields:
-                        db_module.update_order_metadata(int(local_row["id"]), **backfill_fields)
+                        await asyncio.to_thread(db_module.update_order_metadata, int(local_row["id"]), **backfill_fields)
                 seen_algo_ids.add(algo_id)
                 result.append(ConditionalOrderOut(
                     algo_id=algo_id,
@@ -833,15 +833,16 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
             actual_order_id = str(algo_detail.get("actualOrderId") or algo_detail.get("orderId") or "").strip() or None
             client_algo_id = str(algo_detail.get("clientAlgoId") or "").strip() or None
             if actual_order_id and actual_order_id != str(row.get("exchange_order_id") or ""):
-                db_module.update_order_metadata(int(row["id"]), exchange_order_id=actual_order_id)
+                await asyncio.to_thread(db_module.update_order_metadata, int(row["id"]), exchange_order_id=actual_order_id)
                 row = {**row, "exchange_order_id": actual_order_id}
             if client_algo_id and client_algo_id != str(row.get("algo_client_id") or ""):
-                db_module.update_order_metadata(int(row["id"]), algo_client_id=client_algo_id)
+                await asyncio.to_thread(db_module.update_order_metadata, int(row["id"]), algo_client_id=client_algo_id)
                 row = {**row, "algo_client_id": client_algo_id}
             if db_status and db_status != "NEW":
                 filled_qty = float(algo_detail.get("quantity") or row.get("quantity") or 0) if db_status == "FILLED" else 0.0
                 avg_price = float(algo_detail.get("actualPrice") or 0) if db_status == "FILLED" and float(algo_detail.get("actualPrice") or 0) > 0 else 0.0
-                db_module.update_order_status(
+                await asyncio.to_thread(
+                    db_module.update_order_status,
                     int(row["id"]),
                     db_status,
                     filled_qty=filled_qty if db_status == "FILLED" else None,
@@ -849,8 +850,8 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 )
                 if db_status == "FILLED":
                     if str(row.get("trade_direction") or "").upper() == "CLOSE":
-                        _record_close_fill_history_from_conditional(row, filled_qty, avg_price)
-                    sync_filled_order_trade_details(username=username, client=client, order_row={**row, "status": db_status, "exchange_order_id": actual_order_id or row.get("exchange_order_id")})
+                        await asyncio.to_thread(_record_close_fill_history_from_conditional, row, filled_qty, avg_price)
+                    await asyncio.to_thread(sync_filled_order_trade_details, username=username, client=client, order_row={**row, "status": db_status, "exchange_order_id": actual_order_id or row.get("exchange_order_id")})
                 continue
             if trigger <= 0:
                 trigger = float(algo_detail.get("triggerPrice") or trigger or 0)
@@ -860,7 +861,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
                 limit_price = float(algo_detail.get("price") or limit_price or 0)
 
         if isinstance(algo_detail, dict) and algo_detail.get("_order_not_found"):
-            db_module.update_order_status(int(row["id"]), "EXPIRED")
+            await asyncio.to_thread(db_module.update_order_status, int(row["id"]), "EXPIRED")
             continue
 
         trade_direction = str(row.get("trade_direction") or "").upper()
@@ -894,11 +895,11 @@ async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: di
     """Cancel an open conditional (algo) order on Binance."""
     username = user["username"]
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    api_key = cfg.get_api_key(username)
-    api_secret = cfg.get_api_secret(username)
+    api_key = await asyncio.to_thread(cfg.get_api_key, username)
+    api_secret = await asyncio.to_thread(cfg.get_api_secret, username)
     if not api_key or not api_secret:
         raise HTTPException(status_code=400, detail="No API credentials configured")
-    testnet = cfg.is_testnet(username)
+    testnet = await asyncio.to_thread(cfg.is_testnet, username)
     client = _get_futures_client(api_key, api_secret, testnet)
     order_rows = await asyncio.to_thread(db_module.query_orders, user_id=user_id, status="NEW", limit=500)
     order_row = next(
@@ -916,6 +917,6 @@ async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: di
         raise HTTPException(status_code=502, detail="Failed to cancel algo order on Binance")
     _log.info("Cancel conditional order success: user=%s algo_id=%s symbol=%s result=%s", username, body.algo_id, symbol, result)
     if order_row:
-        db_module.update_order_status(int(order_row["id"]), "CANCELED")
+        await asyncio.to_thread(db_module.update_order_status, int(order_row["id"]), "CANCELED")
     return {"ok": True}
 

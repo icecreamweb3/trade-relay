@@ -280,12 +280,14 @@ export function PositionsPanel({
   const handleCancelOrder = async (o: Order) => {
     if (!o.exchange_order_id) return
     setCancellingId(o.id)
+    // 乐观更新：先标记为已取消，失败再回滚（websocket 推送也会兜底校正）
+    setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
     try {
       await api.cancelOrder(o.id, o.symbol, o.exchange_order_id)
       showToast('success', t('pos.cancelSingleSuccess'))
-      setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: 'CANCELED' } : x))
       onOrdersChanged?.()
     } catch (err: unknown) {
+      setOpenOrders(prev => prev.map(x => x.id === o.id ? { ...x, status: o.status } : x))
       showToast('error', t('pos.cancelSingleFailed', {
         reason: getRequestErrorMessage(err, t('pos.cancelFailed')),
       }))
@@ -296,11 +298,19 @@ export function PositionsPanel({
 
   const handleCancelConditional = async (o: ApiConditionalOrder) => {
     setCancellingAlgoId(o.algo_id)
+    // 乐观更新：先从列表移除，失败再按原位置恢复
+    const originalIndex = conditionalOrders.findIndex(x => x.algo_id === o.algo_id)
+    setConditionalOrders(prev => prev.filter(x => x.algo_id !== o.algo_id))
     try {
       await api.cancelConditionalOrder(o.algo_id)
       showToast('success', t('pos.cancelConditionalSuccess'))
-      setConditionalOrders(prev => prev.filter(x => x.algo_id !== o.algo_id))
     } catch (err: unknown) {
+      setConditionalOrders(prev => {
+        if (prev.some(x => x.algo_id === o.algo_id)) return prev
+        const next = [...prev]
+        next.splice(Math.min(Math.max(originalIndex, 0), next.length), 0, o)
+        return next
+      })
       showToast('error', t('pos.cancelSingleFailed', {
         reason: getRequestErrorMessage(err, t('pos.cancelFailed')),
       }))
@@ -336,25 +346,30 @@ export function PositionsPanel({
       if (cancellableOrders.length === 0) return
 
       setBulkCancelling('basic')
-      const cancelledIds = new Set<number>()
-      let failedCount = 0
+      // 乐观更新：先全部标记为已取消，再并行撤单，失败的回滚原状态
+      const previousStatus = new Map(cancellableOrders.map(o => [o.id, o.status]))
+      setOpenOrders(prev => prev.map(o => previousStatus.has(o.id) ? { ...o, status: 'CANCELED' } : o))
       try {
-        for (const order of cancellableOrders) {
-          try {
-            await api.cancelOrder(order.id, order.symbol, String(order.exchange_order_id))
-            cancelledIds.add(order.id)
-          } catch {
-            failedCount += 1
-          }
+        const results = await Promise.allSettled(cancellableOrders.map(order =>
+          api.cancelOrder(order.id, order.symbol, String(order.exchange_order_id)),
+        ))
+        const failedIds = new Set<number>()
+        results.forEach((res, i) => {
+          if (res.status === 'rejected') failedIds.add(cancellableOrders[i].id)
+        })
+        if (failedIds.size > 0) {
+          setOpenOrders(prev => prev.map(o =>
+            failedIds.has(o.id) ? { ...o, status: previousStatus.get(o.id) ?? o.status } : o,
+          ))
         }
-        if (cancelledIds.size > 0) {
-          setOpenOrders((prev) => prev.filter((order) => !cancelledIds.has(order.id)))
+        const cancelledCount = cancellableOrders.length - failedIds.size
+        if (cancelledCount > 0) {
           onOrdersChanged?.()
         }
-        if (failedCount === 0) {
-          showToast('success', t('pos.cancelAllSuccess', { count: cancelledIds.size }))
+        if (failedIds.size === 0) {
+          showToast('success', t('pos.cancelAllSuccess', { count: cancelledCount }))
         } else {
-          showToast('error', t('pos.cancelAllPartial', { count: cancelledIds.size, failed: failedCount }))
+          showToast('error', t('pos.cancelAllPartial', { count: cancelledCount, failed: failedIds.size }))
         }
       } finally {
         setBulkCancelling(null)
@@ -366,24 +381,37 @@ export function PositionsPanel({
     if (cancellableConditionalOrders.length === 0) return
 
     setBulkCancelling('conditional')
-    const cancelledAlgoIds = new Set<number>()
-    let failedCount = 0
+    // 乐观更新：先全部移除，再并行撤单，失败的按原位置恢复
+    const removedWithIndex = cancellableConditionalOrders.map(o => ({
+      order: o,
+      index: conditionalOrders.findIndex(x => x.algo_id === o.algo_id),
+    }))
+    const removedIds = new Set(cancellableConditionalOrders.map(o => o.algo_id))
+    setConditionalOrders(prev => prev.filter(x => !removedIds.has(x.algo_id)))
     try {
-      for (const order of cancellableConditionalOrders) {
-        try {
-          await api.cancelConditionalOrder(order.algo_id)
-          cancelledAlgoIds.add(order.algo_id)
-        } catch {
-          failedCount += 1
-        }
+      const results = await Promise.allSettled(cancellableConditionalOrders.map(order =>
+        api.cancelConditionalOrder(order.algo_id),
+      ))
+      const failedAlgoIds = new Set<number>()
+      results.forEach((res, i) => {
+        if (res.status === 'rejected') failedAlgoIds.add(cancellableConditionalOrders[i].algo_id)
+      })
+      if (failedAlgoIds.size > 0) {
+        setConditionalOrders(prev => {
+          const next = [...prev]
+          for (const { order, index } of removedWithIndex) {
+            if (!failedAlgoIds.has(order.algo_id)) continue
+            if (next.some(x => x.algo_id === order.algo_id)) continue
+            next.splice(Math.min(Math.max(index, 0), next.length), 0, order)
+          }
+          return next
+        })
       }
-      if (cancelledAlgoIds.size > 0) {
-        setConditionalOrders((prev) => prev.filter((order) => !cancelledAlgoIds.has(order.algo_id)))
-      }
-      if (failedCount === 0) {
-        showToast('success', t('pos.cancelAllSuccess', { count: cancelledAlgoIds.size }))
+      const cancelledCount = cancellableConditionalOrders.length - failedAlgoIds.size
+      if (failedAlgoIds.size === 0) {
+        showToast('success', t('pos.cancelAllSuccess', { count: cancelledCount }))
       } else {
-        showToast('error', t('pos.cancelAllPartial', { count: cancelledAlgoIds.size, failed: failedCount }))
+        showToast('error', t('pos.cancelAllPartial', { count: cancelledCount, failed: failedAlgoIds.size }))
       }
     } finally {
       setBulkCancelling(null)
