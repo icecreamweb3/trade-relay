@@ -182,6 +182,7 @@ export function ProfileScreen() {
 
   const maxPnl = Math.max(...daily.map(d => Math.abs(d.net_pnl)), 1)
   const hasSingleDay = daily.length === 1
+  const dailyBarChartWidth = hasSingleDay ? 480 : Math.max(daily.length * 72, 480)
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
   const equitySeries = buildEquitySeries(daily, stats?.account_balance)
   const displayedLeaderboard = buildDailyLeaderboardRows(leaderboard, currentUser?.username, stats?.account_balance)
@@ -209,7 +210,7 @@ export function ProfileScreen() {
           )}
 
           {/* Daily PnL bar chart */}
-          <div className="bg-[#252526] rounded border border-[#3e3e42] p-3">
+          <div className="min-w-0 bg-[#252526] rounded border border-[#3e3e42] p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="text-xs text-[#858585]">{t('profile.dailyPnl')}</div>
               <div className="flex items-center gap-2">
@@ -233,40 +234,42 @@ export function ProfileScreen() {
                 emptyLabel={t('profile.accountEquityUnavailable')}
               />
             ) : (
-              <div className="rounded border border-[#31343b] bg-[#202225] px-3 py-4">
-                <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
-                  <span>{daily[0].date}</span>
-                  <span className="font-mono">range 0.00 / {chartAxisMax}</span>
-                </div>
-                <div className="mb-2 flex items-center justify-between text-[10px] text-[#59606c]">
-                  <span>{chartAxisMax}</span>
-                  <span>0.00</span>
-                </div>
-                <div className={`flex h-40 items-end gap-3 ${hasSingleDay ? 'justify-center' : 'justify-between'}`}>
-                  {daily.map((d) => {
-                    const barHeight = Math.max(10, Math.round((Math.abs(d.net_pnl) / maxPnl) * 88))
-                    const isUp = d.net_pnl >= 0
-                    const barStyle = { height: `${barHeight}px` }
+              <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225] px-3 py-4">
+                <div style={{ minWidth: `${dailyBarChartWidth}px` }}>
+                  <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
+                    <span>{daily[0].date}</span>
+                    <span className="font-mono">range 0.00 / {chartAxisMax}</span>
+                  </div>
+                  <div className="mb-2 flex items-center justify-between text-[10px] text-[#59606c]">
+                    <span>{chartAxisMax}</span>
+                    <span>0.00</span>
+                  </div>
+                  <div className={`flex h-40 items-end gap-3 ${hasSingleDay ? 'justify-center' : 'justify-start'}`}>
+                    {daily.map((d) => {
+                      const barHeight = Math.max(10, Math.round((Math.abs(d.net_pnl) / maxPnl) * 88))
+                      const isUp = d.net_pnl >= 0
+                      const barStyle = { height: `${barHeight}px` }
 
-                    return (
-                      <div
-                        key={d.date}
-                        className={`flex flex-col items-center gap-2 ${hasSingleDay ? 'w-[120px]' : 'min-w-[56px] max-w-[92px] flex-1'}`}
-                        title={`${d.date}: ${formatTruncatedAmount(d.net_pnl, 2)}`}
-                      >
-                        <div className={`text-[11px] font-mono ${isUp ? 'text-buy' : 'text-sell'}`}>
-                          {formatSignedAmount(d.net_pnl, 2)}
+                      return (
+                        <div
+                          key={d.date}
+                          className={`flex flex-col items-center gap-2 ${hasSingleDay ? 'w-[120px]' : 'w-[60px] shrink-0'}`}
+                          title={`${d.date}: ${formatTruncatedAmount(d.net_pnl, 2)}`}
+                        >
+                          <div className={`text-[11px] font-mono ${isUp ? 'text-buy' : 'text-sell'}`}>
+                            {formatSignedAmount(d.net_pnl, 2)}
+                          </div>
+                          <div className="flex h-28 w-full items-end justify-center px-3">
+                            <div
+                              className={`w-full rounded-t-sm ${isUp ? 'bg-[#00c853]' : 'bg-[#ff1744]'} opacity-90 transition-opacity hover:opacity-100`}
+                              style={barStyle}
+                            />
+                          </div>
+                          <div className="text-[11px] font-mono text-[#8c93a1]">{formatChartDate(d.date)}</div>
                         </div>
-                        <div className="flex h-28 w-full items-end justify-center px-3">
-                          <div
-                            className={`w-full rounded-t-sm ${isUp ? 'bg-[#00c853]' : 'bg-[#ff1744]'} opacity-90 transition-opacity hover:opacity-100`}
-                            style={barStyle}
-                          />
-                        </div>
-                        <div className="text-[11px] font-mono text-[#8c93a1]">{formatChartDate(d.date)}</div>
-                      </div>
-                    )
-                  })}
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
             )}

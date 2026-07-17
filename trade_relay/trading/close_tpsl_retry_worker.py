@@ -33,6 +33,12 @@ def _process_candidate(row: dict) -> None:
             order_id,
             attempts,
         )
+        # 清除 next_retry_at，避免该行每轮都被重复捞出、刷日志；保留错误信息供排查
+        db_module.update_order_close_tpsl_sync_state(
+            order_id,
+            next_retry_at=None,
+            last_error="max_attempts_reached",
+        )
         return
 
     status = str(row.get("status") or "").upper()

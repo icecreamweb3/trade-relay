@@ -3107,18 +3107,13 @@ class BinanceClient:
         last_exception = None
         for attempt in range(max_retries + 1):  # 总共 max_retries + 1 次尝试
             try:
-                # Get server time
-                try:
-                    server_time = self.get_server_time()
-                    if server_time:
-                        timestamp = int(server_time.timestamp() * 1000) + 100
-                    else:
-                        timestamp = int(time.time() * 1000)
-                except Exception:
-                    timestamp = int(time.time() * 1000)
-                
-                # Prepare parameters for signature
-                params_for_signature = {'timestamp': str(timestamp)}
+                # 按 60s 间隔刷新时间偏移（构造时已同步，通常不会发 HTTP）；
+                # timestamp 由 _generate_signed_request_body 用已同步 offset 自动生成，
+                # 避免每次取消都额外请求一次 get_server_time。
+                self.set_timestamp_offset(force=(attempt > 0))
+
+                # Prepare parameters for signature（timestamp/recvWindow 由签名函数自动补充）
+                params_for_signature = {}
                 if algo_id:
                     params_for_signature['algoId'] = str(algo_id)
                 if client_algo_id:
@@ -3234,12 +3229,12 @@ class BinanceClient:
         """
         for attempt in range(self.MAX_TIMESTAMP_RETRIES + 1):
             try:
-                # 在请求前同步时间戳
+                # 在请求前同步时间戳：首次尝试按 60s 间隔检查（构造时已同步），仅重试时强制同步
                 if attempt > 0:
                     self.set_timestamp_offset(force=True)
                 else:
-                    self.set_timestamp_offset(force=True)
-                
+                    self.set_timestamp_offset()
+
                 result = self.client.futures_cancel_order(symbol=symbol, orderId=int(order_id))
                 return result
             except Exception as e:

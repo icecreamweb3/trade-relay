@@ -27,6 +27,31 @@ _RECENT_FILLS_CACHE_TTL = 2.0
 _recent_fills_cache_lock = Lock()
 _recent_fills_cache: tuple[float, list["OrderOut"]] | None = None
 
+# Per-credential Futures client cache: reusing a client avoids a fresh time sync
+# (GET /api/v3/time) and HTTPS session setup on every cancel/amend request.
+_CLIENT_CACHE_TTL = 300.0
+_CLIENT_CACHE_MAX = 16
+_client_cache: dict[tuple[str, str, bool], tuple[float, FuturesBinanceClient]] = {}
+_client_cache_lock = Lock()
+
+
+def _get_futures_client(api_key: str, api_secret: str, testnet: bool) -> FuturesBinanceClient:
+    """Return a cached FuturesBinanceClient for the given credentials."""
+    key = (api_key, api_secret, testnet)
+    now = time.monotonic()
+    with _client_cache_lock:
+        cached = _client_cache.get(key)
+        if cached and now - cached[0] < _CLIENT_CACHE_TTL:
+            return cached[1]
+    # Build outside the lock: __init__ performs a network time sync.
+    client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+    with _client_cache_lock:
+        _client_cache[key] = (now, client)
+        if len(_client_cache) > _CLIENT_CACHE_MAX:
+            oldest_key = min(_client_cache, key=lambda k: _client_cache[k][0])
+            _client_cache.pop(oldest_key, None)
+    return client
+
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -386,7 +411,7 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
 
     testnet = cfg.is_testnet(target_username)
     try:
-        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        client = _get_futures_client(api_key, api_secret, testnet)
         import asyncio
         result = await asyncio.to_thread(client.cancel_order, body.symbol, body.exchange_order_id)
         _log.info("[ORDER_FLOW] phase=cancel_exchange_success order_id=%s username=%s result=%s", order_id, username, result)
@@ -481,7 +506,7 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
     testnet = cfg.is_testnet(target_username)
     symbol = str(order_row.get("symbol") or "").upper()
     try:
-        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        client = _get_futures_client(api_key, api_secret, testnet)
         cancel_result = await asyncio.to_thread(client.cancel_order, symbol, exchange_order_id)
         if isinstance(cancel_result, dict) and cancel_result.get("error"):
             raise RuntimeError(str(cancel_result.get("error_message") or cancel_result))
@@ -702,7 +727,7 @@ async def get_conditional_orders(user: dict = Depends(get_current_user)):
     api_secret = cfg.get_api_secret(username)
     if api_key and api_secret:
         testnet = cfg.is_testnet(username)
-        client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+        client = _get_futures_client(api_key, api_secret, testnet)
         binance_orders = await asyncio.to_thread(client.get_open_algo_orders)
         for o in binance_orders:
             try:
@@ -874,10 +899,11 @@ async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: di
     if not api_key or not api_secret:
         raise HTTPException(status_code=400, detail="No API credentials configured")
     testnet = cfg.is_testnet(username)
-    client = FuturesBinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
+    client = _get_futures_client(api_key, api_secret, testnet)
+    order_rows = await asyncio.to_thread(db_module.query_orders, user_id=user_id, status="NEW", limit=500)
     order_row = next(
         (
-            row for row in db_module.query_orders(user_id=user_id, status="NEW", limit=500)
+            row for row in order_rows
             if str(row.get("algo_id") or row.get("exchange_order_id") or "") == str(body.algo_id)
         ),
         None,
