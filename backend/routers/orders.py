@@ -412,7 +412,6 @@ async def cancel_order(order_id: int, body: CancelOrderRequest, user: dict = Dep
     testnet = await asyncio.to_thread(cfg.is_testnet, target_username)
     try:
         client = _get_futures_client(api_key, api_secret, testnet)
-        import asyncio
         result = await asyncio.to_thread(client.cancel_order, body.symbol, body.exchange_order_id)
         _log.info("[ORDER_FLOW] phase=cancel_exchange_success order_id=%s username=%s result=%s", order_id, username, result)
     except Exception as exc:
