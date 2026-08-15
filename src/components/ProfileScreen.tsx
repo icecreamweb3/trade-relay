@@ -184,6 +184,8 @@ export function ProfileScreen() {
   const hasSingleDay = daily.length === 1
   const dailyBarChartWidth = hasSingleDay ? 480 : Math.max(daily.length * 72, 480)
   const chartAxisMax = formatSignedAmount(maxPnl, 2)
+  // 柱状图按日期降序展示（最新日期在最前）；权益曲线仍用升序的 daily
+  const dailyDesc = [...daily].sort((a, b) => b.date.localeCompare(a.date))
   const equitySeries = buildEquitySeries(daily, stats?.account_balance)
   const displayedLeaderboard = buildDailyLeaderboardRows(leaderboard, currentUser?.username, stats?.account_balance)
 
@@ -237,7 +239,7 @@ export function ProfileScreen() {
               <div className="overflow-x-auto rounded border border-[#31343b] bg-[#202225] px-3 py-4">
                 <div style={{ minWidth: `${dailyBarChartWidth}px` }}>
                   <div className="mb-3 flex items-center justify-between text-[11px] text-[#6f7682]">
-                    <span>{daily[0].date}</span>
+                    <span>{dailyDesc[0].date}</span>
                     <span className="font-mono">range 0.00 / {chartAxisMax}</span>
                   </div>
                   <div className="mb-2 flex items-center justify-between text-[10px] text-[#59606c]">
@@ -245,7 +247,7 @@ export function ProfileScreen() {
                     <span>0.00</span>
                   </div>
                   <div className={`flex h-40 items-end gap-3 ${hasSingleDay ? 'justify-center' : 'justify-start'}`}>
-                    {daily.map((d) => {
+                    {dailyDesc.map((d) => {
                       const barHeight = Math.max(10, Math.round((Math.abs(d.net_pnl) / maxPnl) * 88))
                       const isUp = d.net_pnl >= 0
                       const barStyle = { height: `${barHeight}px` }

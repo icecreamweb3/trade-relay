@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { Calendar, Download } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
@@ -108,6 +108,22 @@ export function OrderLogScreen() {
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault()
     load(filters)
+  }
+
+  const handleThisWeek = () => {
+    const now = new Date()
+    // 以周一为一周的起点
+    const monday = new Date(now)
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7))
+    monday.setHours(0, 0, 0, 0)
+    const sunday = new Date(monday)
+    sunday.setDate(monday.getDate() + 6)
+    sunday.setHours(23, 59, 59, 0)
+    setFilters((current) => ({
+      ...current,
+      startTime: toLocalDateTimeInputValue(monday),
+      endTime: toLocalDateTimeInputValue(sunday),
+    }))
   }
 
   const handleClear = () => {
@@ -240,6 +256,9 @@ export function OrderLogScreen() {
           <button type="submit" className="h-9 rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
             {t('log.filter.search')}
           </button>
+          <button type="button" onClick={handleThisWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
+            {t('log.filter.thisWeek')}
+          </button>
           <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
           </button>
@@ -337,26 +356,62 @@ function FilterField({ label, children, className = '' }: { label: string; child
 }
 
 function DateTimeFilterInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const pickerRef = useRef<HTMLInputElement>(null)
+  const [text, setText] = useState(() => formatFilterDateTimeDisplay(value))
+
+  // 外部修改（本周/清空/选择器）时同步显示；用户输入过程中不打断
+  useEffect(() => {
+    setText((current) => {
+      if ((parseFilterDateTimeText(current) ?? '') === value) return current
+      return formatFilterDateTimeDisplay(value)
+    })
+  }, [value])
+
+  const commitText = (nextText: string) => {
+    setText(nextText)
+    const trimmed = nextText.trim()
+    if (!trimmed) {
+      if (value) onChange('')
+      return
+    }
+    const parsed = parseFilterDateTimeText(trimmed)
+    if (parsed && parsed !== value) onChange(parsed)
+  }
+
   return (
     <div className="relative">
       <input
+        type="text"
+        value={text}
+        placeholder="YYYY/MM/DD HH:mm:ss"
+        onChange={(event) => commitText(event.target.value)}
+        onBlur={() => setText(formatFilterDateTimeDisplay(value))}
+        className={`${INPUT_CLS} pr-11`}
+      />
+      <input
+        ref={pickerRef}
         type="datetime-local"
+        step={1}
         value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className={`${INPUT_CLS} pr-11 datetime-filter-input`}
+        onChange={(event) => onChange(normalizePickerValue(event.target.value))}
+        tabIndex={-1}
+        aria-hidden="true"
+        className="pointer-events-none absolute right-2 top-1/2 h-px w-px -translate-y-1/2 opacity-0"
       />
       <button
         type="button"
         aria-label="Open date time picker"
-        onClick={(event) => {
-          const input = event.currentTarget.previousElementSibling as HTMLInputElement | null
-          if (!input) return
-          if (typeof input.showPicker === 'function') {
-            input.showPicker()
-            return
-          }
-          input.focus()
-          input.click()
+        onClick={() => {
+          const picker = pickerRef.current
+          if (!picker) return
+          try {
+            if (typeof picker.showPicker === 'function') {
+              picker.showPicker()
+              return
+            }
+          } catch { /* fall through to focus/click */ }
+          picker.focus()
+          picker.click()
         }}
         className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded border border-[#7aa2ff] bg-[#dbe7ff] text-[#0f172a] shadow-[0_0_0_1px_rgba(122,162,255,0.15)] hover:bg-white"
       >
@@ -364,6 +419,37 @@ function DateTimeFilterInput({ value, onChange }: { value: string; onChange: (va
       </button>
     </div>
   )
+}
+
+// 显示格式：2026/08/10 00:00:00（24 小时制，本地时间）
+function formatFilterDateTimeDisplay(value: string): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+// 解析用户输入（支持 2026/08/10 00:00:00、2026-08-10 00:00 等），返回内部值 YYYY-MM-DDTHH:mm:ss
+function parseFilterDateTimeText(text: string): string | null {
+  const match = text.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/)
+  if (!match) return null
+  const [, year, month, day, hour = '0', minute = '0', second = '0'] = match
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null
+  const pad = (v: string) => v.padStart(2, '0')
+  const canonical = `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}`
+  const date = new Date(canonical)
+  if (Number.isNaN(date.getTime())) return null
+  // 排除 2026/02/30 这类被 Date 自动进位的非法日期
+  if (date.getFullYear() !== Number(year) || date.getMonth() + 1 !== Number(month) || date.getDate() !== Number(day)) return null
+  return canonical
+}
+
+function normalizePickerValue(value: string): string {
+  if (!value) return ''
+  // 选择器可能只给到分钟，补足秒
+  return value.length === 16 ? `${value}:00` : value
 }
 
 function CopyValueButton({
@@ -492,7 +578,19 @@ function formatSignedNumber(value?: number | null, decimals = 4) {
 
 function toBackendDateTime(value: string) {
   if (!value) return undefined
-  return `${value.replace('T', ' ')}:00`
+  // datetime-local 的值是浏览器本地时间（UTC+8），数据库 created_at 存 UTC 且后端直接按字符串比较，
+  // 发送前先转成 UTC，保证筛选范围与界面显示（同样按本地时区渲染）一致
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return undefined
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
+    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
+}
+
+function toLocalDateTimeInputValue(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 function formatLogTimestamp(value?: string) {
