@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { Calendar } from 'lucide-react'
+import { Calendar, Download } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -56,6 +56,7 @@ export function OrderLogScreen() {
   const showToast = useToastStore((state) => state.showToast)
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const { user } = useAuthStore()
@@ -112,6 +113,42 @@ export function OrderLogScreen() {
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
     load(INITIAL_FILTERS)
+  }
+
+  const handleExport = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const data = await api.getOrders({
+        limit: EXPORT_LIMIT,
+        username: filters.username.trim() || undefined,
+        order_id: filters.orderId.trim() || undefined,
+        start_time: toBackendDateTime(filters.startTime),
+        end_time: toBackendDateTime(filters.endTime),
+        status: filters.status || undefined,
+        trade_direction: filters.tradeDirection || undefined,
+      })
+      if (data.length === 0) {
+        showToast('info', t('log.export.empty'))
+        return
+      }
+      const XLSX = await import('xlsx')
+      const worksheet = XLSX.utils.json_to_sheet(data.map((order, index) => buildExportRow(order, index, t)))
+      // 加 BOM 头，保证 Excel 打开时中文不乱码
+      const csv = '\uFEFF' + XLSX.utils.sheet_to_csv(worksheet)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `order_log_${formatFileTimestamp(new Date())}.csv`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      showToast('success', t('log.export.success', { count: data.length }))
+    } catch {
+      showToast('error', t('log.export.failed'))
+    } finally {
+      setExporting(false)
+    }
   }
 
   const formatNotional = (order: Order) => {
@@ -205,6 +242,15 @@ export function OrderLogScreen() {
           </button>
           <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleExport()}
+            disabled={exporting}
+            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={14} />
+            {exporting ? t('log.export.exporting') : t('log.filter.export')}
           </button>
         </div>
       </form>
@@ -461,4 +507,53 @@ function formatLogTimestamp(value?: string) {
   const minutes = String(date.getMinutes()).padStart(2, '0')
   const seconds = String(date.getSeconds()).padStart(2, '0')
   return `${month}/${day}/${year}, ${hours}:${minutes}:${seconds}`
+}
+
+const EXPORT_LIMIT = 5000
+
+function buildExportRow(order: Order, index: number, t: Translate) {
+  const refPrice = order.avg_price ?? (order.price && order.price > 0 ? order.price : null)
+  return {
+    [t('log.index')]: index + 1,
+    [t('log.user')]: order.username ?? '',
+    [t('log.symbol')]: order.source === 'external'
+      ? `${order.symbol} (${t('order.source.external')})`
+      : order.symbol,
+    [t('log.createdAt')]: formatLogTimestamp(order.created_at),
+    [t('log.updatedAt')]: formatLogTimestamp(order.updated_at || undefined),
+    [t('log.side')]: formatOrderSide(order.side, t),
+    [t('log.type')]: formatOrderType(order.order_type, t),
+    [t('log.qty')]: order.quantity,
+    [t('log.dir')]: order.trade_direction === 'CLOSE' ? t('order.close') : order.trade_direction === 'OPEN' ? t('order.open') : '',
+    [t('log.price')]: order.price && order.price > 0 ? order.price : t('log.market'),
+    [t('pos.triggerConditions')]: formatTriggerConditionText(order, t),
+    [t('log.filledPrice')]: order.avg_price ?? null,
+    [t('log.notional')]: refPrice != null ? Number((order.quantity * refPrice).toFixed(2)) : null,
+    [t('log.realizedPnl')]: order.realized_pnl ?? null,
+    [t('trade.commission')]: order.commission ?? null,
+    [t('trade.commissionAsset')]: order.commission_asset ?? '',
+    [t('log.status')]: formatOrderStatus(order.status, t),
+    [t('log.algoId')]: order.algo_id ?? '',
+    [t('log.id')]: order.exchange_order_id ?? '',
+    [t('log.errorMessage')]: order.error_message?.trim() || '',
+  }
+}
+
+function formatTriggerConditionText(order: Order, t: Translate): string {
+  if (order.stop_price == null || order.stop_price <= 0) return ''
+
+  const upperCategory = String(order.order_category || '').toUpperCase()
+  const upperType = String(order.order_type || '').toUpperCase()
+  const isConditional = upperCategory === 'CONDITIONAL'
+    || upperType.includes('STOP')
+    || upperType.includes('TAKE_PROFIT')
+
+  if (!isConditional) return ''
+
+  return `${t('pos.lastPrice')} ${getTriggerOperator(order)} ${order.stop_price.toLocaleString('en-US', { minimumFractionDigits: 1 })}`
+}
+
+function formatFileTimestamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
 }

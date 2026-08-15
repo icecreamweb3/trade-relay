@@ -205,6 +205,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.filter.status': '状态',
     'log.filter.search': '查询',
     'log.filter.clear': '清空',
+    'log.filter.export': '导出',
+    'log.export.exporting': '导出中...',
+    'log.export.empty': '当前条件下没有可导出的订单',
+    'log.export.failed': '导出失败，请稍后重试',
+    'log.export.success': '已导出 {count} 条订单',
     'log.filter.allStatus': '全部状态',
     'log.filter.allDirections': '全部开平',
 
@@ -583,6 +588,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.filter.status': 'Status',
     'log.filter.search': 'Search',
     'log.filter.clear': 'Clear',
+    'log.filter.export': 'Export',
+    'log.export.exporting': 'Exporting...',
+    'log.export.empty': 'No orders to export',
+    'log.export.failed': 'Export failed, please try again',
+    'log.export.success': 'Exported {count} orders',
     'log.filter.allStatus': 'All Status',
     'log.filter.allDirections': 'All Directions',
 
