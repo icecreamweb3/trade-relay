@@ -117,17 +117,17 @@ export function OrderLogScreen() {
 
   const handleThisWeek = () => {
     const now = new Date()
-    // 以周一为一周的起点
-    const monday = new Date(now)
-    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7))
-    monday.setHours(0, 0, 0, 0)
-    const sunday = new Date(monday)
-    sunday.setDate(monday.getDate() + 6)
-    sunday.setHours(23, 59, 59, 0)
+    // 以周日为一周的起点
+    const sunday = new Date(now)
+    sunday.setDate(now.getDate() - now.getDay())
+    sunday.setHours(0, 0, 0, 0)
+    const saturday = new Date(sunday)
+    saturday.setDate(sunday.getDate() + 6)
+    saturday.setHours(23, 59, 59, 0)
     setFilters((current) => ({
       ...current,
-      startTime: toLocalDateTimeInputValue(monday),
-      endTime: toLocalDateTimeInputValue(sunday),
+      startTime: toLocalDateTimeInputValue(sunday),
+      endTime: toLocalDateTimeInputValue(saturday),
     }))
   }
 
