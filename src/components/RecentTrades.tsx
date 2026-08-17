@@ -24,10 +24,11 @@ interface Fill {
   status?: string
   created_at?: string
   updated_at?: string | null
+  filled_at?: string | null
 }
 
 function getEffectiveFillTimestamp(fill: Fill): string | undefined {
-  return fill.updated_at || fill.created_at
+  return fill.filled_at || fill.updated_at || fill.created_at
 }
 
 const GRID_TEMPLATE = 'minmax(48px, 0.85fr) minmax(68px, 0.95fr) 48px 50px 48px 80px 82px 84px 102px 98px 72px'

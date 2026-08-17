@@ -126,6 +126,7 @@ interface ApiTrade {
   username?: string
   created_at?: string
   updated_at?: string | null
+  filled_at?: string | null
   source?: 'trade_relay' | 'external'
 }
 

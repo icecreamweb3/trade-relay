@@ -94,6 +94,7 @@ class OrderOut(BaseModel):
     error_message: Optional[str]
     created_at: str
     updated_at: Optional[str] = None
+    filled_at: Optional[str] = None
 
 
 class OrderUserOption(BaseModel):
@@ -203,6 +204,7 @@ def _recent_fill_to_out(r: dict) -> OrderOut:
         error_message=None,
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
         updated_at=serialize_utc_timestamp(r.get("updated_at")),
+        filled_at=serialize_utc_timestamp(r.get("filled_at")) if r.get("filled_at") else None,
     )
 
 

@@ -2998,7 +2998,7 @@ def query_orders(
 def get_recent_platform_trades(limit: int = 30) -> list:
     """返回平台内所有用户最近的已成交订单。
     每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price,
-    realized_pnl, commission, commission_asset, created_at
+    realized_pnl, commission, commission_asset, created_at, filled_at
     """
     conn = get_connection()
     try:
@@ -3008,12 +3008,12 @@ def get_recent_platform_trades(limit: int = 30) -> list:
                 SELECT username, symbol, side, trade_direction, order_type, order_category,
                       filled_qty, price, avg_price, realized_pnl,
                       COALESCE(commission, 0) AS commission,
-                      commission_asset, created_at
+                      commission_asset, created_at, filled_at
                 FROM orders
                 WHERE status = 'FILLED'
                   AND filled_qty > 0
                   AND avg_price IS NOT NULL
-                ORDER BY created_at DESC
+                ORDER BY COALESCE(filled_at, created_at) DESC
                 LIMIT %s
                 """,
                 (limit,),
