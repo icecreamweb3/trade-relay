@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { Calendar, Download } from 'lucide-react'
+import { BarChart3, Calendar, Download } from 'lucide-react'
 import { api } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { computeTradeAnalysis, TradeAnalysis } from '../utils/tradeAnalysis'
+import { TradeAnalysisModal } from './TradeAnalysisModal'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -19,7 +21,7 @@ interface Order {
   commission_asset?: string | null
   stop_price?: number | null
   algo_id?: string | null
-  exchange_order_id?: string; created_at?: string; updated_at?: string | null; error_message?: string
+  exchange_order_id?: string; created_at?: string; updated_at?: string | null; filled_at?: string | null; error_message?: string
   source?: 'trade_relay' | 'external'
 }
 
@@ -59,6 +61,8 @@ export function OrderLogScreen() {
   const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
+  const [hasQueried, setHasQueried] = useState(false)
+  const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
   const { user } = useAuthStore()
 
   const load = async (nextFilters: OrderFilters = filters) => {
@@ -107,6 +111,7 @@ export function OrderLogScreen() {
 
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault()
+    setHasQueried(true)
     load(filters)
   }
 
@@ -128,7 +133,21 @@ export function OrderLogScreen() {
 
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
+    setHasQueried(false)
     load(INITIAL_FILTERS)
+  }
+
+  const handleAnalyze = () => {
+    if (!hasQueried) {
+      showToast('info', t('log.analyze.needQuery'))
+      return
+    }
+    const result = computeTradeAnalysis(orders)
+    if (result.fillCount === 0) {
+      showToast('info', t('log.analyze.empty'))
+      return
+    }
+    setAnalysis(result)
   }
 
   const handleExport = async () => {
@@ -271,6 +290,14 @@ export function OrderLogScreen() {
             <Download size={14} />
             {exporting ? t('log.export.exporting') : t('log.filter.export')}
           </button>
+          <button
+            type="button"
+            onClick={handleAnalyze}
+            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]"
+          >
+            <BarChart3 size={14} />
+            {t('log.analyze')}
+          </button>
         </div>
       </form>
       <div className="flex-1 overflow-auto">
@@ -340,6 +367,7 @@ export function OrderLogScreen() {
           </tbody>
         </table>
       </div>
+      {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
     </div>
   )
 }

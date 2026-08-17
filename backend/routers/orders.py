@@ -149,6 +149,7 @@ def _row_to_out(r: dict) -> OrderOut:
         error_message=r.get("error_message"),
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
         updated_at=serialize_utc_timestamp(r.get("updated_at")),
+        filled_at=serialize_utc_timestamp(r.get("filled_at")) if r.get("filled_at") else None,
     )
 
 
