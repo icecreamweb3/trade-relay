@@ -137,17 +137,29 @@ export function OrderLogScreen() {
     load(INITIAL_FILTERS)
   }
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!hasQueried) {
       showToast('info', t('log.analyze.needQuery'))
       return
     }
-    const result = computeTradeAnalysis(orders)
-    if (result.fillCount === 0) {
-      showToast('info', t('log.analyze.empty'))
-      return
+    // 配对完整交易需要开仓+平仓全部成交单，忽略状态/开平/订单号等行级过滤，
+    // 按用户与时间范围重新拉取，否则仅剩平仓单时无法配出任何交易
+    try {
+      const data = await api.getOrders({
+        limit: EXPORT_LIMIT,
+        username: filters.username.trim() || undefined,
+        start_time: toBackendDateTime(filters.startTime),
+        end_time: toBackendDateTime(filters.endTime),
+      })
+      const result = computeTradeAnalysis(data)
+      if (result.fillCount === 0) {
+        showToast('info', t('log.analyze.empty'))
+        return
+      }
+      setAnalysis(result)
+    } catch {
+      showToast('error', t('log.analyze.failed'))
     }
-    setAnalysis(result)
   }
 
   const handleExport = async () => {
