@@ -1,6 +1,9 @@
 /**
  * 交易分析：把订单记录配对成「完整交易」（开仓 → 加仓/分批减仓 → 仓位归零），
  * 并汇总总体交易情况。纯函数，不依赖 React。
+ *
+ * 双向持仓（hedge）模式下同一交易对的多、空是独立仓位，配对按
+ * （用户, 交易对, 持仓方向）分组进行；无开平标记的记录退回旧的净额配对。
  */
 import { parseUtcTimestamp } from './datetime'
 
@@ -70,6 +73,19 @@ function addCommission(target: Record<string, number>, asset: string | null | un
   target[key] = (target[key] ?? 0) + amount
 }
 
+/**
+ * 由 开平方向 + 买卖方向 推导持仓方向（与后端 _derive_conditional_position_side 规则一致）：
+ * 开仓 BUY→LONG / SELL→SHORT；平仓 BUY→SHORT / SELL→LONG。
+ * 无开平标记时返回 ''，该记录退回旧的净额配对分组。
+ */
+function positionSideKey(fill: OrderLike): string {
+  const dir = String(fill.trade_direction || '').toUpperCase()
+  const side = String(fill.side || '').toUpperCase()
+  if (dir === 'OPEN') return side === 'BUY' ? 'LONG' : 'SHORT'
+  if (dir === 'CLOSE') return side === 'BUY' ? 'SHORT' : 'LONG'
+  return ''
+}
+
 interface TripDraft {
   username: string
   symbol: string
@@ -81,7 +97,7 @@ interface TripDraft {
 }
 
 /**
- * 单个 (用户, 交易对) 分组内，按时间升序遍历成交单，配对完整交易。
+ * 单个 (用户, 交易对, 持仓方向) 分组内，按时间升序遍历成交单，配对完整交易。
  * 带符号持仓（BUY=+、SELL=−），持仓归零即完成一笔。
  */
 function pairGroup(fills: OrderLike[]): AnalyzedTrade[] {
@@ -171,7 +187,7 @@ export function computeTradeAnalysis(orders: OrderLike[]): TradeAnalysis {
 
   const groups = new Map<string, OrderLike[]>()
   for (const fill of fills) {
-    const key = `${fill.username ?? ''}${fill.symbol}`
+    const key = `${fill.username ?? ''}${fill.symbol}${positionSideKey(fill)}`
     const list = groups.get(key)
     if (list) list.push(fill)
     else groups.set(key, [fill])
