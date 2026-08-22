@@ -1,9 +1,11 @@
 /**
- * 交易分析：把订单记录配对成「完整交易」（开仓 → 加仓/分批减仓 → 仓位归零），
- * 并汇总总体交易情况。纯函数，不依赖 React。
+ * 交易分析：把订单记录配对成「完整交易」，并汇总总体交易情况。纯函数，不依赖 React。
  *
  * 双向持仓（hedge）模式下同一交易对的多、空是独立仓位，配对按
- * （用户, 交易对, 持仓方向）分组进行；无开平标记的记录退回旧的净额配对。
+ * （用户, 交易对, 持仓方向）分组进行：开仓单进入 FIFO 持仓队列，
+ * 每笔平仓单消耗持仓并以其实现盈亏生成一笔交易 —— 即使历史数据有缺口
+ * （如交易所手动平仓未同步），也只影响对应单笔，不会污染整组。
+ * 无开平标记的记录（旧数据）退回旧的净额配对。
  */
 import { parseUtcTimestamp } from './datetime'
 
@@ -28,7 +30,7 @@ export interface AnalyzedTrade {
   symbol: string
   entryTimes: string[]
   exitTimes: string[]
-  /** 峰值持仓数量（该笔交易累计开仓成交量） */
+  /** 该笔交易的开仓数量（平仓单 FIFO 配对消耗的开仓成交量） */
   quantity: number
   /** 该笔完整交易的已实现盈亏合计 */
   pnl: number
@@ -86,6 +88,73 @@ function positionSideKey(fill: OrderLike): string {
   return ''
 }
 
+interface OpenLot {
+  time: string
+  remainingQty: number
+  remainingCommission: number
+  commissionAsset: string | null | undefined
+}
+
+/**
+ * 单个 (用户, 交易对, 持仓方向) 分组内（双向持仓模式），按时间升序配对：
+ * 开仓单进入 FIFO 持仓队列；每笔平仓单按先进先出消耗持仓，
+ * 以该平仓单的已实现盈亏生成一笔交易。
+ * 平仓单消耗不到持仓，说明对应仓位在窗口起点前已开（数据缺口），跳过；
+ * 末尾未被消耗的持仓属于未完成交易，不计入统计。
+ */
+function pairGroupBySide(fills: OrderLike[]): AnalyzedTrade[] {
+  const trips: AnalyzedTrade[] = []
+  const lots: OpenLot[] = []
+
+  for (const fill of fills) {
+    const qty = Number(fill.filled_qty ?? 0)
+    if (qty <= 0) continue
+    const time = effectiveTimestamp(fill)
+    const dir = String(fill.trade_direction || '').toUpperCase()
+
+    if (dir === 'OPEN') {
+      lots.push({
+        time,
+        remainingQty: qty,
+        remainingCommission: Number(fill.commission ?? 0),
+        commissionAsset: fill.commission_asset,
+      })
+      continue
+    }
+
+    // 平仓单：FIFO 消耗开仓持仓
+    let remaining = qty
+    let consumed = 0
+    const entryTimes: string[] = []
+    const commissions: Record<string, number> = {}
+    while (remaining > EPS && lots.length > 0) {
+      const lot = lots[0]
+      const take = Math.min(remaining, lot.remainingQty)
+      if (lot.time && !entryTimes.includes(lot.time)) entryTimes.push(lot.time)
+      const commissionPart = lot.remainingQty > EPS ? (lot.remainingCommission * take) / lot.remainingQty : 0
+      lot.remainingCommission -= commissionPart
+      addCommission(commissions, lot.commissionAsset, commissionPart)
+      lot.remainingQty -= take
+      remaining -= take
+      consumed += take
+      if (lot.remainingQty <= EPS) lots.shift()
+    }
+    if (consumed <= EPS) continue
+
+    addCommission(commissions, fill.commission_asset, fill.commission)
+    trips.push({
+      username: fill.username ?? '',
+      symbol: fill.symbol,
+      entryTimes,
+      exitTimes: time ? [time] : [],
+      quantity: consumed,
+      pnl: Number(fill.realized_pnl ?? 0),
+      commissions,
+    })
+  }
+  return trips
+}
+
 interface TripDraft {
   username: string
   symbol: string
@@ -97,7 +166,7 @@ interface TripDraft {
 }
 
 /**
- * 单个 (用户, 交易对, 持仓方向) 分组内，按时间升序遍历成交单，配对完整交易。
+ * 无开平标记的分组（旧数据）：按时间升序遍历成交单，
  * 带符号持仓（BUY=+、SELL=−），持仓归零即完成一笔。
  */
 function pairGroup(fills: OrderLike[]): AnalyzedTrade[] {
@@ -185,17 +254,18 @@ export function computeTradeAnalysis(orders: OrderLike[]): TradeAnalysis {
     addCommission(commissions, fill.commission_asset, fill.commission)
   }
 
-  const groups = new Map<string, OrderLike[]>()
+  const groups = new Map<string, { legacy: boolean; list: OrderLike[] }>()
   for (const fill of fills) {
-    const key = `${fill.username ?? ''}${fill.symbol}${positionSideKey(fill)}`
-    const list = groups.get(key)
-    if (list) list.push(fill)
-    else groups.set(key, [fill])
+    const sideKey = positionSideKey(fill)
+    const key = `${fill.username ?? ''}${fill.symbol}${sideKey}`
+    const group = groups.get(key)
+    if (group) group.list.push(fill)
+    else groups.set(key, { legacy: sideKey === '', list: [fill] })
   }
 
   const trips: AnalyzedTrade[] = []
   for (const group of groups.values()) {
-    trips.push(...pairGroup(group))
+    trips.push(...(group.legacy ? pairGroup(group.list) : pairGroupBySide(group.list)))
   }
 
   let totalPnl = 0
