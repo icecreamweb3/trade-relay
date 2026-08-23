@@ -2,12 +2,12 @@
  * 交易分析：把订单记录配对成「完整交易」，并汇总总体交易情况。纯函数，不依赖 React。
  *
  * 双向持仓（hedge）模式下同一交易对的多、空是独立仓位，配对按
- * （用户, 交易对, 持仓方向）分组进行：
- * - 开仓单进入持仓栈；平仓单按 LIFO（后进先出，最近开的仓先平）消耗持仓；
- * - 共享同一开仓批次的多笔平仓单合并为一笔交易（分批减仓算一笔）；
- * - 完全消耗新批次的平仓单各自成笔 —— 即使历史数据有缺口
- *   （如交易所手动平仓未同步），也只影响对应单笔，不会污染整组。
- * 无开平标记的记录（旧数据）退回旧的净额配对。
+ * （用户, 交易对, 持仓方向）分组进行：组内净持仓从 0 升起即开启一笔，
+ * 期间所有开仓（含分批建仓、加仓）与平仓（含分批止盈、减仓）都累计进
+ * 同一笔，净持仓回到 0 该笔完成 —— 分批止盈无论分几批都会合并成一笔。
+ * 平仓量超出当前持仓的部分（窗口起点前遗留仓位或数据缺口，如交易所手动
+ * 平仓未同步）直接忽略，不影响后续分笔；窗口结束时仍未平仓完成的交易
+ * 不计入统计。无开平标记的记录（旧数据）退回旧的净额配对。
  */
 import { parseUtcTimestamp } from './datetime'
 
@@ -32,7 +32,7 @@ export interface AnalyzedTrade {
   symbol: string
   entryTimes: string[]
   exitTimes: string[]
-  /** 该笔交易的开仓数量（各平仓单配对消耗的开仓成交量合计） */
+  /** 该笔交易的开仓数量（组内各开仓单成交量合计） */
   quantity: number
   /** 该笔完整交易的已实现盈亏合计 */
   pnl: number
@@ -90,125 +90,6 @@ function positionSideKey(fill: OrderLike): string {
   return ''
 }
 
-interface SideTrip {
-  username: string
-  symbol: string
-  /** 该交易消耗过的开仓批次 */
-  lots: OpenLot[]
-  exitTimes: string[]
-  /** 各平仓单消耗的开仓数量合计 */
-  consumedQty: number
-  pnl: number
-  commissions: Record<string, number>
-  /** 被其他交易吸收时指向吸收方 */
-  mergedInto?: SideTrip
-}
-
-interface OpenLot {
-  time: string
-  remainingQty: number
-  remainingCommission: number
-  commissionAsset: string | null | undefined
-  /** 首次消耗该批次的平仓单所属的交易 */
-  trip: SideTrip | null
-}
-
-/**
- * 单个 (用户, 交易对, 持仓方向) 分组内（双向持仓模式），按时间升序配对：
- * 开仓单压入持仓栈；平仓单从栈顶（最近的开仓）开始消耗持仓（LIFO）。
- * 平仓单若消耗了已被之前平仓单碰过的批次，说明是同一仓位的分批减仓，
- * 合并进那笔交易；全部消耗新批次则开启新一笔。
- * 平仓单完全消耗不到持仓，说明对应仓位在窗口起点前已开（数据缺口），跳过；
- * 始终未被平仓单消耗的开仓批次（含窗口末尾仍持有的仓位）不计入统计。
- */
-function pairGroupBySide(fills: OrderLike[]): AnalyzedTrade[] {
-  const trips: SideTrip[] = []
-  const lots: OpenLot[] = []
-
-  for (const fill of fills) {
-    const qty = Number(fill.filled_qty ?? 0)
-    if (qty <= 0) continue
-    const time = effectiveTimestamp(fill)
-    const dir = String(fill.trade_direction || '').toUpperCase()
-
-    if (dir === 'OPEN') {
-      lots.push({
-        time,
-        remainingQty: qty,
-        remainingCommission: Number(fill.commission ?? 0),
-        commissionAsset: fill.commission_asset,
-        trip: null,
-      })
-      continue
-    }
-
-    // 平仓单：LIFO 消耗开仓持仓
-    let remaining = qty
-    let consumed = 0
-    const lotCommissions: Record<string, number> = {}
-    const touchedLots: OpenLot[] = []
-    const touchedTrips = new Set<SideTrip>()
-    while (remaining > EPS && lots.length > 0) {
-      const lot = lots[lots.length - 1]
-      const take = Math.min(remaining, lot.remainingQty)
-      const commissionPart = lot.remainingQty > EPS ? (lot.remainingCommission * take) / lot.remainingQty : 0
-      lot.remainingCommission -= commissionPart
-      addCommission(lotCommissions, lot.commissionAsset, commissionPart)
-      lot.remainingQty -= take
-      remaining -= take
-      consumed += take
-      touchedLots.push(lot)
-      if (lot.trip) touchedTrips.add(lot.trip)
-      if (lot.remainingQty <= EPS) lots.pop()
-    }
-    if (consumed <= EPS) continue
-
-    // 合并共享开仓批次的交易（取创建最早者为存活交易）
-    let trip: SideTrip
-    const survivors = [...touchedTrips].sort((a, b) => trips.indexOf(a) - trips.indexOf(b))
-    if (survivors.length === 0) {
-      trip = { username: fill.username ?? '', symbol: fill.symbol, lots: [], exitTimes: [], consumedQty: 0, pnl: 0, commissions: {} }
-      trips.push(trip)
-    } else {
-      trip = survivors[0]
-      for (const other of survivors.slice(1)) {
-        other.mergedInto = trip
-        trip.exitTimes.push(...other.exitTimes)
-        trip.consumedQty += other.consumedQty
-        trip.pnl += other.pnl
-        for (const [asset, amount] of Object.entries(other.commissions)) addCommission(trip.commissions, asset, amount)
-        for (const lot of other.lots) {
-          lot.trip = trip
-          trip.lots.push(lot)
-        }
-      }
-    }
-    for (const lot of touchedLots) {
-      if (!lot.trip) {
-        lot.trip = trip
-        trip.lots.push(lot)
-      }
-    }
-    trip.exitTimes.push(time)
-    trip.consumedQty += consumed
-    trip.pnl += Number(fill.realized_pnl ?? 0)
-    for (const [asset, amount] of Object.entries(lotCommissions)) addCommission(trip.commissions, asset, amount)
-    addCommission(trip.commissions, fill.commission_asset, fill.commission)
-  }
-
-  return trips
-    .filter((t) => !t.mergedInto)
-    .map((t) => ({
-      username: t.username,
-      symbol: t.symbol,
-      entryTimes: [...new Set(t.lots.map((lot) => lot.time).filter(Boolean))].sort(),
-      exitTimes: t.exitTimes.filter(Boolean).sort(),
-      quantity: t.consumedQty,
-      pnl: t.pnl,
-      commissions: t.commissions,
-    }))
-}
-
 interface TripDraft {
   username: string
   symbol: string
@@ -217,6 +98,58 @@ interface TripDraft {
   quantity: number
   pnl: number
   commissions: Record<string, number>
+}
+
+/**
+ * 单个 (用户, 交易对, 持仓方向) 分组内（双向持仓模式），按时间升序配对：
+ * 净持仓从 0 升起即开启一笔交易，期间所有开仓/平仓（含分批建仓、分批止盈、
+ * 加仓、减仓）都累计进同一笔；净持仓回到 0 该笔完成。
+ * 平仓量超出当前持仓的部分（窗口起点前遗留仓位或数据缺口）忽略；
+ * 窗口结束时仍未平仓完成的交易不计入统计（draft 直接丢弃）。
+ */
+function pairGroupBySide(fills: OrderLike[]): AnalyzedTrade[] {
+  const trips: AnalyzedTrade[] = []
+  let position = 0
+  let draft: TripDraft | null = null
+
+  const finishTrip = () => {
+    if (draft) {
+      trips.push({
+        ...draft,
+        entryTimes: [...new Set(draft.entryTimes)].sort(),
+        exitTimes: draft.exitTimes.sort(),
+      })
+    }
+    draft = null
+    position = 0
+  }
+
+  for (const fill of fills) {
+    const qty = Number(fill.filled_qty ?? 0)
+    if (qty <= 0) continue
+    const time = effectiveTimestamp(fill)
+    const dir = String(fill.trade_direction || '').toUpperCase()
+
+    if (dir === 'OPEN') {
+      if (!draft) {
+        draft = { username: fill.username ?? '', symbol: fill.symbol, entryTimes: [], exitTimes: [], quantity: 0, pnl: 0, commissions: {} }
+      }
+      if (time) draft.entryTimes.push(time)
+      draft.quantity += qty
+      addCommission(draft.commissions, fill.commission_asset, fill.commission)
+      position += qty
+      continue
+    }
+
+    // 平仓单：无在持仓位（窗口起点前遗留仓位的平仓）无法配对，跳过
+    if (!draft) continue
+    if (time) draft.exitTimes.push(time)
+    draft.pnl += Number(fill.realized_pnl ?? 0)
+    addCommission(draft.commissions, fill.commission_asset, fill.commission)
+    position -= qty
+    if (position <= EPS) finishTrip()
+  }
+  return trips
 }
 
 /**
