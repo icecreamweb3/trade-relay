@@ -23,10 +23,10 @@ export function OrderKlineLoadingModal({ symbol, onClose }: { symbol: string; on
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const progress = useSimulatedProgress(12, 88)
-  const floating = useFloatingPanel()
+  const floating = useFloatingPanel({ width: 520, height: 170 })
 
   return createPortal(
-      <section ref={floating.panelRef} role="dialog" aria-modal="false" style={{ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="fixed z-[200] flex h-[62vh] min-h-[360px] max-h-[90vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]">
+      <section ref={floating.panelRef} role="dialog" aria-modal="false" style={{ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="fixed z-[200] flex h-[170px] w-[520px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]">
         <header onMouseDown={floating.onMouseDown} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="flex cursor-move select-none items-center justify-between border-b border-[#2c323b] bg-[#171b21] px-4 py-3">
           <div className="flex items-center gap-2"><GripHorizontal size={16} className="text-[#6f7a89]" /><h2 className="text-base font-semibold text-[#e6e9ef]">{symbol} · {t('log.chart.title')}</h2></div>
           <button type="button" onClick={onClose} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
@@ -171,12 +171,12 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
   )
 }
 
-function useFloatingPanel() {
+function useFloatingPanel(initialSize?: { width: number; height: number }) {
   const panelRef = useRef<HTMLElement>(null)
   const dragRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null)
   const [position, setPosition] = useState(() => ({
-    x: Math.max(12, window.innerWidth * 0.06),
-    y: Math.max(12, window.innerHeight * 0.34),
+    x: initialSize ? Math.max(12, (window.innerWidth - initialSize.width) / 2) : Math.max(12, window.innerWidth * 0.06),
+    y: initialSize ? Math.max(12, (window.innerHeight - initialSize.height) / 2) : Math.max(12, window.innerHeight * 0.34),
   }))
 
   useEffect(() => {
