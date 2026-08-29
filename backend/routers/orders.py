@@ -331,6 +331,7 @@ def list_orders(
         end_time=end_time,
         status=status,
         trade_direction=trade_direction,
+        sort_by_filled_at=True,
     )
     return [_row_to_out(r) for r in rows]
 

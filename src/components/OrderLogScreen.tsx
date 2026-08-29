@@ -308,6 +308,15 @@ export function OrderLogScreen() {
       <div className="px-4 py-2 border-b border-[#3e3e42] flex items-center gap-3 shrink-0">
         <span className="text-sm font-semibold text-[#cccccc]">{t('log.title')}</span>
         <span className="text-xs text-[#858585]">{t('log.allUsers')}</span>
+        <button
+          type="button"
+          onClick={() => void handleReconcile()}
+          disabled={reconciling}
+          className="ml-auto flex h-8 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-60"
+        >
+          <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
+          {reconciling ? t('log.reconcile.running') : t('log.reconcile')}
+        </button>
       </div>
       <form onSubmit={handleSearch} className="flex flex-wrap items-end gap-3 border-b border-[#3e3e42] px-4 py-3 shrink-0">
         <FilterField label={t('log.filter.user')} className="w-[220px]">
@@ -397,22 +406,13 @@ export function OrderLogScreen() {
             <BarChart3 size={14} />
             {t('log.analyze')}
           </button>
-          <button
-            type="button"
-            onClick={() => void handleReconcile()}
-            disabled={reconciling}
-            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-60"
-          >
-            <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
-            {reconciling ? t('log.reconcile.running') : t('log.reconcile')}
-          </button>
         </div>
       </form>
       <div className="flex-1 overflow-auto">
         <table className="trade-table w-full">
           <thead><tr>
             <th>{t('log.index')}</th><th className="w-[76px]">{t('log.user')}</th><th>{t('log.symbol')}</th>
-            <th>{t('log.createdAt')}</th><th>{t('log.updatedAt')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th className="min-w-[180px]">{t('pos.triggerConditions')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
+            <th>{t('log.createdAt')}</th><th>{t('log.filledAt')}</th><th>{t('log.side')}</th><th>{t('log.type')}</th><th>{t('log.qty')}</th><th>{t('log.dir')}</th><th>{t('log.price')}</th><th className="min-w-[180px]">{t('pos.triggerConditions')}</th><th>{t('log.filledPrice')}</th><th>{t('log.notional')}</th><th>{t('log.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th><th>{t('log.status')}</th><th className="min-w-[160px]">{t('log.algoId')}</th><th className="min-w-[160px]">{t('log.id')}</th><th className="min-w-[320px]">{t('log.errorMessage')}</th>
           </tr></thead>
           <tbody>
             {orders.length === 0 ? (
@@ -432,7 +432,7 @@ export function OrderLogScreen() {
                   )}
                 </td>
                 <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.created_at)}</td>
-                <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.updated_at || undefined)}</td>
+                <td className="text-[#858585] whitespace-nowrap">{formatLogTimestamp(o.filled_at || undefined)}</td>
                 <td className={o.side === 'BUY' ? 'text-buy font-semibold' : 'text-sell font-semibold'}>{formatOrderSide(o.side, t)}</td>
                 <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                 <td className="font-mono">{o.quantity}</td>
@@ -825,7 +825,7 @@ function buildExportRow(order: Order, index: number, t: Translate) {
       ? `${order.symbol} (${t('order.source.external')})`
       : order.symbol,
     [t('log.createdAt')]: formatLogTimestamp(order.created_at),
-    [t('log.updatedAt')]: formatLogTimestamp(order.updated_at || undefined),
+    [t('log.filledAt')]: formatLogTimestamp(order.filled_at || undefined),
     [t('log.side')]: formatOrderSide(order.side, t),
     [t('log.type')]: formatOrderType(order.order_type, t),
     [t('log.qty')]: order.quantity,
