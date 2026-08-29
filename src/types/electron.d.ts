@@ -23,6 +23,10 @@ interface ElectronAPI {
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
+  openOrderKlineWindow?: (payload: import('../utils/orderChart').PositionWindow) => Promise<{ ok: boolean }>
+  getOrderKlinePayload?: () => Promise<import('../utils/orderChart').PositionWindow | null>
+  closeOrderKlineWindow?: () => Promise<void>
+  onOrderKlinePayload?: (callback: (payload: import('../utils/orderChart').PositionWindow) => void) => () => void
 
   // Binance
   resizeBinancePanel: (splitRatio: number, chartRatio?: number) => Promise<void>

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { GripHorizontal, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { api, type ApiKline } from '../api/client'
 import { useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
@@ -22,21 +23,21 @@ export function OrderKlineLoadingModal({ symbol, onClose }: { symbol: string; on
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const progress = useSimulatedProgress(12, 88)
+  const floating = useFloatingPanel()
 
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4">
-      <section role="dialog" aria-modal="true" className="flex h-full max-h-[820px] w-full max-w-[1500px] flex-col overflow-hidden rounded-lg border border-[#3b414b] bg-[#101318] shadow-2xl">
-        <header className="flex items-center justify-between border-b border-[#2c323b] bg-[#171b21] px-4 py-3">
-          <h2 className="text-base font-semibold text-[#e6e9ef]">{symbol} · {t('log.chart.title')}</h2>
+  return createPortal(
+      <section ref={floating.panelRef} role="dialog" aria-modal="false" style={{ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="fixed z-[200] flex h-[62vh] min-h-[360px] max-h-[90vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]">
+        <header onMouseDown={floating.onMouseDown} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} className="flex cursor-move select-none items-center justify-between border-b border-[#2c323b] bg-[#171b21] px-4 py-3">
+          <div className="flex items-center gap-2"><GripHorizontal size={16} className="text-[#6f7a89]" /><h2 className="text-base font-semibold text-[#e6e9ef]">{symbol} · {t('log.chart.title')}</h2></div>
           <button type="button" onClick={onClose} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
         </header>
         <LoadingProgress progress={progress} label={t('log.chart.matchingPosition')} />
-      </section>
-    </div>
+      </section>,
+    document.body,
   )
 }
 
-export function OrderKlineModal({ position, onClose }: { position: PositionWindow; onClose: () => void }) {
+export function OrderKlineModal({ position, onClose, standalone = false }: { position: PositionWindow; onClose: () => void; standalone?: boolean }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [interval, setInterval] = useState('5m')
@@ -44,6 +45,7 @@ export function OrderKlineModal({ position, onClose }: { position: PositionWindo
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState(8)
+  const floating = useFloatingPanel()
 
   const bounds = useMemo(() => {
     return buildThousandBarWindow(position, INTERVAL_MS[interval])
@@ -103,14 +105,27 @@ export function OrderKlineModal({ position, onClose }: { position: PositionWindo
   const sideLabel = position.positionSide === 'LONG' ? t('log.chart.long')
     : position.positionSide === 'SHORT' ? t('log.chart.short') : t('log.chart.unknownSide')
 
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose()
-    }}>
-      <section role="dialog" aria-modal="true" aria-label={t('log.chart.title')} className="flex h-full max-h-[820px] w-full max-w-[1500px] flex-col overflow-hidden rounded-lg border border-[#3b414b] bg-[#101318] shadow-2xl">
-        <header className="flex items-center justify-between border-b border-[#2c323b] bg-[#171b21] px-4 py-3">
+  return createPortal(
+      <section
+        ref={standalone ? undefined : floating.panelRef}
+        role="dialog"
+        aria-modal="false"
+        aria-label={t('log.chart.title')}
+        style={standalone
+          ? ({ left: 0, top: 0, WebkitAppRegion: 'no-drag' } as React.CSSProperties)
+          : ({ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties)}
+        className={standalone
+          ? 'fixed inset-0 flex h-screen w-screen flex-col overflow-hidden bg-[#101318]'
+          : 'fixed z-[200] flex h-[62vh] min-h-[360px] max-h-[90vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]'}
+      >
+        <header
+          onMouseDown={standalone ? undefined : floating.onMouseDown}
+          style={{ WebkitAppRegion: standalone ? 'drag' : 'no-drag' } as React.CSSProperties}
+          className="flex cursor-move select-none items-center justify-between border-b border-[#2c323b] bg-[#171b21] px-4 py-3"
+        >
           <div className="min-w-0">
             <div className="flex items-center gap-2">
+              <GripHorizontal size={16} className="shrink-0 text-[#6f7a89]" />
               <h2 className="text-base font-semibold text-[#e6e9ef]">{position.symbol} · {t('log.chart.title')}</h2>
               <span className={`rounded px-2 py-0.5 text-xs font-semibold ${position.positionSide === 'SHORT' ? 'bg-[#f6465d]/15 text-[#f6465d]' : 'bg-[#0ecb81]/15 text-[#0ecb81]'}`}>{sideLabel}</span>
               {position.isOpen && <span className="rounded bg-[#f0b90b]/15 px-2 py-0.5 text-xs text-[#f0b90b]">{t('log.chart.openPosition')}</span>}
@@ -119,7 +134,7 @@ export function OrderKlineModal({ position, onClose }: { position: PositionWindo
               {position.username} · {formatDateTime(position.startTime)} — {position.isOpen ? t('log.chart.now') : formatDateTime(position.endTime)} · {duration}
             </div>
           </div>
-          <button type="button" onClick={onClose} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
+          <button type="button" onClick={onClose} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
         </header>
 
         <div className="flex items-center justify-between border-b border-[#252b33] px-4 py-2">
@@ -134,8 +149,8 @@ export function OrderKlineModal({ position, onClose }: { position: PositionWindo
             })}
           </div>
           <div className="flex items-center gap-4 text-xs">
-            <span className="text-[#0ecb81]">↑ {t('log.chart.entry')}</span>
-            <span className="text-[#f6465d]">↓ {t('log.chart.exit')}</span>
+            <span className="text-[#1687ff]">↑ {t('side.buy')}</span>
+            <span className="text-[#f6465d]">↓ {t('side.sell')}</span>
             <span className="text-[#d95b8b]">EMA 20</span>
           </div>
         </div>
@@ -151,9 +166,60 @@ export function OrderKlineModal({ position, onClose }: { position: PositionWindo
             locale={locale}
           />}
         </div>
-      </section>
-    </div>
+      </section>,
+    document.body,
   )
+}
+
+function useFloatingPanel() {
+  const panelRef = useRef<HTMLElement>(null)
+  const dragRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null)
+  const [position, setPosition] = useState(() => ({
+    x: Math.max(12, window.innerWidth * 0.06),
+    y: Math.max(12, window.innerHeight * 0.34),
+  }))
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const panel = panelRef.current
+      const width = panel?.offsetWidth ?? 620
+      const height = panel?.offsetHeight ?? 360
+      const nextX = drag.x + event.clientX - drag.clientX
+      const nextY = drag.y + event.clientY - drag.clientY
+      setPosition({
+        x: Math.max(0, Math.min(nextX, window.innerWidth - Math.min(width, window.innerWidth))),
+        y: Math.max(0, Math.min(nextY, window.innerHeight - Math.min(height, window.innerHeight))),
+      })
+    }
+    const handleMouseUp = () => {
+      dragRef.current = null
+      document.body.style.cursor = ''
+    }
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+    }
+  }, [])
+
+  const onMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button')) return
+    dragRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      x: position.x,
+      y: position.y,
+    }
+    document.body.style.cursor = 'move'
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  return { panelRef, position, onMouseDown }
 }
 
 function LoadingProgress({ progress, label, overlay = false }: { progress: number; label: string; overlay?: boolean }) {
@@ -269,8 +335,16 @@ function CandlestickChart({
   const volumeY = (volume: number) => height - margin.bottom - (volume / maxVolume) * volumeHeight
   const ema = computeEma(klines.map((bar) => bar.close), 20).slice(rangeStart, rangeEnd)
   const emaPoints = ema.map((value, index) => value == null ? null : `${x(visibleKlines[index].open_time)},${y(value)}`).filter(Boolean).join(' ')
-  const timeTicks = Array.from({ length: 7 }, (_, index) => minTime + ((maxTime - minTime) * index) / 6)
+  const timeTicks = buildAlignedTimeTicks(minTime, maxTime, visibleKlines)
   const priceTicks = Array.from({ length: 7 }, (_, index) => minPrice + ((maxPrice - minPrice) * index) / 6)
+  const markerPlacements = visibleMarkers.map((marker, index, list) => {
+    const bar = findMarkerBar(visibleKlines, marker.timestamp)
+    const sameBarLane = list.slice(0, index).filter((previous) => {
+      const previousBar = findMarkerBar(visibleKlines, previous.timestamp)
+      return previous.side === marker.side && previousBar.open_time === bar.open_time
+    }).length
+    return { marker, bar, lane: sameBarLane }
+  })
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded bg-[#0d1014]">
@@ -336,26 +410,25 @@ function CandlestickChart({
       {startTime >= minTime && startTime <= maxTime && <line x1={x(startTime)} x2={x(startTime)} y1={margin.top} y2={height - margin.bottom} stroke="#4d8dff" strokeDasharray="5 5" opacity="0.65" />}
       {endTime >= minTime && endTime <= maxTime && <line x1={x(endTime)} x2={x(endTime)} y1={margin.top} y2={height - margin.bottom} stroke="#4d8dff" strokeDasharray="5 5" opacity="0.65" />}
 
-      {visibleMarkers.map((marker, index) => {
-        const markerX = Math.max(margin.left + 28, Math.min(width - margin.right - 28, x(marker.timestamp)))
-        const priceY = y(marker.price)
-        const entry = marker.action === 'ENTRY'
-        const color = entry ? '#1687ff' : '#f6465d'
-        const lane = index % 3
-        const tipY = entry ? priceY + 7 : priceY - 7
-        const labelY = entry ? priceY + 43 + lane * 24 : priceY - 37 - lane * 24
-        const lineEndY = entry ? labelY - 18 : labelY + 12
+      {markerPlacements.map(({ marker, bar, lane }) => {
+        const markerX = Math.max(margin.left + 20, Math.min(width - margin.right - 20, x(bar.open_time + (bar.close_time - bar.open_time) / 2)))
+        const isBuy = String(marker.side).toUpperCase() === 'BUY'
+        const color = isBuy ? '#1687ff' : '#f6465d'
+        const candleEdgeY = isBuy ? y(bar.low) : y(bar.high)
+        const tipY = isBuy ? candleEdgeY + 3 : candleEdgeY - 3
+        const stemY = isBuy ? tipY + 9 + lane * 17 : tipY - 9 - lane * 17
+        const firstLabelY = isBuy ? stemY + 12 : stemY - 16
         return <g key={`${marker.id}-${marker.action}`}>
-          <line x1={markerX} x2={markerX} y1={tipY} y2={lineEndY} stroke={color} strokeWidth="2" />
-          <path d={entry
-            ? `M ${markerX - 6} ${priceY + 14} L ${markerX} ${priceY + 5} L ${markerX + 6} ${priceY + 14}`
-            : `M ${markerX - 6} ${priceY - 14} L ${markerX} ${priceY - 5} L ${markerX + 6} ${priceY - 14}`}
-            fill="none" stroke={color} strokeWidth="2.5" />
-          <text x={markerX} y={labelY} textAnchor="middle" fill="#e4e8ee" fontSize="12" fontWeight="600">
+          <line x1={markerX} x2={markerX} y1={tipY} y2={stemY} stroke={color} strokeWidth="1.5" />
+          <path d={isBuy
+            ? `M ${markerX - 3.5} ${tipY + 5} L ${markerX} ${tipY} L ${markerX + 3.5} ${tipY + 5}`
+            : `M ${markerX - 3.5} ${tipY - 5} L ${markerX} ${tipY} L ${markerX + 3.5} ${tipY - 5}`}
+            fill="none" stroke={color} strokeWidth="1.5" />
+          <text x={markerX} y={firstLabelY} textAnchor="middle" fill="#e4e8ee" fontSize="10.5" fontWeight="600">
             <tspan x={markerX}>{formatCompactNumber(marker.quantity)}</tspan>
-            <tspan x={markerX} dy="14" fill="#aab2bf">@ {formatPrice(marker.price)}</tspan>
+            <tspan x={markerX} dy="11" fill="#aab2bf">@ {formatPrice(marker.price)}</tspan>
           </text>
-          <title>{`${entry ? 'Entry' : 'Exit'} ${marker.quantity} @ ${marker.price} · ${formatDateTime(marker.timestamp)}`}</title>
+          <title>{`${String(marker.side).toUpperCase()} · ${marker.action === 'ENTRY' ? 'Entry' : 'Exit'} ${formatCompactNumber(marker.quantity)} @ ${marker.price} · ${formatDateTime(marker.timestamp)}`}</title>
         </g>
       })}
       </svg>
@@ -372,6 +445,38 @@ function computeEma(values: number[], period: number): Array<number | null> {
   })
 }
 
+function findMarkerBar(klines: ApiKline[], timestamp: number): ApiKline {
+  let low = 0
+  let high = klines.length - 1
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    const bar = klines[middle]
+    if (timestamp < bar.open_time) high = middle - 1
+    else if (timestamp > bar.close_time) low = middle + 1
+    else return bar
+  }
+  const index = Math.max(0, Math.min(klines.length - 1, low))
+  const candidate = klines[index]
+  const previous = klines[Math.max(0, index - 1)]
+  return Math.abs(candidate.open_time - timestamp) < Math.abs(previous.close_time - timestamp) ? candidate : previous
+}
+
+function buildAlignedTimeTicks(minTime: number, maxTime: number, klines: ApiKline[]): number[] {
+  const fiveMinutes = 5 * 60_000
+  const inferredInterval = klines.length > 1
+    ? Math.max(1, klines[1].open_time - klines[0].open_time)
+    : Math.max(1, klines[0].close_time - klines[0].open_time + 1)
+  const alignmentUnit = inferredInterval <= 30 * 60_000
+    ? fiveMinutes
+    : inferredInterval < 24 * 60 * 60_000 ? 60 * 60_000 : 24 * 60 * 60_000
+  const targetStep = (maxTime - minTime) / 7
+  const step = Math.max(alignmentUnit, Math.ceil(targetStep / alignmentUnit) * alignmentUnit)
+  const first = Math.ceil(minTime / step) * step
+  const ticks: number[] = []
+  for (let time = first; time <= maxTime; time += step) ticks.push(time)
+  return ticks
+}
+
 function formatPrice(value: number): string {
   if (Math.abs(value) >= 1000) return value.toLocaleString('en-US', { maximumFractionDigits: 2 })
   if (Math.abs(value) >= 1) return value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
@@ -379,7 +484,8 @@ function formatPrice(value: number): string {
 }
 
 function formatCompactNumber(value: number): string {
-  return value.toLocaleString('en-US', { maximumFractionDigits: 6 })
+  const truncated = Math.trunc((value + Number.EPSILON) * 1000) / 1000
+  return truncated.toLocaleString('en-US', { maximumFractionDigits: 3 })
 }
 
 function formatDateTime(timestamp: number): string {

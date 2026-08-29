@@ -120,7 +120,7 @@ interface OpenLot {
   remaining: number
 }
 
-/** FIFO-match one explicit OPEN/CLOSE fill instead of treating a continuously
+/** LIFO-match one explicit OPEN/CLOSE fill instead of treating a continuously
  * non-zero account position as one multi-month trade. */
 function findExplicitPositionWindow(
   fills: OrderLike[],
@@ -146,7 +146,10 @@ function findExplicitPositionWindow(
     let selectedCloseMatchedQty = 0
 
     while (closeRemaining > EPS && lots.length > 0) {
-      const lot = lots[0]
+      // Match the most recently opened lots first. A 0.02 close following two
+      // recent 0.01 opens should point to those two entries, not residual lots
+      // from much earlier in the account history.
+      const lot = lots[lots.length - 1]
       const consumed = Math.min(closeRemaining, lot.remaining)
 
       if (fill.id === selected.id) {
@@ -162,7 +165,7 @@ function findExplicitPositionWindow(
 
       lot.remaining -= consumed
       closeRemaining -= consumed
-      if (lot.remaining <= EPS) lots.shift()
+      if (lot.remaining <= EPS) lots.pop()
     }
 
     if (fill.id === selected.id) {

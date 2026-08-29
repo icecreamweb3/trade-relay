@@ -3080,7 +3080,7 @@ def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
     """Return indexed filled-order history for the selected order's user+symbol.
 
     This avoids the order-log chart loading path scanning every symbol with a
-    ``username LIKE`` filter before it can FIFO-match the selected fill.
+    ``username LIKE`` filter before it can match the selected fill.
     """
     selected = get_order_by_id(int(order_id))
     if not selected:

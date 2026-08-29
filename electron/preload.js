@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
   maximizeWindow: () => ipcRenderer.invoke('maximize-window'),
   closeWindow: () => ipcRenderer.invoke('close-window'),
+  openOrderKlineWindow: (payload) => ipcRenderer.invoke('open-order-kline-window', payload),
+  getOrderKlinePayload: () => ipcRenderer.invoke('get-order-kline-payload'),
+  closeOrderKlineWindow: () => ipcRenderer.invoke('close-order-kline-window'),
+  onOrderKlinePayload: (callback) => {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('order-kline-payload', handler)
+    return () => ipcRenderer.removeListener('order-kline-payload', handler)
+  },
 
   // ── Binance BrowserView ───────────────────────────────────────────────────
   resizeBinancePanel: (splitRatio, chartRatio) => ipcRenderer.invoke('resize-binance-panel', splitRatio, chartRatio),

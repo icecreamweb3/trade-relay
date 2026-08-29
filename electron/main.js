@@ -44,6 +44,8 @@ if (envPath) {
 const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow = null
+let orderKlineWindow = null
+let orderKlinePayload = null
 let binanceView = null
 let _autoExpandDone = false
 let _splitRatio = 0.60   // default left panel 60% horizontal
@@ -337,7 +339,12 @@ function createMainWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => {
+    if (orderKlineWindow && !orderKlineWindow.isDestroyed()) orderKlineWindow.close()
+    orderKlineWindow = null
+    orderKlinePayload = null
+    mainWindow = null
+  })
   mainWindow.webContents.on('did-finish-load', () => updateBinanceViewBounds())
   mainWindow.on('resize', () => updateBinanceViewBounds())
 
@@ -346,6 +353,57 @@ function createMainWindow() {
       if (mainWindow.webContents.isDevToolsOpened()) mainWindow.webContents.closeDevTools()
       else mainWindow.webContents.openDevTools({ mode: 'detach' })
     }
+  })
+}
+
+function openOrderKlineWindow(payload) {
+  orderKlinePayload = payload
+  if (orderKlineWindow && !orderKlineWindow.isDestroyed()) {
+    orderKlineWindow.webContents.send('order-kline-payload', orderKlinePayload)
+    if (orderKlineWindow.isMinimized()) orderKlineWindow.restore()
+    orderKlineWindow.show()
+    orderKlineWindow.focus()
+    return
+  }
+
+  orderKlineWindow = new BrowserWindow({
+    width: 1500,
+    height: 860,
+    minWidth: 760,
+    minHeight: 480,
+    show: false,
+    frame: false,
+    resizable: true,
+    backgroundColor: '#101318',
+    title: 'Position Candles',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      backgroundThrottling: false,
+    },
+  })
+
+  if (isDev) {
+    const separator = DEV_SERVER_URL.includes('?') ? '&' : '?'
+    orderKlineWindow.loadURL(`${DEV_SERVER_URL}${separator}window=order-kline`)
+  } else {
+    orderKlineWindow.loadFile(path.join(__dirname, '../dist/index.html'), {
+      query: { window: 'order-kline' },
+    })
+  }
+
+  orderKlineWindow.webContents.on('did-finish-load', () => {
+    orderKlineWindow?.webContents.send('order-kline-payload', orderKlinePayload)
+  })
+  orderKlineWindow.once('ready-to-show', () => {
+    orderKlineWindow?.show()
+    orderKlineWindow?.focus()
+  })
+  orderKlineWindow.on('closed', () => {
+    orderKlineWindow = null
+    orderKlinePayload = null
   })
 }
 
@@ -826,6 +884,18 @@ ipcMain.handle('maximize-window', () => {
   else mainWindow?.maximize()
 })
 ipcMain.handle('close-window', () => mainWindow?.close())
+ipcMain.handle('open-order-kline-window', (_event, payload) => {
+  if (!payload || typeof payload !== 'object' || !String(payload.symbol || '').trim()) {
+    throw new Error('Invalid order kline payload')
+  }
+  openOrderKlineWindow(payload)
+  return { ok: true }
+})
+ipcMain.handle('get-order-kline-payload', () => orderKlinePayload)
+ipcMain.handle('close-order-kline-window', (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender)
+  if (senderWindow && senderWindow === orderKlineWindow) senderWindow.close()
+})
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 // On Linux with fractional HiDPI scaling (e.g. 125 / 150 %), Chromium may

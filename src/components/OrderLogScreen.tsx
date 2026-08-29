@@ -213,6 +213,7 @@ export function OrderLogScreen() {
 
     const requestId = ++chartRequestRef.current
     setChartLoadingOrderId(order.id)
+    setChartPosition(null)
     setChartPendingOrder(order)
     try {
       // Use the indexed user+symbol endpoint instead of scanning 5000 orders
@@ -226,7 +227,12 @@ export function OrderLogScreen() {
         return
       }
       setChartPendingOrder(null)
-      setChartPosition(position)
+      if (window.electronAPI?.openOrderKlineWindow) {
+        await window.electronAPI.openOrderKlineWindow(position)
+      } else {
+        // Browser development fallback when Electron IPC is unavailable.
+        setChartPosition(position)
+      }
     } catch {
       if (requestId === chartRequestRef.current) showToast('error', t('log.chart.failed'))
     } finally {
