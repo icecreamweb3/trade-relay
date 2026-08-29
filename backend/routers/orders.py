@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import asyncio
+import re
 import time
 from threading import Lock
 from typing import Optional
@@ -115,6 +116,16 @@ class OrderMarkerOut(BaseModel):
     created_at: str
     updated_at: Optional[str] = None
     filled_at: Optional[str] = None
+
+
+class KlineOut(BaseModel):
+    open_time: int
+    close_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -347,6 +358,108 @@ def get_order_markers(
         limit=limit,
     )
     return [_row_to_marker_out(r) for r in rows]
+
+
+_KLINE_INTERVAL_MS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+}
+_KLINE_MAX_BARS = 5000
+
+
+@router.get("/klines", response_model=list[KlineOut])
+def get_historical_klines(
+    symbol: str,
+    interval: str,
+    start_time: int,
+    end_time: int,
+    username: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Return Binance Futures klines for an order holding window.
+
+    Times are Unix milliseconds. The public market-data endpoint needs no API
+    credentials, but this route remains authenticated like the order records.
+    """
+    normalized_symbol = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,24}", normalized_symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+    interval_ms = _KLINE_INTERVAL_MS.get(interval)
+    if interval_ms is None:
+        raise HTTPException(status_code=400, detail="Unsupported kline interval")
+    if start_time <= 0 or end_time <= start_time:
+        raise HTTPException(status_code=400, detail="Invalid kline time range")
+
+    expected_bars = ((end_time - start_time) // interval_ms) + 2
+    if expected_bars > _KLINE_MAX_BARS:
+        raise HTTPException(status_code=400, detail="Time range is too large for this interval")
+
+    market_username = username.strip() if username and username.strip() else user["username"]
+    testnet = cfg.is_testnet(market_username)
+    base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
+    proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    proxy_cfg = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    result: list[KlineOut] = []
+    cursor = start_time
+
+    try:
+        import requests as _requests
+
+        while cursor <= end_time and len(result) < _KLINE_MAX_BARS:
+            response = _requests.get(
+                f"{base_url}/fapi/v1/klines",
+                params={
+                    "symbol": normalized_symbol,
+                    "interval": interval,
+                    "startTime": cursor,
+                    "endTime": end_time,
+                    "limit": min(1500, _KLINE_MAX_BARS - len(result)),
+                },
+                proxies=proxy_cfg,
+                timeout=10,
+            )
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list) or not rows:
+                break
+
+            for row in rows:
+                if not isinstance(row, list) or len(row) < 7:
+                    continue
+                result.append(KlineOut(
+                    open_time=int(row[0]),
+                    close_time=int(row[6]),
+                    open=float(row[1]),
+                    high=float(row[2]),
+                    low=float(row[3]),
+                    close=float(row[4]),
+                    volume=float(row[5]),
+                ))
+
+            next_cursor = int(rows[-1][0]) + interval_ms
+            if next_cursor <= cursor:
+                break
+            cursor = next_cursor
+            if len(rows) < 1500:
+                break
+    except Exception as exc:
+        _log.warning(
+            "historical klines failed username=%s symbol=%s interval=%s: %s",
+            user.get("username"), normalized_symbol, interval, exc,
+        )
+        raise HTTPException(status_code=502, detail="Could not fetch historical klines") from exc
+
+    return result
 
 
 class CancelOrderRequest(BaseModel):
@@ -921,4 +1034,3 @@ async def cancel_conditional_order(body: CancelConditionalOrderRequest, user: di
     if order_row:
         await asyncio.to_thread(db_module.update_order_status, int(order_row["id"]), "CANCELED")
     return {"ok": True}
-

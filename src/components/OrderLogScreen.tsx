@@ -8,6 +8,8 @@ import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { computeTradeAnalysis, TradeAnalysis } from '../utils/tradeAnalysis'
 import { TradeAnalysisModal } from './TradeAnalysisModal'
+import { OrderKlineModal } from './OrderKlineModal'
+import { findPositionWindow, type PositionWindow } from '../utils/orderChart'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -63,6 +65,8 @@ export function OrderLogScreen() {
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const [hasQueried, setHasQueried] = useState(false)
   const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
+  const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
+  const [chartLoadingOrderId, setChartLoadingOrderId] = useState<number | null>(null)
   const { user } = useAuthStore()
 
   const load = async (nextFilters: OrderFilters = filters) => {
@@ -198,6 +202,35 @@ export function OrderLogScreen() {
     }
   }
 
+  const handleOrderDoubleClick = async (order: Order) => {
+    if (chartLoadingOrderId != null) return
+    if (Number(order.filled_qty ?? 0) <= 0 || !(Number(order.avg_price) > 0)) {
+      showToast('info', t('log.chart.notFilled'))
+      return
+    }
+
+    setChartLoadingOrderId(order.id)
+    try {
+      // Row filters may hide the matching entry/exit. Reload the user's fills so
+      // the position cycle can be reconstructed independently of table filters.
+      const history = await api.getOrders({
+        limit: EXPORT_LIMIT,
+        username: order.username?.trim() || undefined,
+      })
+      const candidates = history.some((item) => item.id === order.id) ? history : [...history, order]
+      const position = findPositionWindow(candidates, order.id)
+      if (!position) {
+        showToast('info', t('log.chart.noPosition'))
+        return
+      }
+      setChartPosition(position)
+    } catch {
+      showToast('error', t('log.chart.failed'))
+    } finally {
+      setChartLoadingOrderId(null)
+    }
+  }
+
   const formatNotional = (order: Order) => {
     const refPrice = order.avg_price ?? (order.price && order.price > 0 ? order.price : null)
     if (refPrice == null) return '—'
@@ -322,7 +355,12 @@ export function OrderLogScreen() {
             {orders.length === 0 ? (
               <tr><td colSpan={20} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
-              <tr key={o.id}>
+              <tr
+                key={o.id}
+                onDoubleClick={() => void handleOrderDoubleClick(o)}
+                title={t('log.chart.doubleClickHint')}
+                className={`cursor-pointer ${chartLoadingOrderId === o.id ? 'opacity-60' : ''}`}
+              >
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">
@@ -380,6 +418,7 @@ export function OrderLogScreen() {
         </table>
       </div>
       {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
+      {chartPosition && <OrderKlineModal position={chartPosition} onClose={() => setChartPosition(null)} />}
     </div>
   )
 }

@@ -145,6 +145,16 @@ export interface ApiOrderMarker {
   filled_at?: string | null
 }
 
+export interface ApiKline {
+  open_time: number
+  close_time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
 interface ApiPositionHistory {
   id: number
   username: string
@@ -383,6 +393,16 @@ export const api = {
     limit?: number
   }): Promise<ApiOrderMarker[]> {
     return request<ApiOrderMarker[]>('GET', '/api/orders/markers', { params })
+  },
+
+  async getHistoricalKlines(params: {
+    symbol: string
+    interval: string
+    start_time: number
+    end_time: number
+    username?: string
+  }): Promise<ApiKline[]> {
+    return request<ApiKline[]>('GET', '/api/orders/klines', { params })
   },
 
   // ── Positions ─────────────────────────────────────────────────────────────
