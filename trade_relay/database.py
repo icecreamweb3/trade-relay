@@ -3076,6 +3076,39 @@ def get_user_filled_order_markers(
         conn.close()
 
 
+def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
+    """Return indexed filled-order history for the selected order's user+symbol.
+
+    This avoids the order-log chart loading path scanning every symbol with a
+    ``username LIKE`` filter before it can FIFO-match the selected fill.
+    """
+    selected = get_order_by_id(int(order_id))
+    if not selected:
+        return []
+
+    safe_limit = max(1, min(int(limit), 5000))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM orders FORCE INDEX (idx_user_symbol_status_filled_at)
+                WHERE user_id = %s
+                  AND symbol = %s
+                  AND status = 'FILLED'
+                  AND filled_qty > 0
+                  AND avg_price IS NOT NULL
+                ORDER BY filled_at DESC
+                LIMIT %s
+                """,
+                (selected["user_id"], selected["symbol"], safe_limit),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def get_daily_pnl(user_id: int) -> list:
     """Return daily profile rows using the position_id-based daily_profile aggregation."""
     conn = get_connection()

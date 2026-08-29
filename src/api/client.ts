@@ -395,6 +395,10 @@ export const api = {
     return request<ApiOrderMarker[]>('GET', '/api/orders/markers', { params })
   },
 
+  async getOrderPositionContext(orderId: number): Promise<ApiOrder[]> {
+    return request<ApiOrder[]>('GET', `/api/orders/position-context/${orderId}`)
+  },
+
   async getHistoricalKlines(params: {
     symbol: string
     interval: string

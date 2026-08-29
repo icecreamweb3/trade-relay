@@ -8,7 +8,7 @@ import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { computeTradeAnalysis, TradeAnalysis } from '../utils/tradeAnalysis'
 import { TradeAnalysisModal } from './TradeAnalysisModal'
-import { OrderKlineModal } from './OrderKlineModal'
+import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
 import { findPositionWindow, type PositionWindow } from '../utils/orderChart'
 
 interface Order {
@@ -67,6 +67,8 @@ export function OrderLogScreen() {
   const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
   const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
   const [chartLoadingOrderId, setChartLoadingOrderId] = useState<number | null>(null)
+  const [chartPendingOrder, setChartPendingOrder] = useState<Order | null>(null)
+  const chartRequestRef = useRef(0)
   const { user } = useAuthStore()
 
   const load = async (nextFilters: OrderFilters = filters) => {
@@ -209,26 +211,37 @@ export function OrderLogScreen() {
       return
     }
 
+    const requestId = ++chartRequestRef.current
     setChartLoadingOrderId(order.id)
+    setChartPendingOrder(order)
     try {
-      // Row filters may hide the matching entry/exit. Reload the user's fills so
-      // the position cycle can be reconstructed independently of table filters.
-      const history = await api.getOrders({
-        limit: EXPORT_LIMIT,
-        username: order.username?.trim() || undefined,
-      })
+      // Use the indexed user+symbol endpoint instead of scanning 5000 orders
+      // from every market through a username LIKE filter.
+      const history = await api.getOrderPositionContext(order.id)
+      if (requestId !== chartRequestRef.current) return
       const candidates = history.some((item) => item.id === order.id) ? history : [...history, order]
       const position = findPositionWindow(candidates, order.id)
       if (!position) {
         showToast('info', t('log.chart.noPosition'))
         return
       }
+      setChartPendingOrder(null)
       setChartPosition(position)
     } catch {
-      showToast('error', t('log.chart.failed'))
+      if (requestId === chartRequestRef.current) showToast('error', t('log.chart.failed'))
     } finally {
-      setChartLoadingOrderId(null)
+      if (requestId === chartRequestRef.current) {
+        setChartPendingOrder(null)
+        setChartLoadingOrderId(null)
+      }
     }
+  }
+
+  const closeOrderChart = () => {
+    chartRequestRef.current += 1
+    setChartPendingOrder(null)
+    setChartLoadingOrderId(null)
+    setChartPosition(null)
   }
 
   const formatNotional = (order: Order) => {
@@ -250,7 +263,7 @@ export function OrderLogScreen() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#1e1e1e]">
+    <div className="relative isolate h-full flex flex-col overflow-hidden bg-[#1e1e1e]">
       <div className="px-4 py-2 border-b border-[#3e3e42] flex items-center gap-3 shrink-0">
         <span className="text-sm font-semibold text-[#cccccc]">{t('log.title')}</span>
         <span className="text-xs text-[#858585]">{t('log.allUsers')}</span>
@@ -358,7 +371,6 @@ export function OrderLogScreen() {
               <tr
                 key={o.id}
                 onDoubleClick={() => void handleOrderDoubleClick(o)}
-                title={t('log.chart.doubleClickHint')}
                 className={`cursor-pointer ${chartLoadingOrderId === o.id ? 'opacity-60' : ''}`}
               >
                 <td className="text-[#858585]">{i + 1}</td>
@@ -418,7 +430,8 @@ export function OrderLogScreen() {
         </table>
       </div>
       {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
-      {chartPosition && <OrderKlineModal position={chartPosition} onClose={() => setChartPosition(null)} />}
+      {chartPendingOrder && <OrderKlineLoadingModal symbol={chartPendingOrder.symbol} onClose={closeOrderChart} />}
+      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closeOrderChart} />}
     </div>
   )
 }

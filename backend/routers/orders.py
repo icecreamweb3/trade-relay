@@ -360,6 +360,12 @@ def get_order_markers(
     return [_row_to_marker_out(r) for r in rows]
 
 
+@router.get("/position-context/{order_id}", response_model=list[OrderOut])
+def get_order_position_context(order_id: int, user: dict = Depends(get_current_user)):
+    rows = db_module.get_filled_order_position_context(order_id=order_id, limit=5000)
+    return [_row_to_out(r) for r in rows]
+
+
 _KLINE_INTERVAL_MS = {
     "1m": 60_000,
     "3m": 180_000,
@@ -375,6 +381,9 @@ _KLINE_INTERVAL_MS = {
     "1d": 86_400_000,
 }
 _KLINE_MAX_BARS = 5000
+_KLINE_CACHE_TTL = 60.0
+_kline_cache_lock = Lock()
+_kline_cache: dict[tuple[bool, str, str, int, int], tuple[float, list[KlineOut]]] = {}
 
 
 @router.get("/klines", response_model=list[KlineOut])
@@ -406,6 +415,13 @@ def get_historical_klines(
 
     market_username = username.strip() if username and username.strip() else user["username"]
     testnet = cfg.is_testnet(market_username)
+    cache_key = (testnet, normalized_symbol, interval, start_time, end_time)
+    now = time.monotonic()
+    with _kline_cache_lock:
+        cached = _kline_cache.get(cache_key)
+        if cached and now - cached[0] < _KLINE_CACHE_TTL:
+            return cached[1]
+
     base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
     proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
     proxy_cfg = {"http": proxy_url, "https": proxy_url} if proxy_url else None
@@ -459,6 +475,11 @@ def get_historical_klines(
         )
         raise HTTPException(status_code=502, detail="Could not fetch historical klines") from exc
 
+    with _kline_cache_lock:
+        _kline_cache[cache_key] = (time.monotonic(), result)
+        if len(_kline_cache) > 128:
+            oldest_key = min(_kline_cache, key=lambda key: _kline_cache[key][0])
+            _kline_cache.pop(oldest_key, None)
     return result
 
 

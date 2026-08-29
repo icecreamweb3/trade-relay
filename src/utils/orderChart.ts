@@ -16,6 +16,7 @@ export interface PositionWindow {
   positionSide: 'LONG' | 'SHORT' | 'UNKNOWN'
   startTime: number
   endTime: number
+  focusTime: number
   isOpen: boolean
   markers: PositionFillMarker[]
 }
@@ -60,6 +61,10 @@ export function findPositionWindow(orders: OrderLike[], selectedOrderId: number,
     ))
     .sort((left, right) => (fillTimestamp(left) ?? 0) - (fillTimestamp(right) ?? 0) || left.id - right.id)
 
+  if (selectedSide !== 'UNKNOWN') {
+    return findExplicitPositionWindow(fills, selected, selectedSide, now)
+  }
+
   let position = 0
   let cycle: PositionFillMarker[] = []
 
@@ -74,6 +79,7 @@ export function findPositionWindow(orders: OrderLike[], selectedOrderId: number,
       positionSide: selectedSide,
       startTime: Math.min(...entries.map((marker) => marker.timestamp)),
       endTime: isOpen ? now : Math.max(...exits.map((marker) => marker.timestamp)),
+      focusTime: fillTimestamp(selected) ?? Math.min(...entries.map((marker) => marker.timestamp)),
       isOpen,
       markers: [...cycle],
     }
@@ -81,63 +87,123 @@ export function findPositionWindow(orders: OrderLike[], selectedOrderId: number,
 
   for (const fill of fills) {
     const qty = Number(fill.filled_qty)
-    const direction = String(fill.trade_direction || '').toUpperCase()
-
-    if (selectedSide === 'UNKNOWN') {
-      const delta = String(fill.side).toUpperCase() === 'BUY' ? qty : -qty
-      if (cycle.length === 0 || Math.sign(delta) === Math.sign(position)) {
-        const marker = toMarker(fill, 'ENTRY')
-        if (marker) cycle.push(marker)
-        position += delta
-        continue
-      }
-      const marker = toMarker(fill, 'EXIT')
-      if (marker) cycle.push(marker)
-      const next = position + delta
-      if (Math.abs(next) <= EPS || Math.sign(next) !== Math.sign(position)) {
-        const found = resolveCycle(false)
-        if (found) return found
-        cycle = []
-        position = 0
-        if (Math.abs(next) > EPS) {
-          const entry = toMarker(fill, 'ENTRY')
-          if (entry) cycle = [entry]
-          position = next
-        }
-      } else {
-        position = next
-      }
-      continue
-    }
-
-    if (direction === 'OPEN') {
+    const delta = String(fill.side).toUpperCase() === 'BUY' ? qty : -qty
+    if (cycle.length === 0 || Math.sign(delta) === Math.sign(position)) {
       const marker = toMarker(fill, 'ENTRY')
       if (marker) cycle.push(marker)
-      position += qty
+      position += delta
       continue
     }
-    // A close from a position opened before the available history cannot be paired.
-    if (cycle.length === 0) continue
     const marker = toMarker(fill, 'EXIT')
     if (marker) cycle.push(marker)
-    position -= qty
-    if (position <= EPS) {
+    const next = position + delta
+    if (Math.abs(next) <= EPS || Math.sign(next) !== Math.sign(position)) {
       const found = resolveCycle(false)
       if (found) return found
       cycle = []
       position = 0
+      if (Math.abs(next) > EPS) {
+        const entry = toMarker(fill, 'ENTRY')
+        if (entry) cycle = [entry]
+        position = next
+      }
+    } else {
+      position = next
     }
   }
 
   return resolveCycle(true)
 }
 
-export function chooseKlineInterval(startTime: number, endTime: number): string {
-  const durationMinutes = Math.max(1, (endTime - startTime) / 60_000)
-  if (durationMinutes <= 180) return '1m'
-  if (durationMinutes <= 900) return '5m'
-  if (durationMinutes <= 2_700) return '15m'
-  if (durationMinutes <= 10_800) return '1h'
-  if (durationMinutes <= 43_200) return '4h'
-  return '1d'
+interface OpenLot {
+  order: OrderLike
+  remaining: number
+}
+
+/** FIFO-match one explicit OPEN/CLOSE fill instead of treating a continuously
+ * non-zero account position as one multi-month trade. */
+function findExplicitPositionWindow(
+  fills: OrderLike[],
+  selected: OrderLike,
+  selectedSide: 'LONG' | 'SHORT',
+  now: number,
+): PositionWindow | null {
+  const lots: OpenLot[] = []
+  const selectedEntry = toMarker(selected, 'ENTRY')
+  const selectedExits: PositionFillMarker[] = []
+  let selectedOpenRemaining = Number(selected.filled_qty ?? 0)
+
+  for (const fill of fills) {
+    const direction = String(fill.trade_direction || '').toUpperCase()
+    const fillQty = Number(fill.filled_qty ?? 0)
+    if (direction === 'OPEN') {
+      lots.push({ order: fill, remaining: fillQty })
+      continue
+    }
+
+    let closeRemaining = fillQty
+    const entriesClosedBySelected: PositionFillMarker[] = []
+    let selectedCloseMatchedQty = 0
+
+    while (closeRemaining > EPS && lots.length > 0) {
+      const lot = lots[0]
+      const consumed = Math.min(closeRemaining, lot.remaining)
+
+      if (fill.id === selected.id) {
+        const entry = toMarker(lot.order, 'ENTRY')
+        if (entry) entriesClosedBySelected.push({ ...entry, quantity: consumed })
+        selectedCloseMatchedQty += consumed
+      }
+      if (lot.order.id === selected.id) {
+        const exit = toMarker(fill, 'EXIT')
+        if (exit) selectedExits.push({ ...exit, quantity: consumed })
+        selectedOpenRemaining -= consumed
+      }
+
+      lot.remaining -= consumed
+      closeRemaining -= consumed
+      if (lot.remaining <= EPS) lots.shift()
+    }
+
+    if (fill.id === selected.id) {
+      const exit = toMarker(fill, 'EXIT')
+      if (!exit || entriesClosedBySelected.length === 0 || selectedCloseMatchedQty <= EPS) return null
+      const startTime = Math.min(...entriesClosedBySelected.map((marker) => marker.timestamp))
+      return {
+        symbol: selected.symbol,
+        username: selected.username ?? '',
+        positionSide: selectedSide,
+        startTime,
+        endTime: exit.timestamp,
+        focusTime: exit.timestamp,
+        isOpen: false,
+        markers: [...entriesClosedBySelected, { ...exit, quantity: selectedCloseMatchedQty }],
+      }
+    }
+
+    if (selectedEntry && selectedOpenRemaining <= EPS) {
+      return {
+        symbol: selected.symbol,
+        username: selected.username ?? '',
+        positionSide: selectedSide,
+        startTime: selectedEntry.timestamp,
+        endTime: Math.max(...selectedExits.map((marker) => marker.timestamp)),
+        focusTime: selectedEntry.timestamp,
+        isOpen: false,
+        markers: [selectedEntry, ...selectedExits],
+      }
+    }
+  }
+
+  if (!selectedEntry || String(selected.trade_direction || '').toUpperCase() !== 'OPEN') return null
+  return {
+    symbol: selected.symbol,
+    username: selected.username ?? '',
+    positionSide: selectedSide,
+    startTime: selectedEntry.timestamp,
+    endTime: now,
+    focusTime: selectedEntry.timestamp,
+    isOpen: true,
+    markers: [selectedEntry, ...selectedExits],
+  }
 }
