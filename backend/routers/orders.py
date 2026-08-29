@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import asyncio
 import re
 import time
+from datetime import datetime, timedelta
 from threading import Lock
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -17,6 +18,7 @@ from trade_relay import config as cfg
 from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
 from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
+from trade_relay.trading.order_history_reconciliation import reconcile_order_history
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
@@ -126,6 +128,26 @@ class KlineOut(BaseModel):
     low: float
     close: float
     volume: float
+
+
+class OrderReconcileRequest(BaseModel):
+    username: str
+    start_time: str
+    end_time: str
+
+
+class OrderReconcileResult(BaseModel):
+    username: str
+    start_time: str
+    end_time: str
+    symbols: list[str]
+    scanned_orders: int
+    scanned_trades: int
+    inserted: int
+    updated: int
+    unchanged: int
+    failed: int
+    warnings: list[str]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -364,6 +386,55 @@ def get_order_markers(
 def get_order_position_context(order_id: int, user: dict = Depends(get_current_user)):
     rows = db_module.get_filled_order_position_context(order_id=order_id, limit=5000)
     return [_row_to_out(r) for r in rows]
+
+
+@router.post("/reconcile", response_model=OrderReconcileResult)
+async def reconcile_orders(body: OrderReconcileRequest, user: dict = Depends(get_current_user)):
+    username = body.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if user.get("role") != "admin" and username != user.get("username"):
+        raise HTTPException(status_code=403, detail="Cannot reconcile another user's orders")
+
+    try:
+        start_time = datetime.fromisoformat(body.start_time.strip().replace("T", " "))
+        end_time = datetime.fromisoformat(body.end_time.strip().replace("T", " "))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid reconciliation time range") from exc
+    if end_time <= start_time:
+        raise HTTPException(status_code=400, detail="End time must be later than start time")
+    if end_time - start_time > timedelta(days=90):
+        raise HTTPException(status_code=400, detail="Reconciliation range cannot exceed 90 days")
+
+    api_key = cfg.get_api_key(username)
+    api_secret = cfg.get_api_secret(username)
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="The selected user has no Binance API credentials")
+
+    try:
+        client = await asyncio.to_thread(
+            _get_futures_client,
+            api_key,
+            api_secret,
+            cfg.is_testnet(username),
+        )
+        result = await asyncio.to_thread(
+            reconcile_order_history,
+            username=username,
+            client=client,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        _log.info(
+            "order reconciliation completed username=%s start=%s end=%s inserted=%s updated=%s unchanged=%s failed=%s",
+            username, start_time, end_time, result["inserted"], result["updated"], result["unchanged"], result["failed"],
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("order reconciliation failed username=%s", username)
+        raise HTTPException(status_code=502, detail=f"Binance order reconciliation failed: {exc}") from exc
 
 
 _KLINE_INTERVAL_MS = {

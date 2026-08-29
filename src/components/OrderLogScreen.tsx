@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { BarChart3, Calendar, Download } from 'lucide-react'
-import { api } from '../api/client'
+import { BarChart3, Calendar, Download, RefreshCw, X } from 'lucide-react'
+import { api, type ApiOrderReconcileResult } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -69,6 +69,8 @@ export function OrderLogScreen() {
   const [chartLoadingOrderId, setChartLoadingOrderId] = useState<number | null>(null)
   const [chartPendingOrder, setChartPendingOrder] = useState<Order | null>(null)
   const chartRequestRef = useRef(0)
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileDialog, setReconcileDialog] = useState<{ result?: ApiOrderReconcileResult; error?: string } | null>(null)
   const { user } = useAuthStore()
 
   const load = async (nextFilters: OrderFilters = filters) => {
@@ -243,6 +245,39 @@ export function OrderLogScreen() {
     }
   }
 
+  const handleReconcile = async () => {
+    if (reconciling) return
+    if (!filters.username.trim() || !filters.startTime || !filters.endTime) {
+      showToast('info', t('log.reconcile.required'))
+      return
+    }
+
+    const startTime = toBackendDateTime(filters.startTime)
+    const endTime = toBackendDateTime(filters.endTime)
+    if (!startTime || !endTime) {
+      showToast('info', t('log.reconcile.required'))
+      return
+    }
+
+    setReconciling(true)
+    try {
+      const result = await api.reconcileOrders({
+        username: filters.username.trim(),
+        start_time: startTime,
+        end_time: endTime,
+      })
+      setReconcileDialog({ result })
+      await load(filters)
+    } catch (error) {
+      const message = typeof error === 'object' && error !== null && 'message' in error
+        ? String((error as { message?: unknown }).message || t('log.reconcile.failed'))
+        : t('log.reconcile.failed')
+      setReconcileDialog({ error: message })
+    } finally {
+      setReconciling(false)
+    }
+  }
+
   const closeOrderChart = () => {
     chartRequestRef.current += 1
     setChartPendingOrder(null)
@@ -362,6 +397,15 @@ export function OrderLogScreen() {
             <BarChart3 size={14} />
             {t('log.analyze')}
           </button>
+          <button
+            type="button"
+            onClick={() => void handleReconcile()}
+            disabled={reconciling}
+            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
+            {reconciling ? t('log.reconcile.running') : t('log.reconcile')}
+          </button>
         </div>
       </form>
       <div className="flex-1 overflow-auto">
@@ -438,6 +482,71 @@ export function OrderLogScreen() {
       {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
       {chartPendingOrder && <OrderKlineLoadingModal symbol={chartPendingOrder.symbol} onClose={closeOrderChart} />}
       {chartPosition && <OrderKlineModal position={chartPosition} onClose={closeOrderChart} />}
+      {reconcileDialog && <OrderReconcileResultModal dialog={reconcileDialog} onClose={() => setReconcileDialog(null)} t={t} />}
+    </div>
+  )
+}
+
+function OrderReconcileResultModal({
+  dialog,
+  onClose,
+  t,
+}: {
+  dialog: { result?: ApiOrderReconcileResult; error?: string }
+  onClose: () => void
+  t: Translate
+}) {
+  const result = dialog.result
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/65 px-4" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <section role="dialog" aria-modal="true" className="w-full max-w-[620px] overflow-hidden rounded-lg border border-[#414956] bg-[#171b21] shadow-2xl">
+        <header className="flex items-center justify-between border-b border-[#303641] px-4 py-3">
+          <h2 className="text-sm font-semibold text-[#e8ebf0]">{t('log.reconcile.resultTitle')}</h2>
+          <button type="button" onClick={onClose} className="rounded p-1 text-[#929baa] hover:bg-[#29303a] hover:text-white"><X size={17} /></button>
+        </header>
+        <div className="p-4">
+          {dialog.error ? (
+            <div className="rounded border border-[#f6465d]/35 bg-[#f6465d]/10 px-3 py-3 text-sm text-[#ff8292]">{dialog.error}</div>
+          ) : result ? (
+            <>
+              <div className="mb-3 text-xs leading-5 text-[#929baa]">
+                <div>{result.username} · {result.start_time} — {result.end_time}</div>
+                <div>{t('log.reconcile.symbols')}: {result.symbols.join(', ') || '—'}</div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                <ReconcileStat label={t('log.reconcile.scanned')} value={result.scanned_orders} />
+                <ReconcileStat label={t('log.reconcile.inserted')} value={result.inserted} tone="success" />
+                <ReconcileStat label={t('log.reconcile.updated')} value={result.updated} tone="info" />
+                <ReconcileStat label={t('log.reconcile.unchanged')} value={result.unchanged} />
+                <ReconcileStat label={t('log.reconcile.trades')} value={result.scanned_trades} />
+                <ReconcileStat label={t('log.reconcile.errors')} value={result.failed} tone={result.failed ? 'error' : undefined} />
+              </div>
+              {result.warnings.length > 0 && (
+                <div className="mt-3 max-h-32 overflow-auto rounded border border-[#f0b90b]/25 bg-[#f0b90b]/5 px-3 py-2 text-xs leading-5 text-[#d9bd66]">
+                  {result.warnings.map((warning, index) => <div key={index}>{warning}</div>)}
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+        <footer className="flex justify-end border-t border-[#303641] px-4 py-3">
+          <button type="button" onClick={onClose} className="rounded bg-[#2f7cf6] px-4 py-1.5 text-sm text-white hover:bg-[#4b90fb]">{t('common.close')}</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function ReconcileStat({ label, value, tone }: { label: string; value: number; tone?: 'success' | 'info' | 'error' }) {
+  const valueClass = tone === 'success' ? 'text-[#0ecb81]'
+    : tone === 'info' ? 'text-[#4b90fb]'
+      : tone === 'error' ? 'text-[#f6465d]' : 'text-[#e4e8ee]'
+  return (
+    <div className="rounded border border-[#303641] bg-[#101318] px-2 py-2 text-center">
+      <div className={`font-mono text-lg font-semibold ${valueClass}`}>{value}</div>
+      <div className="mt-0.5 truncate text-[10px] text-[#7f8998]" title={label}>{label}</div>
     </div>
   )
 }

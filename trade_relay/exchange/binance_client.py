@@ -3405,6 +3405,69 @@ class BinanceClient:
 
         return orders
 
+    def get_account_trades_range(self, start_time_ms: int, end_time_ms: int) -> List[dict]:
+        """Fetch USD-M account trades across an arbitrary range in 7-day chunks."""
+        result: List[dict] = []
+        seen: set[tuple[str, str]] = set()
+        chunk_ms = 7 * 24 * 60 * 60 * 1000 - 1
+        cursor = int(start_time_ms)
+        while cursor <= end_time_ms:
+            chunk_end = min(int(end_time_ms), cursor + chunk_ms)
+            page_cursor = cursor
+            while page_cursor <= chunk_end:
+                rows = self.client.futures_account_trades(
+                    startTime=page_cursor,
+                    endTime=chunk_end,
+                    limit=1000,
+                ) or []
+                if not rows:
+                    break
+                for row in rows:
+                    key = (str(row.get("symbol") or ""), str(row.get("id") or row.get("tradeId") or ""))
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(row)
+                if len(rows) < 1000:
+                    break
+                next_cursor = max(int(row.get("time") or page_cursor) for row in rows) + 1
+                if next_cursor <= page_cursor:
+                    break
+                page_cursor = next_cursor
+            cursor = chunk_end + 1
+        return result
+
+    def get_all_orders_range(self, symbol: str, start_time_ms: int, end_time_ms: int) -> List[dict]:
+        """Fetch all USD-M orders for one symbol in 7-day chunks."""
+        result: List[dict] = []
+        seen: set[str] = set()
+        chunk_ms = 7 * 24 * 60 * 60 * 1000 - 1
+        cursor = int(start_time_ms)
+        while cursor <= end_time_ms:
+            chunk_end = min(int(end_time_ms), cursor + chunk_ms)
+            page_cursor = cursor
+            while page_cursor <= chunk_end:
+                rows = self.client.futures_get_all_orders(
+                    symbol=symbol,
+                    startTime=page_cursor,
+                    endTime=chunk_end,
+                    limit=1000,
+                ) or []
+                if not rows:
+                    break
+                for row in rows:
+                    order_id = str(row.get("orderId") or "")
+                    if order_id and order_id not in seen:
+                        seen.add(order_id)
+                        result.append(row)
+                if len(rows) < 1000:
+                    break
+                next_cursor = max(int(row.get("time") or row.get("updateTime") or page_cursor) for row in rows) + 1
+                if next_cursor <= page_cursor:
+                    break
+                page_cursor = next_cursor
+            cursor = chunk_end + 1
+        return result
+
     def get_positions(self, symbol: str | None = None) -> List[dict]:
         """Get current open positions. Filters out zero-quantity entries.
 
@@ -3890,4 +3953,3 @@ class BinanceClient:
             logger.debug(f"❌ 关闭异常: {str(e)}")
             logger.exception(f"关闭异常详情")
             return False
-

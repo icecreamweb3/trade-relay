@@ -155,6 +155,20 @@ export interface ApiKline {
   volume: number
 }
 
+export interface ApiOrderReconcileResult {
+  username: string
+  start_time: string
+  end_time: string
+  symbols: string[]
+  scanned_orders: number
+  scanned_trades: number
+  inserted: number
+  updated: number
+  unchanged: number
+  failed: number
+  warnings: string[]
+}
+
 interface ApiPositionHistory {
   id: number
   username: string
@@ -397,6 +411,14 @@ export const api = {
 
   async getOrderPositionContext(orderId: number): Promise<ApiOrder[]> {
     return request<ApiOrder[]>('GET', `/api/orders/position-context/${orderId}`)
+  },
+
+  async reconcileOrders(body: {
+    username: string
+    start_time: string
+    end_time: string
+  }): Promise<ApiOrderReconcileResult> {
+    return request<ApiOrderReconcileResult>('POST', '/api/orders/reconcile', { body })
   },
 
   async getHistoricalKlines(params: {

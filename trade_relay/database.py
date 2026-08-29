@@ -2995,6 +2995,29 @@ def query_orders(
         conn.close()
 
 
+def get_order_symbols_for_user_range(username: str, start_time, end_time) -> list[str]:
+    """Return distinct local symbols for an exact user and UTC order-time range."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT UPPER(symbol) AS symbol
+                FROM orders
+                WHERE username = %s
+                  AND created_at >= %s
+                  AND created_at <= %s
+                  AND symbol IS NOT NULL
+                  AND TRIM(symbol) <> ''
+                ORDER BY symbol
+                """,
+                (username, start_time, end_time),
+            )
+            return [str(row["symbol"]) for row in (cur.fetchall() or []) if row.get("symbol")]
+    finally:
+        conn.close()
+
+
 def get_recent_platform_trades(limit: int = 30) -> list:
     """返回平台内所有用户最近的已成交订单。
     每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price,
@@ -3930,6 +3953,19 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
             filled_at = _dt.datetime.utcfromtimestamp(int(trade_time) / 1000)
         except Exception:
             pass
+    created_at = None
+    updated_at = None
+    try:
+        import datetime as _dt
+        order_time = ws_event.get("O") or ws_event.get("T")
+        update_time = ws_event.get("T") or order_time
+        if order_time:
+            created_at = _dt.datetime.utcfromtimestamp(int(order_time) / 1000)
+        if update_time:
+            updated_at = _dt.datetime.utcfromtimestamp(int(update_time) / 1000)
+    except Exception:
+        created_at = None
+        updated_at = None
 
     if not symbol or not side or not order_type or quantity <= 0:
         logger.warning(
@@ -3968,13 +4004,13 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     exchange_order_id, client_order_id,
                     filled_qty, avg_price, filled_at,
                     trade_direction, position_mode, reduce_only,
-                    order_category)
+                    order_category, created_at, updated_at)
                    SELECT %s, %s, 'binance', 'external', %s, %s, %s,
                            %s, %s, %s, %s,
                            %s, %s,
                            %s, %s, %s,
                            %s, %s, %s,
-                           %s
+                           %s, COALESCE(%s, UTC_TIMESTAMP()), COALESCE(%s, UTC_TIMESTAMP())
                    FROM DUAL
                    WHERE NOT EXISTS (
                        SELECT 1 FROM orders
@@ -3987,7 +4023,7 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     exchange_order_id, client_order_id,
                     filled_qty, avg_price, filled_at,
                     trade_direction, position_mode, int(reduce_only),
-                    order_category,
+                    order_category, created_at, updated_at,
                     username, exchange_order_id,  # WHERE NOT EXISTS params
                 ),
             )
