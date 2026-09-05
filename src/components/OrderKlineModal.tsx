@@ -116,7 +116,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
           : ({ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties)}
         className={standalone
           ? 'fixed inset-0 flex h-screen w-screen flex-col overflow-hidden bg-[#101318]'
-          : 'fixed z-[200] flex h-[62vh] min-h-[360px] max-h-[90vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]'}
+          : 'fixed z-[200] flex h-[93.6vh] min-h-[672px] max-h-[96vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]'}
       >
         <header
           onMouseDown={standalone ? undefined : floating.onMouseDown}
@@ -155,7 +155,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1 p-3">
+        <div className="relative min-h-[280px] flex-1 p-3">
           {loading && <LoadingProgress progress={loadingProgress} label={t('log.chart.loading')} overlay />}
           {!loading && error && <div className="absolute inset-0 flex items-center justify-center text-sm text-[#f6465d]">{t('log.chart.failed')}</div>}
           {klines.length > 0 && <CandlestickChart
@@ -166,9 +166,107 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
             locale={locale}
           />}
         </div>
+
+        <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
       </section>,
     document.body,
   )
+}
+
+function FillRecords({
+  symbol,
+  markers,
+  t,
+}: {
+  symbol: string
+  markers: PositionFillMarker[]
+  t: (key: string, vars?: Record<string, string | number>) => string
+}) {
+  const sortedMarkers = [...markers].sort((left, right) => left.timestamp - right.timestamp || left.id - right.id)
+
+  return (
+    <section className="max-h-[190px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b]" aria-label={t('log.chart.fills')}>
+      <div className="sticky top-0 z-10 flex items-center border-b border-[#252b33] bg-[#171b21] px-4 py-2">
+        <h3 className="text-xs font-semibold text-[#dce2ea]">{t('log.chart.fills')}</h3>
+        <span className="ml-2 rounded bg-[#2b313b] px-1.5 py-0.5 text-[10px] tabular-nums text-[#9aa3b2]">{sortedMarkers.length}</span>
+      </div>
+      <table className="w-full min-w-[1320px] text-left text-xs">
+        <thead className="text-[#7f8998]">
+          <tr className="border-b border-[#252b33]">
+            <th className="px-4 py-2 font-medium">{t('log.symbol')}</th>
+            <th className="px-3 py-2 font-medium">{t('log.createdAt')}</th>
+            <th className="px-3 py-2 font-medium">{t('log.filledAt')}</th>
+            <th className="px-3 py-2 font-medium">{t('log.side')}</th>
+            <th className="px-3 py-2 font-medium">{t('log.type')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('log.qty')}</th>
+            <th className="px-3 py-2 font-medium">{t('log.dir')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('log.price')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('log.filledPrice')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('log.notional')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('log.realizedPnl')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('trade.commission')}</th>
+            <th className="px-4 py-2 font-medium">{t('trade.commissionAsset')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedMarkers.map((marker) => {
+            const isBuy = String(marker.side).toUpperCase() === 'BUY'
+            const isClose = marker.tradeDirection.toUpperCase() === 'CLOSE' || marker.action === 'EXIT'
+            return (
+              <tr key={`${marker.id}-${marker.action}`} className="border-b border-[#20262e] last:border-b-0 hover:bg-[#1a1f27]">
+                <td className="whitespace-nowrap px-4 py-2 font-semibold text-[#dfe4eb]">{symbol}</td>
+                <td className="whitespace-nowrap px-3 py-2 tabular-nums text-[#8993a2]">{formatFillDateTime(marker.createdAt)}</td>
+                <td className="whitespace-nowrap px-3 py-2 tabular-nums text-[#8993a2]">{formatFillDateTime(marker.timestamp)}</td>
+                <td className={`whitespace-nowrap px-3 py-2 font-semibold ${isBuy ? 'text-[#1687ff]' : 'text-[#f6465d]'}`}>
+                  {t(isBuy ? 'side.buy' : 'side.sell')}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2 text-[#8993a2]">{formatFillOrderType(marker.orderType, t)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums text-[#c8ced8]">{formatCompactNumber(marker.quantity)}</td>
+                <td className={`whitespace-nowrap px-3 py-2 font-medium ${isClose ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
+                  {t(isClose ? 'order.close' : 'order.open')}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums text-[#c8ced8]">{marker.orderPrice == null ? t('log.market') : marker.orderPrice.toFixed(2)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums text-[#e0e5ec]">{marker.price.toFixed(2)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums text-[#c8ced8]">{(marker.price * marker.quantity).toFixed(2)}</td>
+                <td className={`whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums ${fillNumberTone(marker.realizedPnl)}`}>{formatFillNumber(marker.realizedPnl)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-right font-mono tabular-nums text-[#8993a2]">{formatFillNumber(marker.commission, false)}</td>
+                <td className="whitespace-nowrap px-4 py-2 font-mono text-[#8993a2]">{marker.commissionAsset ?? '—'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </section>
+  )
+}
+
+function formatFillDateTime(timestamp: number | null): string {
+  if (timestamp == null) return '—'
+  const date = new Date(timestamp)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function formatFillOrderType(orderType: string, t: (key: string) => string): string {
+  switch (orderType.toUpperCase()) {
+    case 'LIMIT': return t('type.limit')
+    case 'MARKET': return t('type.market')
+    case 'STOP': return t('type.stop')
+    case 'STOP_MARKET': return t('type.stopMarket')
+    case 'TAKE_PROFIT': return t('type.takeProfit')
+    case 'TAKE_PROFIT_MARKET': return t('type.takeProfitMarket')
+    default: return orderType || '—'
+  }
+}
+
+function formatFillNumber(value: number | null, signed = true): string {
+  if (value == null) return '—'
+  return `${signed && value > 0 ? '+' : ''}${value.toFixed(4)}`
+}
+
+function fillNumberTone(value: number | null): string {
+  if (value == null || value === 0) return 'text-[#8993a2]'
+  return value > 0 ? 'text-[#0ecb81]' : 'text-[#f6465d]'
 }
 
 function useFloatingPanel(initialSize?: { width: number; height: number }) {
@@ -176,7 +274,7 @@ function useFloatingPanel(initialSize?: { width: number; height: number }) {
   const dragRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null)
   const [position, setPosition] = useState(() => ({
     x: initialSize ? Math.max(12, (window.innerWidth - initialSize.width) / 2) : Math.max(12, window.innerWidth * 0.06),
-    y: initialSize ? Math.max(12, (window.innerHeight - initialSize.height) / 2) : Math.max(12, window.innerHeight * 0.34),
+    y: initialSize ? Math.max(12, (window.innerHeight - initialSize.height) / 2) : Math.max(12, window.innerHeight * 0.02),
   }))
 
   useEffect(() => {

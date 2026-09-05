@@ -6,8 +6,15 @@ export interface PositionFillMarker {
   action: 'ENTRY' | 'EXIT'
   side: string
   timestamp: number
+  createdAt: number | null
+  orderType: string
+  tradeDirection: string
+  orderPrice: number | null
   price: number
   quantity: number
+  realizedPnl: number | null
+  commission: number | null
+  commissionAsset: string | null
 }
 
 export interface PositionWindow {
@@ -41,7 +48,25 @@ function toMarker(order: OrderLike, action: 'ENTRY' | 'EXIT'): PositionFillMarke
   const price = Number(order.avg_price)
   const quantity = Number(order.filled_qty)
   if (timestamp == null || !Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) return null
-  return { id: order.id, action, side: order.side, timestamp, price, quantity }
+  const createdAt = parseUtcTimestamp(order.created_at)?.getTime() ?? null
+  const orderPrice = Number(order.price)
+  const realizedPnl = Number(order.realized_pnl)
+  const commission = Number(order.commission)
+  return {
+    id: order.id,
+    action,
+    side: order.side,
+    timestamp,
+    createdAt,
+    orderType: String(order.order_type || ''),
+    tradeDirection: String(order.trade_direction || ''),
+    orderPrice: Number.isFinite(orderPrice) && orderPrice > 0 ? orderPrice : null,
+    price,
+    quantity,
+    realizedPnl: order.realized_pnl != null && Number.isFinite(realizedPnl) ? realizedPnl : null,
+    commission: order.commission != null && Number.isFinite(commission) ? commission : null,
+    commissionAsset: order.commission_asset || null,
+  }
 }
 
 /** Find the complete (or currently open) position cycle containing one order. */

@@ -16,8 +16,11 @@ export interface OrderLike {
   username?: string
   symbol: string
   side: string
+  order_type?: string | null
   trade_direction?: string | null
+  quantity?: number
   filled_qty?: number
+  price?: number | null
   avg_price?: number | null
   realized_pnl?: number | null
   commission?: number | null

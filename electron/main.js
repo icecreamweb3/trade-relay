@@ -368,9 +368,9 @@ function openOrderKlineWindow(payload) {
 
   orderKlineWindow = new BrowserWindow({
     width: 1500,
-    height: 860,
+    height: 1032,
     minWidth: 760,
-    minHeight: 480,
+    minHeight: 576,
     show: false,
     frame: false,
     resizable: true,
