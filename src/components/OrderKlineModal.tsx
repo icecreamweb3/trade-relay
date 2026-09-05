@@ -45,6 +45,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState(8)
+  const [showBarNumbers, setShowBarNumbers] = useState(false)
   const floating = useFloatingPanel()
 
   const bounds = useMemo(() => {
@@ -149,6 +150,18 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
             })}
           </div>
           <div className="flex items-center gap-4 text-xs">
+            <label className="flex cursor-pointer select-none items-center gap-2 text-[#aab2bf]">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showBarNumbers}
+                onClick={() => setShowBarNumbers((visible) => !visible)}
+                className={`relative h-4 w-8 rounded-full transition-colors ${showBarNumbers ? 'bg-[#2f7cf6]' : 'bg-[#39414d]'}`}
+              >
+                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showBarNumbers ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+              </button>
+              <span>{t('log.chart.showBarNumbers')}</span>
+            </label>
             <span className="text-[#1687ff]">↑ {t('side.buy')}</span>
             <span className="text-[#f6465d]">↓ {t('side.sell')}</span>
             <span className="text-[#d95b8b]">EMA 20</span>
@@ -164,6 +177,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
             startTime={position.startTime}
             endTime={position.endTime}
             locale={locale}
+            showBarNumbers={showBarNumbers}
           />}
         </div>
 
@@ -380,12 +394,14 @@ function CandlestickChart({
   startTime,
   endTime,
   locale,
+  showBarNumbers,
 }: {
   klines: ApiKline[]
   markers: PositionFillMarker[]
   startTime: number
   endTime: number
   locale: string
+  showBarNumbers: boolean
 }) {
   const [visibleRange, setVisibleRange] = useState(() => ({ start: 0, end: klines.length }))
   const dragRef = useRef<{ clientX: number; start: number; end: number } | null>(null)
@@ -427,6 +443,7 @@ function CandlestickChart({
   const maxPrice = rawMax + pricePadding
   const maxVolume = Math.max(...visibleKlines.map((bar) => bar.volume), 1)
   const candleWidth = Math.max(1, Math.min(18, (plotWidth / visibleKlines.length) * 0.7))
+  const barNumberStep = Math.max(1, Math.ceil(24 / Math.max(1, plotWidth / visibleCount)))
   const x = (time: number) => margin.left + ((time - minTime) / (maxTime - minTime)) * plotWidth
   const clampedX = (time: number) => Math.max(margin.left, Math.min(width - margin.right, x(time)))
   const y = (price: number) => margin.top + ((maxPrice - price) / (maxPrice - minPrice)) * priceHeight
@@ -502,6 +519,21 @@ function CandlestickChart({
           <rect x={centerX - candleWidth / 2} y={volumeY(bar.volume)} width={candleWidth} height={height - margin.bottom - volumeY(bar.volume)} fill={color} opacity="0.3" />
           <title>{`${formatDateTime(bar.open_time)}  O ${bar.open}  H ${bar.high}  L ${bar.low}  C ${bar.close}`}</title>
         </g>
+      })}
+      {showBarNumbers && visibleKlines.map((bar, index) => {
+        const isEdge = index === 0 || index === visibleKlines.length - 1
+        if (!isEdge && (rangeStart + index) % barNumberStep !== 0) return null
+        const centerX = x(bar.open_time + (bar.close_time - bar.open_time) / 2)
+        return <text
+          key={`bar-number-${bar.open_time}`}
+          x={centerX}
+          y={Math.max(margin.top + 11, y(bar.high) - 6)}
+          textAnchor="middle"
+          fill="#f97316"
+          fontSize="9"
+          fontWeight="500"
+          pointerEvents="none"
+        >#{rangeStart + index + 1}</text>
       })}
       {emaPoints && <polyline points={emaPoints} fill="none" stroke="#d95b8b" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />}
       <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom - volumeHeight} y2={height - margin.bottom - volumeHeight} stroke="#303741" />
