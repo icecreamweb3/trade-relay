@@ -98,7 +98,13 @@ class BinanceExchange(BaseExchange):
         cursor = start_ms
 
         while cursor < end_ms:
-            raw = client.get_kline_data(symbol=symbol, interval=interval, limit=limit)
+            raw = client.get_kline_data(
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+                start_time=cursor,
+                end_time=end_ms,
+            )
             if not raw:
                 break
 

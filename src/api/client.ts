@@ -64,6 +64,12 @@ interface ApiPosition {
   margin: number
   tp_price?: number | null
   sl_price?: number | null
+  planned_stop_price?: number | null
+  initial_risk_usdc?: number | null
+  live_mfe_usdc: number
+  live_mae_usdc: number
+  live_mfe_at?: string | null
+  live_mae_at?: string | null
 }
 
 interface ApiOrder {
@@ -181,6 +187,24 @@ interface ApiPositionHistory {
   realized_pnl: number
   commission: number
   commission_asset?: string | null
+  close_order_id?: number | null
+  planned_stop_price?: number | null
+  initial_risk_usdc?: number | null
+  mfe_usdc?: number | null
+  mae_usdc?: number | null
+  mfe_at?: string | null
+  mae_at?: string | null
+  net_pnl?: number | null
+  mfe_r?: number | null
+  mae_r?: number | null
+  net_pnl_r?: number | null
+  profit_capture_rate?: number | null
+  exit_efficiency?: number | null
+  profit_giveback_usdc?: number | null
+  profit_giveback_rate?: number | null
+  excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
+  excursion_source?: string | null
+  excursion_calculated_at?: string | null
   created_at: string
   updated_at?: string | null
 }

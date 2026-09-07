@@ -825,7 +825,14 @@ class BinanceClient:
             logger.debug(f"Failed to get symbol precision info for {symbol}: {e}")
             return None
     
-    def get_kline_data(self, symbol: str, interval: str = '15m', limit: int = 2) -> List:
+    def get_kline_data(
+        self,
+        symbol: str,
+        interval: str = '15m',
+        limit: int = 2,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> List:
         """Get kline/candlestick data"""
         try:
             # 将间隔转换为 SDK 的格式
@@ -845,7 +852,12 @@ class BinanceClient:
             }
             
             kline_interval = interval_map.get(interval, KLINE_INTERVAL_15MINUTE)
-            data = self.client.futures_klines(symbol=symbol, interval=kline_interval, limit=limit)
+            params = {"symbol": symbol, "interval": kline_interval, "limit": limit}
+            if start_time is not None:
+                params["startTime"] = int(start_time)
+            if end_time is not None:
+                params["endTime"] = int(end_time)
+            data = self.client.futures_klines(**params)
             return data
         except Exception as e:
             logger.debug(f"Failed to get kline data for {symbol}: {e}")
@@ -877,7 +889,12 @@ class BinanceClient:
                 logger.debug(f"Failed to get account info: {e}")
                 return {}
 
-    def get_position_information(self, symbol: str | None = None, recv_window: int | None = None) -> List[dict]:
+    def get_position_information(
+        self,
+        symbol: str | None = None,
+        recv_window: int | None = None,
+        raise_on_error: bool = False,
+    ) -> List[dict]:
         """Get raw futures position information (all positions including zero-qty).
 
         Uses /fapi/v2/positionRisk directly so the response includes the
@@ -943,6 +960,8 @@ class BinanceClient:
             return rows or []
         except Exception as e:
             logger.debug(f"Failed to get raw position information: {e}")
+            if raise_on_error:
+                raise RuntimeError("无法确认 Binance 当前持仓，已跳过本次持仓清理") from e
             return []
 
     def get_account_balance(self, asset: str = "USDT") -> float:

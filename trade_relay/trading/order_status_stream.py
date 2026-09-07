@@ -39,6 +39,28 @@ def _derive_position_mode_from_position_side(raw_position_side: str | None) -> s
     return "UNKNOWN"
 
 
+def _normalize_stored_position_side(raw_position_side: str | None, position_amount: Optional[float]) -> str:
+    """Map Binance one-way ``BOTH`` positions to the LONG/SHORT keys used in DB."""
+    normalized = str(raw_position_side or "BOTH").upper()
+    if normalized in ("LONG", "SHORT"):
+        return normalized
+    if position_amount is not None and position_amount > 0:
+        return "LONG"
+    if position_amount is not None and position_amount < 0:
+        return "SHORT"
+    return "BOTH"
+
+
+def _get_initial_position_rows(client) -> list[dict]:
+    """Use strict exchange reads when supported, retaining compatibility with test clients."""
+    try:
+        return client.get_position_information(raise_on_error=True)
+    except TypeError as exc:
+        if "raise_on_error" not in str(exc):
+            raise
+        return client.get_position_information()
+
+
 MAINNET_PRIVATE_WS_URL = "wss://fstream.binance.com/private/ws"
 TESTNET_WS_URL = "wss://stream.binancefuture.com/ws/"
 PRIVATE_WS_EVENTS = ("ORDER_TRADE_UPDATE", "ACCOUNT_UPDATE")
@@ -1221,6 +1243,19 @@ class UserOrderStatusStream:
 
         position = db.get_position(user_id, symbol, position_side)
         position_id = int(position["id"]) if position and position.get("id") else None
+        if position_id is not None and sl_price and entry_price:
+            open_commission = abs(_safe_float(db_order.get("commission") or 0) or 0.0)
+            initial_risk = abs(float(entry_price) - float(sl_price)) * float(quantity) + open_commission
+            if initial_risk > 0:
+                try:
+                    db.initialize_position_risk(position_id, float(sl_price), initial_risk)
+                except Exception:
+                    # 风险基准可由平仓复算从订单补回，不能因此阻断保护单创建。
+                    logger.exception(
+                        "Failed to persist initial position risk: user=%s position_id=%s",
+                        self.username,
+                        position_id,
+                    )
 
         errors = place_tp_sl_orders(
             username=self.username,
@@ -1275,24 +1310,26 @@ class UserOrderStatusStream:
                 continue
 
             raw_side = str(position.get("ps") or position.get("positionSide") or "BOTH").upper()
-            amount = _safe_float(position.get("pa") or position.get("positionAmt"))
+            raw_amount = position.get("pa") if "pa" in position else position.get("positionAmt")
+            amount = _safe_float(raw_amount)
             entry_price = _safe_float(position.get("ep") or position.get("entryPrice"))
             liquidation_price = _safe_float(position.get("lp") or position.get("liquidationPrice"))
             unrealized_pnl = _safe_float(position.get("up") or position.get("unrealizedProfit"))
-            realized_pnl = _safe_float(position.get("cr") or position.get("realizedPnl")) or 0.0
             margin_type = str(position.get("mt") or position.get("marginType") or "CROSS").upper()
             position_mode = _derive_position_mode_from_position_side(raw_side)
 
-            normalized_side = raw_side
-            if normalized_side not in ("LONG", "SHORT"):
-                if amount is not None and amount > 0:
-                    normalized_side = "LONG"
-                elif amount is not None and amount < 0:
-                    normalized_side = "SHORT"
-                else:
-                    normalized_side = "BOTH"
+            normalized_side = _normalize_stored_position_side(raw_side, amount)
 
-            if amount is None or amount == 0:
+            if amount is None:
+                logger.warning(
+                    "Skipping position update without quantity: user=%s symbol=%s side=%s",
+                    self.username,
+                    symbol,
+                    raw_side,
+                )
+                continue
+
+            if amount == 0:
                 delete_sides = {raw_side, normalized_side}
                 if raw_side == "BOTH":
                     delete_sides.update({"LONG", "SHORT"})
@@ -1337,7 +1374,9 @@ class UserOrderStatusStream:
                 avg_entry_price=entry_price,
                 liquidation_price=liquidation_price if liquidation_price is not None else _safe_float(existing.get("liquidation_price")),
                 unrealized_pnl=unrealized_pnl,
-                realized_pnl=realized_pnl,
+                # Binance cr is a pre-fee cumulative snapshot, not this DB cycle's PnL.
+                # positions.realized_pnl is maintained from linked position_history rows.
+                realized_pnl=None,
                 leverage=leverage,
                 margin_type=margin_type if margin_type in ("ISOLATED", "CROSS") else "CROSS",
                 position_side=normalized_side,
@@ -1587,7 +1626,7 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
     """
     try:
         client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
-        rows = client.get_position_information()
+        rows = _get_initial_position_rows(client)
         open_rows = [r for r in rows if float(r.get("positionAmt", 0) or 0) != 0]
         logger.info("Initial position sync for user=%s: %d open positions (total %d from Binance)", username, len(open_rows), len(rows))
 
@@ -1611,8 +1650,8 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
         ]
         stream._sync_positions(payload)
 
-        # Binance v3/positionRisk only returns non-zero positions, so DB rows not present
-        # in the Binance response are stale (position already closed). Delete them.
+        # Some positionRisk variants omit zero-quantity rows. Reconcile DB rows that are
+        # absent from the returned open-position set only after a successful strict read.
         user_obj = db.get_user_by_username(username)
         if user_obj:
             user_id = int(user_obj["id"])
@@ -1620,11 +1659,12 @@ def sync_initial_positions_for_user(username: str, api_key: str, api_secret: str
             binance_open: set[tuple[str, str]] = set()
             for r in open_rows:
                 sym = str(r.get("symbol") or "")
-                side = str(r.get("positionSide") or "BOTH").upper()
+                amount = _safe_float(r.get("positionAmt"))
+                side = _normalize_stored_position_side(r.get("positionSide"), amount)
                 if sym:
                     binance_open.add((sym, side))
 
-            db_positions = db.get_positions(user_id=user_id, status="OPEN")
+            db_positions = db.get_positions(user_id=user_id)
             for pos in db_positions:
                 sym = str(pos.get("symbol") or "")
                 side = str(pos.get("position_side") or "BOTH").upper()
@@ -1651,7 +1691,7 @@ def sync_all_initial_positions() -> None:
             continue
         try:
             client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=is_testnet(username))
-            rows = client.get_position_information()
+            rows = _get_initial_position_rows(client)
             open_rows = [r for r in rows if float(r.get("positionAmt", 0) or 0) != 0]
             logger.info("Initial position sync for user=%s: %d open positions", username, len(open_rows))
             # Re-use _sync_positions via a temporary stream object

@@ -985,13 +985,40 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
             liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
             unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
-            realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
+            realized_pnl    DECIMAL(30,10)  DEFAULT NULL COMMENT '本持仓周期已实现毛盈亏，由 position_history 汇总',
             leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
             margin_type     ENUM('ISOLATED','CROSS') NOT NULL DEFAULT 'CROSS',
+            opened_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）',
+            planned_stop_price DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价',
+            initial_risk_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC）',
+            live_mfe_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '实时采样最大浮盈（USDC）',
+            live_mae_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '实时采样最大浮亏绝对值（USDC）',
+            live_mfe_at     DATETIME(3)     DEFAULT NULL,
+            live_mae_at     DATETIME(3)     DEFAULT NULL,
+            mfe_usdc        DECIMAL(30,10)  DEFAULT NULL,
+            mae_usdc        DECIMAL(30,10)  DEFAULT NULL,
+            mfe_at          DATETIME(3)     DEFAULT NULL,
+            mae_at          DATETIME(3)     DEFAULT NULL,
+            net_pnl         DECIMAL(30,10)  DEFAULT NULL,
+            mfe_r           DECIMAL(20,10)  DEFAULT NULL,
+            mae_r           DECIMAL(20,10)  DEFAULT NULL,
+            net_pnl_r       DECIMAL(20,10)  DEFAULT NULL,
+            profit_capture_rate DECIMAL(20,10) DEFAULT NULL,
+            exit_efficiency DECIMAL(20,10)  DEFAULT NULL,
+            profit_giveback_usdc DECIMAL(30,10) DEFAULT NULL,
+            profit_giveback_rate DECIMAL(20,10) DEFAULT NULL,
+            excursion_status VARCHAR(16)    DEFAULT NULL,
+            excursion_attempts INT          NOT NULL DEFAULT 0,
+            excursion_next_retry_at DATETIME(3) DEFAULT NULL,
+            excursion_last_error TEXT,
+            excursion_source VARCHAR(32)    DEFAULT NULL,
+            excursion_version SMALLINT      DEFAULT NULL,
+            excursion_calculated_at DATETIME(3) DEFAULT NULL,
             updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             KEY idx_positions_user (user_id),
+            KEY idx_excursion_retry_due (excursion_status, excursion_next_retry_at),
             UNIQUE KEY uk_position_open (user_id, exchange, symbol, position_side, open_position_slot),
             CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -1004,7 +1031,18 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         return
 
     cur.execute("SHOW COLUMNS FROM positions")
-    existing_columns = {row["Field"] for row in cur.fetchall()}
+    existing_schema = {row["Field"]: row for row in cur.fetchall()}
+    existing_columns = set(existing_schema)
+    realized_column = existing_schema.get("realized_pnl") or {}
+    realized_needs_alter = (
+        ("Null" in realized_column and str(realized_column.get("Null") or "").upper() != "YES")
+        or ("Type" in realized_column and str(realized_column.get("Type") or "").lower() != "decimal(30,10)")
+    )
+    if realized_column and realized_needs_alter:
+        cur.execute(
+            "ALTER TABLE positions MODIFY COLUMN realized_pnl DECIMAL(30,10) DEFAULT NULL "
+            "COMMENT '本持仓周期已实现毛盈亏，由 position_history 汇总'"
+        )
     if "liquidation_price" not in existing_columns:
         cur.execute("ALTER TABLE positions ADD COLUMN liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价' AFTER avg_entry_price")
         existing_columns.add("liquidation_price")
@@ -1031,6 +1069,38 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             "COMMENT '仅当前打开仓位参与唯一约束；关闭后置空以保留历史记录' AFTER status"
         )
         existing_columns.add("open_position_slot")
+    excursion_columns = {
+        "opened_at": "DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）'",
+        "planned_stop_price": "DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价'",
+        "initial_risk_usdc": "DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC）'",
+        "live_mfe_usdc": "DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '实时采样最大浮盈（USDC）'",
+        "live_mae_usdc": "DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '实时采样最大浮亏绝对值（USDC）'",
+        "live_mfe_at": "DATETIME(3) DEFAULT NULL",
+        "live_mae_at": "DATETIME(3) DEFAULT NULL",
+        "mfe_usdc": "DECIMAL(30,10) DEFAULT NULL",
+        "mae_usdc": "DECIMAL(30,10) DEFAULT NULL",
+        "mfe_at": "DATETIME(3) DEFAULT NULL",
+        "mae_at": "DATETIME(3) DEFAULT NULL",
+        "net_pnl": "DECIMAL(30,10) DEFAULT NULL",
+        "mfe_r": "DECIMAL(20,10) DEFAULT NULL",
+        "mae_r": "DECIMAL(20,10) DEFAULT NULL",
+        "net_pnl_r": "DECIMAL(20,10) DEFAULT NULL",
+        "profit_capture_rate": "DECIMAL(20,10) DEFAULT NULL",
+        "exit_efficiency": "DECIMAL(20,10) DEFAULT NULL",
+        "profit_giveback_usdc": "DECIMAL(30,10) DEFAULT NULL",
+        "profit_giveback_rate": "DECIMAL(20,10) DEFAULT NULL",
+        "excursion_status": "VARCHAR(16) DEFAULT NULL",
+        "excursion_attempts": "INT NOT NULL DEFAULT 0",
+        "excursion_next_retry_at": "DATETIME(3) DEFAULT NULL",
+        "excursion_last_error": "TEXT",
+        "excursion_source": "VARCHAR(32) DEFAULT NULL",
+        "excursion_version": "SMALLINT DEFAULT NULL",
+        "excursion_calculated_at": "DATETIME(3) DEFAULT NULL",
+    }
+    for column_name, column_ddl in excursion_columns.items():
+        if column_name not in existing_columns:
+            cur.execute(f"ALTER TABLE positions ADD COLUMN {column_name} {column_ddl}")
+            existing_columns.add(column_name)
     cur.execute(
         "UPDATE positions SET open_position_slot = CASE "
         "WHEN UPPER(COALESCE(status, 'OPEN')) = 'OPEN' AND ABS(COALESCE(quantity, 0)) > 0 THEN 1 "
@@ -1045,11 +1115,16 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             "ALTER TABLE positions ADD UNIQUE KEY uk_position_open "
             "(user_id, exchange, symbol, position_side, open_position_slot)"
         )
+    if not _index_exists(cur, "positions", "idx_excursion_retry_due"):
+        cur.execute(
+            "ALTER TABLE positions ADD KEY idx_excursion_retry_due "
+            "(excursion_status, excursion_next_retry_at)"
+        )
 
     required_columns = {
         "id", "user_id", "username", "exchange", "symbol", "position_side", "position_mode", "status", "open_position_slot",
         "quantity", "avg_entry_price", "liquidation_price", "unrealized_pnl", "realized_pnl",
-        "leverage", "margin_type", "updated_at",
+        "leverage", "margin_type", "opened_at", "mfe_usdc", "mae_usdc", "updated_at",
     }
     if required_columns.issubset(existing_columns):
         return
@@ -1121,8 +1196,8 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
             """INSERT INTO positions
                (id, user_id, username, exchange, symbol, position_side, position_mode, status, open_position_slot,
                 quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
-                leverage, margin_type, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                leverage, margin_type, opened_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 legacy_position_id,
                 owner_info["user_id"],
@@ -1140,6 +1215,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
                 row.get("realized_pnl") or 0,
                 row.get("leverage") or 1,
                 margin_type,
+                row.get("opened_at") or row.get("created_at") or updated_at,
                 updated_at,
             ),
         )
@@ -1150,6 +1226,43 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         migrated,
         skipped,
         backup_table,
+    )
+
+
+def _rebuild_positions_realized_pnl(cur: pymysql.cursors.Cursor) -> None:
+    """Replace Binance ``cr`` snapshots with per-position history aggregates."""
+    if not _table_exists(cur, "positions") or not _table_exists(cur, "position_history"):
+        return
+    cur.execute(
+        """UPDATE positions p
+           LEFT JOIN (
+               SELECT position_id, SUM(COALESCE(realized_pnl, 0)) AS cycle_realized_pnl
+                 FROM position_history
+                WHERE position_id IS NOT NULL
+                GROUP BY position_id
+           ) ph ON ph.position_id = p.id
+           SET p.realized_pnl = CASE
+                   WHEN ph.position_id IS NOT NULL THEN ph.cycle_realized_pnl
+                   WHEN UPPER(COALESCE(p.status, 'OPEN')) = 'OPEN' THEN 0
+                   ELSE NULL
+               END,
+               p.updated_at = p.updated_at"""
+    )
+
+
+def _refresh_position_realized_pnl(cur: pymysql.cursors.Cursor, position_id: Optional[int]) -> None:
+    if position_id is None:
+        return
+    cur.execute(
+        """UPDATE positions p
+           SET p.realized_pnl = (
+                   SELECT COALESCE(SUM(ph.realized_pnl), 0)
+                     FROM position_history ph
+                    WHERE ph.position_id = p.id
+               ),
+               p.updated_at = p.updated_at
+           WHERE p.id = %s""",
+        (position_id,),
     )
 
 
@@ -1406,6 +1519,8 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE position_history ADD INDEX idx_close_order_id (close_order_id)")
             except Exception:
                 pass
+
+            _rebuild_positions_realized_pnl(cur)
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_profile (
@@ -3431,7 +3546,7 @@ def upsert_position(
     avg_entry_price: Optional[float] = None,
     liquidation_price: Optional[float] = None,
     unrealized_pnl: Optional[float] = None,
-    realized_pnl: float = 0.0,
+    realized_pnl: Optional[float] = None,
     leverage: int = 1,
     margin_type: str = "CROSS",
     position_side: str = "BOTH",
@@ -3477,7 +3592,6 @@ def upsert_position(
                        avg_entry_price = VALUES(avg_entry_price),
                        liquidation_price = VALUES(liquidation_price),
                        unrealized_pnl  = VALUES(unrealized_pnl),
-                       realized_pnl    = VALUES(realized_pnl),
                        leverage        = VALUES(leverage),
                        position_mode   = VALUES(position_mode),
                        margin_type     = VALUES(margin_type),
@@ -3485,7 +3599,8 @@ def upsert_position(
                 (
                     user_id, username, exchange, symbol, position_side, position_mode,
                     status, 1 if str(status or "").strip().upper() == "OPEN" else None,
-                    quantity, avg_entry_price, liquidation_price, unrealized_pnl, realized_pnl,
+                    quantity, avg_entry_price, liquidation_price, unrealized_pnl,
+                    float(realized_pnl) if realized_pnl is not None else 0.0,
                     leverage, margin_type,
                 ),
             )
@@ -3565,6 +3680,10 @@ def close_position(
                        quantity = 0,
                        liquidation_price = NULL,
                        unrealized_pnl = 0,
+                       excursion_status = 'PENDING',
+                       excursion_attempts = 0,
+                       excursion_next_retry_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 SECOND),
+                       excursion_last_error = NULL,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE user_id = %s AND exchange = %s
                      AND symbol = %s AND position_side = %s
@@ -3782,10 +3901,12 @@ def add_position_history(
                     normalized_created_at,
                 ),
             )
+            history_id = int(cur.lastrowid)
+            _refresh_position_realized_pnl(cur, position_id)
             _refresh_daily_profile_for_user_date(cur, user_id, username, normalized_created_at.date())
             conn.commit()
-            _log_db_write_result("insert", "position_history", history_id=cur.lastrowid, user_id=user_id, symbol=symbol, side=side.upper())
-            return cur.lastrowid
+            _log_db_write_result("insert", "position_history", history_id=history_id, user_id=user_id, symbol=symbol, side=side.upper())
+            return history_id
     finally:
         conn.close()
 
@@ -3809,6 +3930,8 @@ def update_position_history_values(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT position_id FROM position_history WHERE id = %s", (history_id,))
+            history_row = cur.fetchone() or {}
             if commission_asset is None:
                 cur.execute(
                     "UPDATE position_history SET realized_pnl = %s, commission = %s WHERE id = %s",
@@ -3819,11 +3942,13 @@ def update_position_history_values(
                     "UPDATE position_history SET realized_pnl = %s, commission = %s, commission_asset = %s WHERE id = %s",
                     (realized_pnl, commission, commission_asset, history_id),
                 )
-            if cur.rowcount > 0:
+            affected_rows = cur.rowcount
+            if affected_rows > 0:
+                _refresh_position_realized_pnl(cur, history_row.get("position_id"))
                 _refresh_daily_profile_for_history_row(cur, history_id)
             conn.commit()
-            success = cur.rowcount > 0
-            _log_db_write_result("update", "position_history", history_id=history_id, affected_rows=cur.rowcount, success=success)
+            success = affected_rows > 0
+            _log_db_write_result("update", "position_history", history_id=history_id, affected_rows=affected_rows, success=success)
             return success
     finally:
         conn.close()
@@ -4107,11 +4232,20 @@ def get_position(
 def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> list:
     """返回持仓历史记录。user_id=None 时返回所有用户。"""
     params: list = []
-    sql = """SELECT id, user_id, username, symbol, side, position_mode, entry_price, close_price,
-                    quantity, realized_pnl, commission, commission_asset, position_id, close_order_id, created_at, updated_at
-             FROM position_history"""
+    sql = """SELECT ph.id, ph.user_id, ph.username, ph.symbol, ph.side, ph.position_mode,
+                    ph.entry_price, ph.close_price, ph.quantity, ph.realized_pnl,
+                    ph.commission, ph.commission_asset, ph.position_id, ph.close_order_id,
+                    ph.created_at, ph.updated_at,
+                    p.planned_stop_price, p.initial_risk_usdc,
+                    p.mfe_usdc, p.mae_usdc, p.mfe_at, p.mae_at, p.net_pnl,
+                    p.mfe_r, p.mae_r, p.net_pnl_r,
+                    p.profit_capture_rate, p.exit_efficiency,
+                    p.profit_giveback_usdc, p.profit_giveback_rate,
+                    p.excursion_status, p.excursion_source, p.excursion_calculated_at
+             FROM position_history ph
+             LEFT JOIN positions p ON p.id = ph.position_id"""
     if user_id is not None:
-        sql += " WHERE user_id = %s"
+        sql += " WHERE ph.user_id = %s"
         params.append(user_id)
     sql += " ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT %s"
     params.append(limit)
@@ -4120,5 +4254,202 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
         with conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def update_open_position_live_excursion(
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    unrealized_pnl: float,
+    sampled_at: Optional[datetime] = None,
+    exchange: str = "binance",
+) -> bool:
+    """用账户快照原子累计当前持仓的实时 MFE/MAE，避免并发采样覆盖极值。"""
+    value = float(unrealized_pnl or 0.0)
+    event_at = _coerce_utc_naive_datetime(sampled_at) or _utc_now_naive()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET live_mfe_at = CASE WHEN %s > live_mfe_usdc THEN %s ELSE live_mfe_at END,
+                       live_mae_at = CASE WHEN -%s > live_mae_usdc THEN %s ELSE live_mae_at END,
+                       live_mfe_usdc = GREATEST(live_mfe_usdc, %s, 0),
+                       live_mae_usdc = GREATEST(live_mae_usdc, -%s, 0)
+                   WHERE user_id = %s AND exchange = %s AND symbol = %s
+                     AND position_side = %s
+                     AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'""",
+                (value, event_at, value, event_at, value, value,
+                 user_id, exchange, symbol, position_side.upper()),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def initialize_position_risk(
+    position_id: int,
+    planned_stop_price: float,
+    initial_risk_usdc: float,
+) -> bool:
+    """只写入本轮持仓首次确定的计划止损和 1R，后续加仓不会静默改写基准。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET planned_stop_price = COALESCE(planned_stop_price, %s),
+                       initial_risk_usdc = COALESCE(initial_risk_usdc, %s)
+                   WHERE id = %s""",
+                (planned_stop_price, initial_risk_usdc, position_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_due_position_excursion_candidates(limit: int = 100) -> list:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT p.*,
+                          (SELECT GROUP_CONCAT(ph.close_order_id ORDER BY ph.id)
+                             FROM position_history ph
+                            WHERE ph.position_id = p.id AND ph.close_order_id IS NOT NULL
+                          ) AS target_close_order_ids
+                     FROM positions p
+                    WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'
+                      AND p.excursion_status = 'PENDING'
+                      AND (p.excursion_next_retry_at IS NULL OR p.excursion_next_retry_at <= UTC_TIMESTAMP(3))
+                    ORDER BY COALESCE(p.excursion_next_retry_at, p.updated_at), p.id
+                    LIMIT %s""",
+                (max(1, int(limit)),),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_filled_orders_for_position_excursion(position_row: dict, limit: int = 5000) -> list:
+    """取同一账户/交易对的成交单；周期归属由计算层结合 close_order_id 判定。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM orders
+                    WHERE user_id = %s AND exchange = %s AND symbol = %s
+                      AND UPPER(status) = 'FILLED'
+                      AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
+                    ORDER BY COALESCE(filled_at, updated_at, created_at), id
+                    LIMIT %s""",
+                (
+                    int(position_row["user_id"]),
+                    str(position_row.get("exchange") or "binance"),
+                    str(position_row["symbol"]),
+                    max(1, int(limit)),
+                ),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def schedule_position_excursion_retry(
+    position_id: int,
+    delay_seconds: float,
+    error_message: str,
+) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET excursion_status = 'PENDING',
+                       excursion_attempts = excursion_attempts + 1,
+                       excursion_next_retry_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL %s SECOND),
+                       excursion_last_error = %s
+                   WHERE id = %s""",
+                (max(0, int(delay_seconds)), str(error_message)[:2000], position_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def schedule_position_excursion_for_close_order(close_order_id: int) -> bool:
+    """成交明细回填后重新排队；仅完全平仓的持仓周期会被更新。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions p
+                   JOIN position_history ph ON ph.position_id = p.id
+                   SET p.excursion_status = 'PENDING', p.excursion_attempts = 0,
+                       p.excursion_next_retry_at = UTC_TIMESTAMP(3),
+                       p.excursion_last_error = NULL
+                   WHERE ph.close_order_id = %s
+                     AND UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'""",
+                (close_order_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_position_excursion_failed(position_id: int, error_message: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET excursion_status = 'FAILED', excursion_next_retry_at = NULL,
+                       excursion_last_error = %s
+                   WHERE id = %s""",
+                (str(error_message)[:2000], position_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def save_position_excursion_metrics(position_id: int, metrics: dict) -> bool:
+    """保存平仓周期的最终净值曲线指标。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET planned_stop_price = COALESCE(planned_stop_price, %s),
+                       initial_risk_usdc = COALESCE(initial_risk_usdc, %s),
+                       mfe_usdc = %s, mae_usdc = %s, mfe_at = %s, mae_at = %s,
+                       net_pnl = %s, mfe_r = %s, mae_r = %s, net_pnl_r = %s,
+                       profit_capture_rate = %s, exit_efficiency = %s,
+                       profit_giveback_usdc = %s, profit_giveback_rate = %s,
+                       excursion_status = 'CALCULATED', excursion_attempts = 0,
+                       excursion_next_retry_at = NULL, excursion_last_error = NULL,
+                       excursion_source = %s, excursion_version = %s,
+                       excursion_calculated_at = UTC_TIMESTAMP(3)
+                   WHERE id = %s""",
+                (
+                    metrics.get("planned_stop_price"), metrics.get("initial_risk_usdc"),
+                    metrics.get("mfe_usdc"), metrics.get("mae_usdc"),
+                    metrics.get("mfe_at"), metrics.get("mae_at"), metrics.get("net_pnl"),
+                    metrics.get("mfe_r"), metrics.get("mae_r"), metrics.get("net_pnl_r"),
+                    metrics.get("profit_capture_rate"), metrics.get("exit_efficiency"),
+                    metrics.get("profit_giveback_usdc"), metrics.get("profit_giveback_rate"),
+                    metrics.get("excursion_source", "1m_kline"),
+                    metrics.get("excursion_version", 1), position_id,
+                ),
+            )
+            conn.commit()
+            return cur.rowcount > 0
     finally:
         conn.close()

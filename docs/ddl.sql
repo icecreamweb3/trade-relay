@@ -70,15 +70,45 @@ CREATE TABLE positions (
     symbol          VARCHAR(32)     NOT NULL,
     position_side   ENUM('LONG','SHORT','BOTH') NOT NULL DEFAULT 'BOTH',
     position_mode   VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN',
+    status          VARCHAR(8)      NOT NULL DEFAULT 'OPEN' COMMENT '持仓状态 OPEN/CLOSE',
+    open_position_slot TINYINT      DEFAULT 1 COMMENT '仅当前打开仓位参与唯一约束；关闭后置空以保留历史记录',
     quantity        DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '持仓数量（负数为空头）',
     avg_entry_price DECIMAL(20,8)   DEFAULT NULL COMMENT '开仓均价',
     liquidation_price DECIMAL(20,8) DEFAULT NULL COMMENT '清算价',
     unrealized_pnl  DECIMAL(20,8)   DEFAULT NULL COMMENT '未实现盈亏',
-    realized_pnl    DECIMAL(20,8)   NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
+    realized_pnl    DECIMAL(30,10)  DEFAULT NULL COMMENT '本持仓周期已实现毛盈亏；由 position_history 汇总，不使用 Binance cr',
     leverage        SMALLINT        NOT NULL DEFAULT 1 COMMENT '杠杆倍数',
     margin_type     ENUM('ISOLATED','CROSS') NOT NULL DEFAULT 'CROSS',
+    opened_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）',
+    planned_stop_price DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价',
+    initial_risk_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC，含开仓手续费）',
+    live_mfe_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮盈（USDC）',
+    live_mae_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮亏绝对值（USDC）',
+    live_mfe_at     DATETIME(3)     DEFAULT NULL COMMENT '实时最大浮盈发生时间（UTC）',
+    live_mae_at     DATETIME(3)     DEFAULT NULL COMMENT '实时最大浮亏发生时间（UTC）',
+    mfe_usdc        DECIMAL(30,10)  DEFAULT NULL COMMENT '平仓后按1分钟K线复算的最大有利变动（净值口径）',
+    mae_usdc        DECIMAL(30,10)  DEFAULT NULL COMMENT '平仓后按1分钟K线复算的最大不利变动绝对值（净值口径）',
+    mfe_at          DATETIME(3)     DEFAULT NULL COMMENT '复算最大有利变动发生时间（UTC）',
+    mae_at          DATETIME(3)     DEFAULT NULL COMMENT '复算最大不利变动发生时间（UTC）',
+    net_pnl         DECIMAL(30,10)  DEFAULT NULL COMMENT '本轮持仓扣除手续费后的净收益（USDC）',
+    mfe_r           DECIMAL(20,10)  DEFAULT NULL COMMENT 'MFE / 初始风险',
+    mae_r           DECIMAL(20,10)  DEFAULT NULL COMMENT 'MAE / 初始风险',
+    net_pnl_r       DECIMAL(20,10)  DEFAULT NULL COMMENT '净收益 / 初始风险',
+    profit_capture_rate DECIMAL(20,10) DEFAULT NULL COMMENT '盈利兑现率 max(净收益,0)/MFE，限制为0~1',
+    exit_efficiency DECIMAL(20,10)  DEFAULT NULL COMMENT '退出效率 净收益/MFE，可为负数',
+    profit_giveback_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '从最大浮盈到最终净收益的回吐额',
+    profit_giveback_rate DECIMAL(20,10) DEFAULT NULL COMMENT '盈利回吐率 回吐额/MFE',
+    excursion_status VARCHAR(16)    DEFAULT NULL COMMENT '指标复算状态 PENDING/CALCULATED/FAILED',
+    excursion_attempts INT          NOT NULL DEFAULT 0 COMMENT '指标复算尝试次数',
+    excursion_next_retry_at DATETIME(3) DEFAULT NULL COMMENT '指标复算下次重试时间',
+    excursion_last_error TEXT       COMMENT '指标复算最近错误',
+    excursion_source VARCHAR(32)    DEFAULT NULL COMMENT '指标数据源，例如 1m_kline',
+    excursion_version SMALLINT      DEFAULT NULL COMMENT '指标算法版本',
+    excursion_calculated_at DATETIME(3) DEFAULT NULL COMMENT '指标复算完成时间（UTC）',
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_position (user_id, exchange, symbol, position_side),
+    KEY idx_positions_user (user_id),
+    KEY idx_excursion_retry_due (excursion_status, excursion_next_retry_at),
+    UNIQUE KEY uk_position_open (user_id, exchange, symbol, position_side, open_position_slot),
     CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -106,11 +136,13 @@ CREATE TABLE position_history (
     commission    DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '手续费',
     commission_asset VARCHAR(16)  DEFAULT NULL COMMENT '手续费币种',
     position_id   BIGINT          DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）',
+    close_order_id BIGINT         DEFAULT NULL COMMENT '关联平仓订单ID（对应 orders.id）',
     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     KEY idx_user_id (user_id),
     KEY idx_username (username),
     KEY idx_symbol (symbol),
+    KEY idx_close_order_id (close_order_id),
     KEY idx_created_at (created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史';
 
@@ -279,7 +311,56 @@ ALTER TABLE position_history
     ADD COLUMN IF NOT EXISTS position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN' COMMENT '持仓方式 SINGLE/DUAL/UNKNOWN' AFTER side,
     ADD COLUMN IF NOT EXISTS commission_asset VARCHAR(16) DEFAULT NULL COMMENT '手续费币种' AFTER commission,
     ADD COLUMN IF NOT EXISTS position_id BIGINT DEFAULT NULL COMMENT '关联持仓ID（对应 positions.id）' AFTER commission,
+    ADD COLUMN IF NOT EXISTS close_order_id BIGINT DEFAULT NULL COMMENT '关联平仓订单ID（对应 orders.id）' AFTER position_id,
     ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间' AFTER created_at;
+
+ALTER TABLE positions
+    ADD COLUMN IF NOT EXISTS status VARCHAR(8) NOT NULL DEFAULT 'OPEN' COMMENT '持仓状态 OPEN/CLOSE' AFTER position_mode,
+    ADD COLUMN IF NOT EXISTS open_position_slot TINYINT DEFAULT 1 COMMENT '仅当前打开仓位参与唯一约束；关闭后置空以保留历史记录' AFTER status,
+    ADD COLUMN IF NOT EXISTS opened_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）' AFTER margin_type,
+    ADD COLUMN IF NOT EXISTS planned_stop_price DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价',
+    ADD COLUMN IF NOT EXISTS initial_risk_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC，含开仓手续费）',
+    ADD COLUMN IF NOT EXISTS live_mfe_usdc DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮盈（USDC）',
+    ADD COLUMN IF NOT EXISTS live_mae_usdc DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮亏绝对值（USDC）',
+    ADD COLUMN IF NOT EXISTS live_mfe_at DATETIME(3) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS live_mae_at DATETIME(3) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mfe_usdc DECIMAL(30,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mae_usdc DECIMAL(30,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mfe_at DATETIME(3) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mae_at DATETIME(3) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS net_pnl DECIMAL(30,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mfe_r DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS mae_r DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS net_pnl_r DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS profit_capture_rate DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS exit_efficiency DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS profit_giveback_usdc DECIMAL(30,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS profit_giveback_rate DECIMAL(20,10) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS excursion_status VARCHAR(16) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS excursion_attempts INT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS excursion_next_retry_at DATETIME(3) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS excursion_last_error TEXT,
+    ADD COLUMN IF NOT EXISTS excursion_source VARCHAR(32) DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS excursion_version SMALLINT DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS excursion_calculated_at DATETIME(3) DEFAULT NULL;
+
+-- 修复旧版本将 Binance ACCOUNT_UPDATE.cr（手续费前累计值）写入本周期盈亏的问题。
+ALTER TABLE positions
+    MODIFY COLUMN realized_pnl DECIMAL(30,10) DEFAULT NULL COMMENT '本持仓周期已实现毛盈亏；由 position_history 汇总，不使用 Binance cr';
+
+UPDATE positions p
+LEFT JOIN (
+    SELECT position_id, SUM(COALESCE(realized_pnl, 0)) AS cycle_realized_pnl
+    FROM position_history
+    WHERE position_id IS NOT NULL
+    GROUP BY position_id
+) ph ON ph.position_id = p.id
+SET p.realized_pnl = CASE
+        WHEN ph.position_id IS NOT NULL THEN ph.cycle_realized_pnl
+        WHEN UPPER(COALESCE(p.status, 'OPEN')) = 'OPEN' THEN 0
+        ELSE NULL
+    END,
+    p.updated_at = p.updated_at;
 
 -- Legacy one-time rename for older databases:
 -- ALTER TABLE position_history

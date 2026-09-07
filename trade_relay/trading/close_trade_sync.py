@@ -409,6 +409,14 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
                 "commission_asset": commission_asset,
             }
         )
+        try:
+            db.schedule_position_excursion_for_close_order(int(latest_order_row["id"]))
+        except Exception:
+            # close_position 已创建首个任务；这里仅用于成交明细到齐后的二次校准。
+            logger.exception(
+                "Failed to reschedule excursion calculation for close order_id=%s",
+                latest_order_row.get("id"),
+            )
     logger.info(
         "[ORDER_FLOW] phase=filled_order_trade_details_synced username=%s order_id=%s exchange_order_id=%s direction=%s qty=%s rpnl=%s commission=%s asset=%s",
         username,

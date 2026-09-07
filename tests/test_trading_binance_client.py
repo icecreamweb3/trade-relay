@@ -1308,6 +1308,80 @@ def test_initial_position_sync_marks_missing_positions_closed(monkeypatch):
     assert close_calls == [(5, "BTCUSDC", "LONG", "binance")]
 
 
+def test_initial_position_sync_keeps_one_way_both_position_open(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    close_calls = []
+
+    class _StubClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_position_information(self):
+            return [{
+                "symbol": "BTCUSDC",
+                "positionSide": "BOTH",
+                "positionAmt": "0.01",
+                "entryPrice": "79239.30",
+                "liquidationPrice": "0",
+                "unRealizedProfit": "1.2",
+                "marginType": "cross",
+                "leverage": "100",
+            }]
+
+    class _StubStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def _sync_positions(self, _payload):
+            pass
+
+    monkeypatch.setattr(order_status_stream, "BinanceClient", _StubClient)
+    monkeypatch.setattr(order_status_stream, "UserOrderStatusStream", _StubStream)
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda _username: {"id": 5})
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_positions",
+        lambda user_id=None, status="OPEN": [
+            {"symbol": "BTCUSDC", "position_side": "LONG", "status": "OPEN"},
+        ],
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "close_position",
+        lambda *args, **kwargs: close_calls.append((args, kwargs)) or True,
+    )
+
+    order_status_stream.sync_initial_positions_for_user("Will", "key", "secret", False)
+
+    assert close_calls == []
+
+
+def test_initial_position_sync_does_not_close_rows_when_exchange_read_fails(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    close_calls = []
+
+    class _StubClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_position_information(self, raise_on_error=False):
+            assert raise_on_error is True
+            raise RuntimeError("temporary exchange failure")
+
+    monkeypatch.setattr(order_status_stream, "BinanceClient", _StubClient)
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "close_position",
+        lambda *args, **kwargs: close_calls.append((args, kwargs)) or True,
+    )
+
+    order_status_stream.sync_initial_positions_for_user("Will", "key", "secret", False)
+
+    assert close_calls == []
+
+
 def test_public_ticker_stream_replays_last_payload_to_new_listener(monkeypatch):
     from trade_relay.exchange import public_ticker_stream
 
@@ -3583,6 +3657,12 @@ def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):
             },
         ],
     )
+    restored_risks = []
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "initialize_position_risk",
+        lambda position_id, stop, risk: restored_risks.append((position_id, stop, risk)) or True,
+    )
 
     with positions_router._tpsl_store_lock:
         positions_router._tpsl_store.clear()
@@ -3592,6 +3672,9 @@ def test_positions_restore_tp_sl_from_persisted_conditional_orders(monkeypatch):
     assert len(positions) == 1
     assert positions[0].tp_price == 79500.0
     assert positions[0].sl_price == 77200.0
+    assert positions[0].planned_stop_price == 77200.0
+    assert positions[0].initial_risk_usdc == 9.6
+    assert restored_risks == [(7, 77200.0, 9.6)]
 
 
 def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeypatch):
@@ -3637,6 +3720,12 @@ def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeyp
             },
         ],
     )
+    restored_risks = []
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "initialize_position_risk",
+        lambda position_id, stop, risk: restored_risks.append((position_id, stop, risk)) or True,
+    )
 
     with positions_router._tpsl_store_lock:
         positions_router._tpsl_store.clear()
@@ -3646,3 +3735,53 @@ def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeyp
     assert len(positions) == 1
     assert positions[0].tp_price == 78000.0
     assert positions[0].sl_price == 79450.0
+    assert positions[0].initial_risk_usdc == 13.75
+    assert restored_risks == [(15, 79450.0, 13.75)]
+
+
+def test_positions_do_not_infer_risk_from_stop_already_moved_into_profit(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None, status=None: [{
+            "id": 19,
+            "symbol": "BTCUSDC",
+            "position_side": "LONG",
+            "quantity": 0.01,
+            "avg_entry_price": 78000.0,
+            "unrealized_pnl": 20.0,
+            "leverage": 20,
+            "margin_type": "cross",
+        }],
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: [{
+            "position_id": 19,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "price": None,
+            "stop_price": 78500.0,
+            "status": "NEW",
+        }],
+    )
+    restored_risks = []
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "initialize_position_risk",
+        lambda *args: restored_risks.append(args) or True,
+    )
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+
+    positions = positions_router._db_positions(user_id=5)
+
+    assert positions[0].sl_price == 78500.0
+    assert positions[0].initial_risk_usdc is None
+    assert restored_risks == []

@@ -19,6 +19,9 @@ interface Position {
   entry_price: number | null; liquidation_price: number | null; unrealized_pnl: number | null
   leverage: number; margin_type: string; margin: number | null
   tp_price?: number | null; sl_price?: number | null
+  planned_stop_price?: number | null; initial_risk_usdc?: number | null
+  live_mfe_usdc?: number; live_mae_usdc?: number
+  live_mfe_at?: string | null; live_mae_at?: string | null
 }
 
 function filterOpenPositions(rows: Position[]): Position[] {
@@ -47,6 +50,12 @@ interface PositionHistory {
   position_mode: string
   entry_price: number; close_price: number; quantity: number
   realized_pnl: number; commission: number; commission_asset?: string | null; created_at: string; updated_at?: string | null
+  close_order_id?: number | null; planned_stop_price?: number | null; initial_risk_usdc?: number | null
+  mfe_usdc?: number | null; mae_usdc?: number | null; net_pnl?: number | null
+  mfe_r?: number | null; mae_r?: number | null; net_pnl_r?: number | null
+  profit_capture_rate?: number | null; exit_efficiency?: number | null
+  profit_giveback_usdc?: number | null; profit_giveback_rate?: number | null
+  excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
 }
 
 interface PositionsWsMessage {
@@ -511,11 +520,13 @@ export function PositionsPanel({
           <table className="trade-table w-full">
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.status')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
-              <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th><th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
+              <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
+              <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
+              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={11} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={12} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
@@ -527,6 +538,22 @@ export function PositionsPanel({
                     <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
                     <td className={`font-mono font-semibold ${(getLiveUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice) ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
                       {formatUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice)}
+                    </td>
+                    <td className="whitespace-nowrap" title={t('pos.liveExcursionHint')}>
+                      <div className="flex items-center gap-1 font-mono text-[11px]">
+                        <span className="text-profit">+{(p.live_mfe_usdc ?? 0).toFixed(4)}</span>
+                        <span className="text-[#5f6670]">/</span>
+                        <span className="text-loss">-{(p.live_mae_usdc ?? 0).toFixed(4)}</span>
+                      </div>
+                      <div className="mt-0.5 font-mono text-[9px]">
+                        <span className="text-buy">
+                          {formatExcursionR(p.live_mfe_usdc, p.initial_risk_usdc, '+')}
+                        </span>
+                        <span className="mx-1 text-[#4d535c]">/</span>
+                        <span className="text-sell">
+                          {formatExcursionR(p.live_mae_usdc, p.initial_risk_usdc, '-')}
+                        </span>
+                      </div>
                     </td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                     <td>
@@ -735,10 +762,11 @@ export function PositionsPanel({
               <th>{t('log.time')}</th><th>{t('log.symbol')}</th><th>{t('log.side')}</th>
               <th>{t('pos.positionMode')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th><th>{t('pos.closePrice')}</th>
               <th>{t('pos.realizedPnl')}</th><th>{t('trade.commission')}</th><th>{t('trade.commissionAsset')}</th>
+              <th>{t('pos.mfe')}</th><th>{t('pos.mae')}</th><th>{t('pos.profitCaptureRate')}</th>
             </tr></thead>
             <tbody>
               {positionHistory.length === 0
-                ? <tr><td colSpan={10} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positionHistory.map(ph => (
                   <tr key={ph.id}>
                     <td className="text-[#858585]">{formatTimestamp(ph.updated_at || ph.created_at)}</td>
@@ -753,6 +781,15 @@ export function PositionsPanel({
                     </td>
                     <td className="font-mono text-[#858585]">{ph.commission.toFixed(4)}</td>
                     <td className="font-mono text-[#858585]">{ph.commission_asset || '-'}</td>
+                    <td className="font-mono text-profit">
+                      {ph.mfe_usdc != null ? <><div>+{ph.mfe_usdc.toFixed(4)}</div><div className="text-[9px] text-[#858585]">{formatR(ph.mfe_r)}</div></> : excursionPlaceholder(ph, t)}
+                    </td>
+                    <td className="font-mono text-loss">
+                      {ph.mae_usdc != null ? <><div>-{ph.mae_usdc.toFixed(4)}</div><div className="text-[9px] text-[#858585]">{formatR(ph.mae_r)}</div></> : excursionPlaceholder(ph, t)}
+                    </td>
+                    <td className={`font-mono font-semibold ${captureRateTone(ph.profit_capture_rate)}`}>
+                      {ph.profit_capture_rate != null ? `${(ph.profit_capture_rate * 100).toFixed(1)}%` : excursionPlaceholder(ph, t)}
+                    </td>
                   </tr>
                 ))
               }
@@ -767,8 +804,13 @@ export function PositionsPanel({
         position={tpslPosition}
         username={currentUser?.username ?? ''}
         onClose={() => setTpslPosition(null)}
-        onSaved={(posId, tp, sl) => {
-          setPositions(prev => prev.map(p => p.id === posId ? { ...p, tp_price: tp, sl_price: sl } : p))
+        onSaved={(posId, tp, sl, initialRisk) => {
+          setPositions(prev => prev.map(p => p.id === posId ? {
+            ...p,
+            tp_price: tp,
+            sl_price: sl,
+            initial_risk_usdc: initialRisk ?? p.initial_risk_usdc,
+          } : p))
           setTpslPosition(null)
         }}
         showToast={showToast}
@@ -1151,7 +1193,7 @@ function TpSlModal({
   position: Position
   username: string
   onClose: () => void
-  onSaved: (posId: number, tp: number | null, sl: number | null) => void
+  onSaved: (posId: number, tp: number | null, sl: number | null, initialRisk: number | null) => void
   showToast: (type: ToastKind, msg: string) => void
 }) {
   const locale = getPreferredLocale()
@@ -1234,8 +1276,11 @@ function TpSlModal({
     }
     setSubmitting(true)
     try {
-      await api.setPositionTpSl(position.id, tp, sl)
-      onSaved(position.id, tp, sl)
+      const result = await api.setPositionTpSl(position.id, tp, sl)
+      const initialRisk = typeof result.initial_risk_usdc === 'number'
+        ? result.initial_risk_usdc
+        : null
+      onSaved(position.id, tp, sl, initialRisk)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
         || (err as { message?: string })?.message || 'Failed'
@@ -1489,6 +1534,32 @@ function formatUnrealizedPnl(position: Position, activeSymbol: string, livePrice
   const pnl = getLiveUnrealizedPnl(position, activeSymbol, livePrice)
   if (pnl == null) return '-'
   return `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`
+}
+
+function formatExcursionR(value?: number | null, initialRisk?: number | null, prefix = '') {
+  if (value == null || initialRisk == null || initialRisk <= 0) return 'R —'
+  return `${prefix}${(value / initialRisk).toFixed(2)} R`
+}
+
+function formatR(value?: number | null) {
+  return value == null ? 'R —' : `${value.toFixed(2)}R`
+}
+
+function excursionPlaceholder(positionHistory: PositionHistory, t: (key: string) => string) {
+  if (positionHistory.excursion_status === 'PENDING') {
+    return <span className="text-[10px] font-normal text-[#d29922]">{t('pos.excursionCalculating')}</span>
+  }
+  if (positionHistory.excursion_status === 'FAILED') {
+    return <span className="text-[10px] font-normal text-[#f6465d]">{t('pos.excursionFailed')}</span>
+  }
+  return <span className="text-[#858585]">—</span>
+}
+
+function captureRateTone(value?: number | null) {
+  if (value == null) return 'text-[#858585]'
+  if (value >= 0.6) return 'text-profit'
+  if (value >= 0.3) return 'text-[#d29922]'
+  return 'text-loss'
 }
 
 function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {

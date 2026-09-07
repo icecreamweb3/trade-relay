@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI):
         start_close_tpsl_sync_worker,
         stop_close_tpsl_sync_worker,
     )
+    from trade_relay.trading.excursion_retry_worker import (
+        start_excursion_sync_worker,
+        stop_excursion_sync_worker,
+    )
     from trade_relay.exchange.account_sync import start_account_sync, stop_account_sync
     db_module.init_db()
     db_module.start_operation_log_worker()
@@ -41,6 +45,7 @@ async def lifespan(app: FastAPI):
     start_account_sync()
     start_trade_details_sync_worker()
     start_close_tpsl_sync_worker()
+    start_excursion_sync_worker()
     _log.info("Database initialised")
     yield
     db_module.stop_operation_log_worker()
@@ -48,6 +53,7 @@ async def lifespan(app: FastAPI):
     stop_account_sync()
     stop_trade_details_sync_worker()
     stop_close_tpsl_sync_worker()
+    stop_excursion_sync_worker()
     _log.info("Trade Relay backend shutting down")
 
 

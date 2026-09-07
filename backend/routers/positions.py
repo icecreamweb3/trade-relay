@@ -2,6 +2,7 @@
 Positions router: current positions, open orders, order history, trade history.
 """
 import asyncio
+import math
 import sys, os
 import threading
 import time
@@ -40,6 +41,23 @@ class PositionHistoryOut(BaseModel):
     commission: float
     commission_asset: Optional[str] = None
     close_order_id: Optional[int] = None
+    planned_stop_price: Optional[float] = None
+    initial_risk_usdc: Optional[float] = None
+    mfe_usdc: Optional[float] = None
+    mae_usdc: Optional[float] = None
+    mfe_at: Optional[str] = None
+    mae_at: Optional[str] = None
+    net_pnl: Optional[float] = None
+    mfe_r: Optional[float] = None
+    mae_r: Optional[float] = None
+    net_pnl_r: Optional[float] = None
+    profit_capture_rate: Optional[float] = None
+    exit_efficiency: Optional[float] = None
+    profit_giveback_usdc: Optional[float] = None
+    profit_giveback_rate: Optional[float] = None
+    excursion_status: Optional[str] = None
+    excursion_source: Optional[str] = None
+    excursion_calculated_at: Optional[str] = None
     created_at: str
     updated_at: Optional[str] = None
 
@@ -102,6 +120,12 @@ class PositionOut(BaseModel):
     margin: Optional[float]
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
+    planned_stop_price: Optional[float] = None
+    initial_risk_usdc: Optional[float] = None
+    live_mfe_usdc: float = 0.0
+    live_mae_usdc: float = 0.0
+    live_mfe_at: Optional[str] = None
+    live_mae_at: Optional[str] = None
 
 
 def _derive_conditional_position_side(side: str, trade_direction: str | None) -> str:
@@ -158,6 +182,58 @@ def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | N
     return by_position_id, by_symbol_side
 
 
+def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price: float | None) -> tuple[float | None, float | None]:
+    """Recover a legacy open position's 1R from its first observable active loss-side stop."""
+    planned_stop = float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None
+    initial_risk = float(row["initial_risk_usdc"]) if row.get("initial_risk_usdc") is not None else None
+    if initial_risk is not None and math.isfinite(initial_risk) and initial_risk > 0:
+        return planned_stop, initial_risk
+
+    entry_price = float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None
+    quantity = abs(float(row.get("quantity") or 0))
+    stop_price = planned_stop if planned_stop is not None else active_sl_price
+    side = str(row.get("position_side") or "").upper()
+    if (
+        entry_price is None
+        or stop_price is None
+        or not math.isfinite(entry_price)
+        or not math.isfinite(stop_price)
+        or not math.isfinite(quantity)
+        or entry_price <= 0
+        or stop_price <= 0
+        or quantity <= 0
+    ):
+        return planned_stop, None
+
+    # A moved stop already beyond breakeven cannot reveal the original downside risk.
+    # Leave R unavailable instead of manufacturing a misleading baseline.
+    is_loss_side_stop = (side == "LONG" and stop_price < entry_price) or (side == "SHORT" and stop_price > entry_price)
+    if not is_loss_side_stop:
+        return planned_stop, None
+
+    recovered_risk = abs(entry_price - stop_price) * quantity
+    if not math.isfinite(recovered_risk) or recovered_risk <= 0:
+        return planned_stop, None
+
+    try:
+        db_module.initialize_position_risk(position_id, stop_price, recovered_risk)
+    except Exception:
+        _log.exception(
+            "Failed to restore position risk from active stop: position_id=%s stop=%s",
+            position_id,
+            stop_price,
+        )
+        return planned_stop, None
+
+    _log.info(
+        "[POSITION_SYNC] phase=risk_restored pos=%s stop=%s initial_risk_usdc=%s",
+        position_id,
+        stop_price,
+        recovered_risk,
+    )
+    return stop_price, recovered_risk
+
+
 def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[PositionOut]:
     rows = db_module.get_positions(user_id=user_id, status=_normalize_positions_status(status))
     persisted_by_position_id, persisted_by_symbol_side = _load_persisted_tpsl(user_id)
@@ -180,6 +256,8 @@ def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[Posi
             with _tpsl_store_lock:
                 _tpsl_store.pop(pos_id, None)
 
+        planned_stop_price, initial_risk_usdc = _restore_missing_position_risk(row, pos_id, sl)
+
         positions.append(
             PositionOut(
                 id=pos_id,
@@ -196,6 +274,12 @@ def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[Posi
                 margin=None,
                 tp_price=tp,
                 sl_price=sl,
+                planned_stop_price=planned_stop_price,
+                initial_risk_usdc=initial_risk_usdc,
+                live_mfe_usdc=float(row.get("live_mfe_usdc") or 0),
+                live_mae_usdc=float(row.get("live_mae_usdc") or 0),
+                live_mfe_at=serialize_utc_timestamp(row.get("live_mfe_at")),
+                live_mae_at=serialize_utc_timestamp(row.get("live_mae_at")),
             )
         )
     return positions
@@ -562,6 +646,22 @@ def set_position_tpsl(
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
+    effective_initial_risk = (
+        float(position_row["initial_risk_usdc"])
+        if position_row.get("initial_risk_usdc") is not None
+        else None
+    )
+    if effective_initial_risk is None and body.sl_price and body.sl_price > 0 and entry_price and quantity > 0:
+        # A stop added to an existing position has no reliable historical opening-fee
+        # context, so initialise 1R from price risk. The first planned stop remains fixed.
+        effective_initial_risk = abs(entry_price - float(body.sl_price)) * quantity
+        if effective_initial_risk > 0:
+            db_module.initialize_position_risk(
+                position_id,
+                float(body.sl_price),
+                effective_initial_risk,
+            )
+
     # Store the set prices in memory
     with _tpsl_store_lock:
         _tpsl_store[position_id] = (
@@ -572,7 +672,12 @@ def set_position_tpsl(
     _clear_positions_cache(user_id)
 
     _log.info("[POSITION_SYNC] phase=tpsl_set user=%s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
-    return {"ok": True, "tp_price": body.tp_price, "sl_price": body.sl_price}
+    return {
+        "ok": True,
+        "tp_price": body.tp_price,
+        "sl_price": body.sl_price,
+        "initial_risk_usdc": effective_initial_risk,
+    }
 
 
 @router.websocket("/ws")
@@ -665,6 +770,23 @@ def get_position_history(user: dict = Depends(get_current_user)):
             commission=float(r["commission"]),
             commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
             close_order_id=int(r["close_order_id"]) if r.get("close_order_id") is not None else None,
+            planned_stop_price=float(r["planned_stop_price"]) if r.get("planned_stop_price") is not None else None,
+            initial_risk_usdc=float(r["initial_risk_usdc"]) if r.get("initial_risk_usdc") is not None else None,
+            mfe_usdc=float(r["mfe_usdc"]) if r.get("mfe_usdc") is not None else None,
+            mae_usdc=float(r["mae_usdc"]) if r.get("mae_usdc") is not None else None,
+            mfe_at=serialize_utc_timestamp(r.get("mfe_at")),
+            mae_at=serialize_utc_timestamp(r.get("mae_at")),
+            net_pnl=float(r["net_pnl"]) if r.get("net_pnl") is not None else None,
+            mfe_r=float(r["mfe_r"]) if r.get("mfe_r") is not None else None,
+            mae_r=float(r["mae_r"]) if r.get("mae_r") is not None else None,
+            net_pnl_r=float(r["net_pnl_r"]) if r.get("net_pnl_r") is not None else None,
+            profit_capture_rate=float(r["profit_capture_rate"]) if r.get("profit_capture_rate") is not None else None,
+            exit_efficiency=float(r["exit_efficiency"]) if r.get("exit_efficiency") is not None else None,
+            profit_giveback_usdc=float(r["profit_giveback_usdc"]) if r.get("profit_giveback_usdc") is not None else None,
+            profit_giveback_rate=float(r["profit_giveback_rate"]) if r.get("profit_giveback_rate") is not None else None,
+            excursion_status=str(r["excursion_status"]) if r.get("excursion_status") is not None else None,
+            excursion_source=str(r["excursion_source"]) if r.get("excursion_source") is not None else None,
+            excursion_calculated_at=serialize_utc_timestamp(r.get("excursion_calculated_at")),
             created_at=serialize_utc_timestamp_required(r.get("created_at")),
             updated_at=serialize_utc_timestamp(r.get("updated_at")),
         )
@@ -706,6 +828,23 @@ def add_position_history(body: PositionHistoryOut, user: dict = Depends(get_curr
         commission=float(r["commission"]),
         commission_asset=str(r["commission_asset"]) if r.get("commission_asset") is not None else None,
         close_order_id=int(r["close_order_id"]) if r.get("close_order_id") is not None else None,
+        planned_stop_price=float(r["planned_stop_price"]) if r.get("planned_stop_price") is not None else None,
+        initial_risk_usdc=float(r["initial_risk_usdc"]) if r.get("initial_risk_usdc") is not None else None,
+        mfe_usdc=float(r["mfe_usdc"]) if r.get("mfe_usdc") is not None else None,
+        mae_usdc=float(r["mae_usdc"]) if r.get("mae_usdc") is not None else None,
+        mfe_at=serialize_utc_timestamp(r.get("mfe_at")),
+        mae_at=serialize_utc_timestamp(r.get("mae_at")),
+        net_pnl=float(r["net_pnl"]) if r.get("net_pnl") is not None else None,
+        mfe_r=float(r["mfe_r"]) if r.get("mfe_r") is not None else None,
+        mae_r=float(r["mae_r"]) if r.get("mae_r") is not None else None,
+        net_pnl_r=float(r["net_pnl_r"]) if r.get("net_pnl_r") is not None else None,
+        profit_capture_rate=float(r["profit_capture_rate"]) if r.get("profit_capture_rate") is not None else None,
+        exit_efficiency=float(r["exit_efficiency"]) if r.get("exit_efficiency") is not None else None,
+        profit_giveback_usdc=float(r["profit_giveback_usdc"]) if r.get("profit_giveback_usdc") is not None else None,
+        profit_giveback_rate=float(r["profit_giveback_rate"]) if r.get("profit_giveback_rate") is not None else None,
+        excursion_status=str(r["excursion_status"]) if r.get("excursion_status") is not None else None,
+        excursion_source=str(r["excursion_source"]) if r.get("excursion_source") is not None else None,
+        excursion_calculated_at=serialize_utc_timestamp(r.get("excursion_calculated_at")),
         created_at=serialize_utc_timestamp_required(r.get("created_at")),
         updated_at=serialize_utc_timestamp(r.get("updated_at")),
     )
