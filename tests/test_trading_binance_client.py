@@ -3335,7 +3335,7 @@ def test_get_position_history_orders_by_latest_updated_at(monkeypatch):
 
     assert rows == []
     sql, params = queries[-1]
-    assert "ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT %s" in sql
+    assert "ORDER BY COALESCE(ph.updated_at, ph.created_at) DESC, ph.id DESC LIMIT %s" in sql
     assert params == [5, 20]
 
 

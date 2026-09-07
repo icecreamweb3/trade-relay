@@ -4247,7 +4247,7 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
     if user_id is not None:
         sql += " WHERE ph.user_id = %s"
         params.append(user_id)
-    sql += " ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT %s"
+    sql += " ORDER BY COALESCE(ph.updated_at, ph.created_at) DESC, ph.id DESC LIMIT %s"
     params.append(limit)
     conn = get_connection()
     try:
