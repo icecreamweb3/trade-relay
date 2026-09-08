@@ -90,7 +90,7 @@ export function PositionsPanel({
 }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
-  const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
+  const { symbol: activeSymbol, currentPrice, markPrice, setSymbol } = useMarketStore()
   const { baseAsset: activeBaseAsset, quoteAsset: activeQuoteAsset } = splitTradingSymbol(activeSymbol)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
@@ -506,6 +506,23 @@ export function PositionsPanel({
     }
   }, [isActive, isAuthenticated, loading, tab, showToast, t])
 
+  const handlePositionSymbolSelect = useCallback((symbol: string) => {
+    const normalizedSymbol = symbol.trim().toUpperCase()
+    if (!normalizedSymbol || normalizedSymbol === activeSymbol) return
+
+    setSymbol(normalizedSymbol)
+    void (async () => {
+      try {
+        const switched = await window.electronAPI?.switchChartSymbol?.(normalizedSymbol)
+        if (!switched) await window.electronAPI?.navigateBinance?.(normalizedSymbol)
+      } catch {
+        // The in-page Binance router can be unavailable while the chart reloads.
+        // A full BrowserView navigation is the reliable fallback.
+        await window.electronAPI?.navigateBinance?.(normalizedSymbol).catch(() => undefined)
+      }
+    })()
+  }, [activeSymbol, setSymbol])
+
   return (
     <>
     <div className="h-full flex flex-col bg-[#1e1e1e] border-t border-[#3e3e42]">
@@ -539,7 +556,12 @@ export function PositionsPanel({
               {positions.length === 0
                 ? <tr><td colSpan={12} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
-                  <tr key={p.id}>
+                  <tr
+                    key={p.id}
+                    onClick={() => handlePositionSymbolSelect(p.symbol)}
+                    className="cursor-pointer"
+                    title={p.symbol}
+                  >
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
                     <td className={p.status === 'OPEN' ? 'text-buy' : 'text-[#858585]'}>{p.status === 'OPEN' ? t('order.open') : t('order.close')}</td>
@@ -571,12 +593,18 @@ export function PositionsPanel({
                       <div className="flex items-center gap-1.5 whitespace-nowrap">
                         <span
                           className="font-mono text-[10px] text-[#aaa] cursor-pointer hover:text-[#F0B90B] transition-colors"
-                          onClick={() => setTpslPosition(p)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setTpslPosition(p)
+                          }}
                         >
                           {formatTpSl(p.tp_price, p.sl_price)}
                         </span>
                         <button
-                          onClick={() => setTpslPosition(p)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setTpslPosition(p)
+                          }}
                           className="shrink-0 w-[18px] h-[18px] flex items-center justify-center rounded border border-[#3C4149] text-[#848E9C] hover:border-[#F0B90B] hover:text-[#F0B90B] transition-colors"
                           title={t('pos.setTpSl')}
                         >
@@ -593,7 +621,10 @@ export function PositionsPanel({
                     <td className="text-right">
                       <button
                         disabled={closingPositionId === p.id || p.status !== 'OPEN' || p.quantity <= 0}
-                        onClick={() => void handleMarketClose(p)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleMarketClose(p)
+                        }}
                         className="px-2.5 py-1 text-[11px] rounded border border-[#f6465d] text-[#f6465d] hover:bg-[#f6465d] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         title={t('pos.marketClose')}
                       >

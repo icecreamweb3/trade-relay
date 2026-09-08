@@ -2664,9 +2664,11 @@ window.__omnitrader = {
    * current path is not a /futures/ page (caller falls back to full reload).
    */
   switchSymbol: function(newBaseSymbol) {
-    const newPair = newBaseSymbol.toUpperCase().endsWith('USDT')
-      ? newBaseSymbol.toUpperCase()
-      : newBaseSymbol.toUpperCase() + 'USDT'
+    const normalizedSymbol = String(newBaseSymbol || '').trim().toUpperCase()
+    if (!normalizedSymbol) return false
+    const newPair = /(USDT|USDC|FDUSD|BUSD)$/.test(normalizedSymbol)
+      ? normalizedSymbol
+      : normalizedSymbol + 'USDT'
     try {
       const cur = window.location.pathname   // e.g. /zh-CN/futures/BTCUSDT
       const newPath = cur.replace(/\/[A-Z0-9]+$/, '/' + newPair)

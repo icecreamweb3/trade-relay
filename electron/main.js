@@ -73,6 +73,14 @@ const BACKEND_BASE_URL = normalizeBaseUrl(
 const DEV_SERVER_URL = process.env.DEV_SERVER_URL || `http://127.0.0.1:${process.env.DEV_SERVER_PORT || '5173'}`
 const BINANCE_URL    = `https://www.binance.com/${BINANCE_LANG}/futures/${BINANCE_SYMBOL}`
 
+function normalizeBinanceFuturesPair(symbol) {
+  const normalized = String(symbol || '').trim().toUpperCase()
+  if (!normalized) return ''
+  return /(USDT|USDC|FDUSD|BUSD)$/.test(normalized)
+    ? normalized
+    : `${normalized}USDT`
+}
+
 function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
 }
@@ -641,7 +649,8 @@ ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
 
 ipcMain.handle('navigate-binance', (_event, symbol) => {
   if (!binanceView) return
-  const pair = symbol.toUpperCase().endsWith('USDT') ? symbol.toUpperCase() : symbol.toUpperCase() + 'USDT'
+  const pair = normalizeBinanceFuturesPair(symbol)
+  if (!pair) return
   _autoExpandDone = false
   loadBinanceWithRetry(`https://www.binance.com/${BINANCE_LANG}/futures/${pair}`)
 })

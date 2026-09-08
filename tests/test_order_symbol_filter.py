@@ -50,3 +50,13 @@ def test_query_orders_filters_by_exact_normalized_symbol(monkeypatch):
     sql, params = connection.queries[0]
     assert "AND UPPER(symbol) = %s" in sql
     assert params == ["ETHUSDC", 200]
+
+
+def test_query_orders_sorts_created_time_before_filled_time(monkeypatch):
+    connection = StubConnection()
+    monkeypatch.setattr(db, "get_connection", lambda: connection)
+
+    assert db.query_orders(sort_by_created_at=True) == []
+    sql, params = connection.queries[0]
+    assert "ORDER BY created_at DESC, filled_at DESC, id DESC LIMIT %s" in sql
+    assert params == [200]

@@ -3375,7 +3375,7 @@ def query_orders(
     end_time: Optional[str] = None,
     status: Optional[str] = None,
     trade_direction: Optional[str] = None,
-    sort_by_filled_at: bool = False,
+    sort_by_created_at: bool = False,
 ) -> list:
     """Return orders with optional filters for user, symbol, order id, time range, and status."""
     sql = "SELECT * FROM orders WHERE 1 = 1"
@@ -3414,8 +3414,8 @@ def query_orders(
         sql += " AND trade_direction = %s"
         params.append(trade_direction.upper())
 
-    if sort_by_filled_at:
-        sql += " ORDER BY filled_at DESC, created_at DESC, id DESC LIMIT %s"
+    if sort_by_created_at:
+        sql += " ORDER BY created_at DESC, filled_at DESC, id DESC LIMIT %s"
     else:
         sql += " ORDER BY COALESCE(updated_at, created_at) DESC LIMIT %s"
     params.append(limit)
