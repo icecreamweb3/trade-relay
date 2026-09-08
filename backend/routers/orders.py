@@ -389,6 +389,17 @@ def get_order_position_context(order_id: int, user: dict = Depends(get_current_u
     return [_row_to_out(r) for r in rows]
 
 
+@router.get("/position-record-context/{record_id}", response_model=list[OrderOut])
+def get_position_record_context(record_id: int, user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"]) if user.get("role") != "admin" else None
+    rows = db_module.get_position_record_order_context(
+        record_id=record_id,
+        user_id=user_id,
+        limit=5000,
+    )
+    return [_row_to_out(r) for r in rows]
+
+
 @router.post("/reconcile", response_model=OrderReconcileResult)
 async def reconcile_orders(body: OrderReconcileRequest, user: dict = Depends(get_current_user)):
     username = body.username.strip()

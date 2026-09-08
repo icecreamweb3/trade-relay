@@ -62,6 +62,20 @@ export interface TradeAnalysis {
   commissions: Record<string, number>
 }
 
+export interface PositionRecordLike {
+  id: number
+  username?: string
+  symbol: string
+  quantity?: number | null
+  entry_price?: number | null
+  close_price?: number | null
+  realized_pnl?: number | null
+  commission?: number | null
+  commission_asset?: string | null
+  open_time?: string | null
+  close_time?: string | null
+}
+
 const EPS = 1e-9
 
 function fillTimeKey(order: OrderLike): number {
@@ -276,6 +290,64 @@ export function computeTradeAnalysis(orders: OrderLike[]): TradeAnalysis {
 
   return {
     fillCount: fills.length,
+    tradeCount: trips.length,
+    totalNotional,
+    totalPnl,
+    winCount,
+    lossCount,
+    winRate: trips.length > 0 ? winCount / trips.length : null,
+    maxProfitTrip,
+    maxLossTrip,
+    commissions,
+  }
+}
+
+/** Analyze finalized position cycles directly; one record is one complete trade. */
+export function computePositionAnalysis(records: PositionRecordLike[]): TradeAnalysis {
+  const trips: AnalyzedTrade[] = []
+  let totalNotional = 0
+  const commissions: Record<string, number> = {}
+
+  for (const record of records) {
+    const quantity = Math.abs(Number(record.quantity ?? 0))
+    if (!record.symbol || quantity <= 0) continue
+    const entryPrice = Number(record.entry_price ?? 0)
+    const closePrice = Number(record.close_price ?? 0)
+    if (entryPrice > 0) totalNotional += quantity * entryPrice
+    if (closePrice > 0) totalNotional += quantity * closePrice
+    addCommission(commissions, record.commission_asset, record.commission)
+
+    const tripCommissions: Record<string, number> = {}
+    addCommission(tripCommissions, record.commission_asset, record.commission)
+    trips.push({
+      username: record.username ?? '',
+      symbol: record.symbol,
+      entryTimes: record.open_time ? [record.open_time] : [],
+      exitTimes: record.close_time ? [record.close_time] : [],
+      quantity,
+      pnl: Number(record.realized_pnl ?? 0),
+      commissions: tripCommissions,
+    })
+  }
+
+  let totalPnl = 0
+  let winCount = 0
+  let lossCount = 0
+  let maxProfitTrip: AnalyzedTrade | null = null
+  let maxLossTrip: AnalyzedTrade | null = null
+  for (const trip of trips) {
+    totalPnl += trip.pnl
+    if (trip.pnl > 0) {
+      winCount += 1
+      if (!maxProfitTrip || trip.pnl > maxProfitTrip.pnl) maxProfitTrip = trip
+    } else if (trip.pnl < 0) {
+      lossCount += 1
+      if (!maxLossTrip || trip.pnl < maxLossTrip.pnl) maxLossTrip = trip
+    }
+  }
+
+  return {
+    fillCount: trips.length,
     tradeCount: trips.length,
     totalNotional,
     totalPnl,

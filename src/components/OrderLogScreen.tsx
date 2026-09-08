@@ -1,15 +1,11 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { BarChart3, Calendar, Download, RefreshCw, X } from 'lucide-react'
+import { Calendar, Download, RefreshCw, X } from 'lucide-react'
 import { api, type ApiOrderReconcileResult } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
-import { computeTradeAnalysis, TradeAnalysis } from '../utils/tradeAnalysis'
-import { TradeAnalysisModal } from './TradeAnalysisModal'
-import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
-import { findPositionWindow, type PositionWindow } from '../utils/orderChart'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -63,12 +59,6 @@ export function OrderLogScreen() {
   const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
-  const [hasQueried, setHasQueried] = useState(false)
-  const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
-  const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
-  const [chartLoadingOrderId, setChartLoadingOrderId] = useState<number | null>(null)
-  const [chartPendingOrder, setChartPendingOrder] = useState<Order | null>(null)
-  const chartRequestRef = useRef(0)
   const [reconciling, setReconciling] = useState(false)
   const [reconcileDialog, setReconcileDialog] = useState<{ result?: ApiOrderReconcileResult; error?: string } | null>(null)
   const { user } = useAuthStore()
@@ -119,7 +109,6 @@ export function OrderLogScreen() {
 
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault()
-    setHasQueried(true)
     load(filters)
   }
 
@@ -141,33 +130,7 @@ export function OrderLogScreen() {
 
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
-    setHasQueried(false)
     load(INITIAL_FILTERS)
-  }
-
-  const handleAnalyze = async () => {
-    if (!hasQueried) {
-      showToast('info', t('log.analyze.needQuery'))
-      return
-    }
-    // 配对完整交易需要开仓+平仓全部成交单，忽略状态/开平/订单号等行级过滤，
-    // 按用户与时间范围重新拉取，否则仅剩平仓单时无法配出任何交易
-    try {
-      const data = await api.getOrders({
-        limit: EXPORT_LIMIT,
-        username: filters.username.trim() || undefined,
-        start_time: toBackendDateTime(filters.startTime),
-        end_time: toBackendDateTime(filters.endTime),
-      })
-      const result = computeTradeAnalysis(data)
-      if (result.fillCount === 0) {
-        showToast('info', t('log.analyze.empty'))
-        return
-      }
-      setAnalysis(result)
-    } catch {
-      showToast('error', t('log.analyze.failed'))
-    }
   }
 
   const handleExport = async () => {
@@ -206,45 +169,6 @@ export function OrderLogScreen() {
     }
   }
 
-  const handleOrderDoubleClick = async (order: Order) => {
-    if (chartLoadingOrderId != null) return
-    if (Number(order.filled_qty ?? 0) <= 0 || !(Number(order.avg_price) > 0)) {
-      showToast('info', t('log.chart.notFilled'))
-      return
-    }
-
-    const requestId = ++chartRequestRef.current
-    setChartLoadingOrderId(order.id)
-    setChartPosition(null)
-    setChartPendingOrder(order)
-    try {
-      // Use the indexed user+symbol endpoint instead of scanning 5000 orders
-      // from every market through a username LIKE filter.
-      const history = await api.getOrderPositionContext(order.id)
-      if (requestId !== chartRequestRef.current) return
-      const candidates = history.some((item) => item.id === order.id) ? history : [...history, order]
-      const position = findPositionWindow(candidates, order.id)
-      if (!position) {
-        showToast('info', t('log.chart.noPosition'))
-        return
-      }
-      setChartPendingOrder(null)
-      if (window.electronAPI?.openOrderKlineWindow) {
-        await window.electronAPI.openOrderKlineWindow(position)
-      } else {
-        // Browser development fallback when Electron IPC is unavailable.
-        setChartPosition(position)
-      }
-    } catch {
-      if (requestId === chartRequestRef.current) showToast('error', t('log.chart.failed'))
-    } finally {
-      if (requestId === chartRequestRef.current) {
-        setChartPendingOrder(null)
-        setChartLoadingOrderId(null)
-      }
-    }
-  }
-
   const handleReconcile = async () => {
     if (reconciling) return
     if (!filters.username.trim() || !filters.startTime || !filters.endTime) {
@@ -276,13 +200,6 @@ export function OrderLogScreen() {
     } finally {
       setReconciling(false)
     }
-  }
-
-  const closeOrderChart = () => {
-    chartRequestRef.current += 1
-    setChartPendingOrder(null)
-    setChartLoadingOrderId(null)
-    setChartPosition(null)
   }
 
   const formatNotional = (order: Order) => {
@@ -398,14 +315,6 @@ export function OrderLogScreen() {
             <Download size={14} />
             {exporting ? t('log.export.exporting') : t('log.filter.export')}
           </button>
-          <button
-            type="button"
-            onClick={handleAnalyze}
-            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]"
-          >
-            <BarChart3 size={14} />
-            {t('log.analyze')}
-          </button>
         </div>
       </form>
       <div className="flex-1 overflow-auto">
@@ -418,11 +327,7 @@ export function OrderLogScreen() {
             {orders.length === 0 ? (
               <tr><td colSpan={20} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
             ) : orders.map((o, i) => (
-              <tr
-                key={o.id}
-                onDoubleClick={() => void handleOrderDoubleClick(o)}
-                className={`cursor-pointer ${chartLoadingOrderId === o.id ? 'opacity-60' : ''}`}
-              >
+              <tr key={o.id}>
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">
@@ -479,9 +384,6 @@ export function OrderLogScreen() {
           </tbody>
         </table>
       </div>
-      {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
-      {chartPendingOrder && <OrderKlineLoadingModal symbol={chartPendingOrder.symbol} onClose={closeOrderChart} />}
-      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closeOrderChart} />}
       {reconcileDialog && <OrderReconcileResultModal dialog={reconcileDialog} onClose={() => setReconcileDialog(null)} t={t} />}
     </div>
   )

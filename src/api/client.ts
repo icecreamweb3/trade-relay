@@ -467,6 +467,10 @@ export const api = {
     return request<ApiOrder[]>('GET', `/api/orders/position-context/${orderId}`)
   },
 
+  async getPositionRecordContext(recordId: number): Promise<ApiOrder[]> {
+    return request<ApiOrder[]>('GET', `/api/orders/position-record-context/${recordId}`)
+  },
+
   async reconcileOrders(body: {
     username: string
     start_time: string

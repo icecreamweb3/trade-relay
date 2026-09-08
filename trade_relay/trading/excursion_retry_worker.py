@@ -230,8 +230,22 @@ def _repair_missing_order_links(
             ]
             if not open_ids:
                 raise ExcursionCalculationError("完整成交周期缺少开仓订单ID")
+            first_open_order = next((
+                order
+                for order in cycle
+                if str(order.get("trade_direction") or "").upper() == "OPEN"
+                and _display_order_id(order)
+            ), None)
+            first_open_filled_at = first_open_order.get("filled_at") if first_open_order else None
+            if first_open_filled_at is None:
+                raise ExcursionCalculationError("第一笔开仓订单缺少 filled_at")
             if not dry_run:
-                db_module.update_legacy_final_order_ids(int(row["id"]), open_ids, close_ids)
+                db_module.update_legacy_final_order_ids(
+                    int(row["id"]),
+                    open_ids,
+                    close_ids,
+                    first_open_filled_at,
+                )
             repaired += 1
         except Exception as exc:
             failed += 1

@@ -28,6 +28,14 @@ export interface PositionWindow {
   markers: PositionFillMarker[]
 }
 
+export interface PositionRecordLike {
+  username: string
+  symbol: string
+  side: string
+  open_time?: string | null
+  close_time?: string | null
+}
+
 const EPS = 1e-9
 
 function fillTimestamp(order: OrderLike): number | null {
@@ -66,6 +74,47 @@ function toMarker(order: OrderLike, action: 'ENTRY' | 'EXIT'): PositionFillMarke
     realizedPnl: order.realized_pnl != null && Number.isFinite(realizedPnl) ? realizedPnl : null,
     commission: order.commission != null && Number.isFinite(commission) ? commission : null,
     commissionAsset: order.commission_asset || null,
+  }
+}
+
+/** Build a chart window directly from one durable position record and its orders. */
+export function buildPositionRecordWindow(
+  orders: OrderLike[],
+  record: PositionRecordLike,
+): PositionWindow | null {
+  const wantedSide = String(record.side || '').toUpperCase()
+  const markers = orders
+    .filter((order) => (
+      order.symbol === record.symbol
+      && (!record.username || order.username === record.username)
+      && positionSide(order) === wantedSide
+    ))
+    .map((order) => {
+      const direction = String(order.trade_direction || '').toUpperCase()
+      if (direction === 'OPEN') return toMarker(order, 'ENTRY')
+      if (direction === 'CLOSE') return toMarker(order, 'EXIT')
+      return null
+    })
+    .filter((marker): marker is PositionFillMarker => marker != null)
+    .sort((left, right) => left.timestamp - right.timestamp || left.id - right.id)
+
+  const entries = markers.filter((marker) => marker.action === 'ENTRY')
+  const exits = markers.filter((marker) => marker.action === 'EXIT')
+  if (entries.length === 0 || exits.length === 0) return null
+
+  const storedStart = parseUtcTimestamp(record.open_time)?.getTime()
+  const storedEnd = parseUtcTimestamp(record.close_time)?.getTime()
+  const startTime = storedStart ?? Math.min(...entries.map((marker) => marker.timestamp))
+  const endTime = storedEnd ?? Math.max(...exits.map((marker) => marker.timestamp))
+  return {
+    symbol: record.symbol,
+    username: record.username,
+    positionSide: wantedSide === 'LONG' ? 'LONG' : wantedSide === 'SHORT' ? 'SHORT' : 'UNKNOWN',
+    startTime,
+    endTime,
+    focusTime: endTime,
+    isOpen: false,
+    markers,
   }
 }
 

@@ -233,3 +233,33 @@ def test_local_order_link_backfill_does_not_require_klines(monkeypatch):
 
     assert excursion_retry_worker._repair_missing_order_links(100) == (1, 0)
     assert calls == [("replace", (10, [1, 2])), ("upsert", (10,))]
+
+
+def test_legacy_backfill_sets_open_time_from_first_open_fill(monkeypatch):
+    first_fill = datetime(2026, 9, 4, 14, 30)
+    row = {
+        "id": 1778,
+        "user_id": 5,
+        "exchange": "binance",
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "target_close_order_ids": "2",
+        "updated_at": datetime(2026, 9, 4, 14, 45),
+    }
+    orders = [
+        _order(1, first_fill, "OPEN", "BUY", 1, 100, exchange_order_id="open-1"),
+        _order(2, datetime(2026, 9, 4, 14, 45), "CLOSE", "SELL", 1, 101,
+               exchange_order_id="close-1"),
+    ]
+    calls = []
+    monkeypatch.setattr(excursion_retry_worker.db_module, "get_missing_position_order_link_candidates", lambda limit: [])
+    monkeypatch.setattr(excursion_retry_worker.db_module, "get_missing_legacy_order_link_candidates", lambda limit: [row])
+    monkeypatch.setattr(excursion_retry_worker.db_module, "get_filled_orders_for_position_excursion", lambda candidate: orders)
+    monkeypatch.setattr(
+        excursion_retry_worker.db_module,
+        "update_legacy_final_order_ids",
+        lambda *args: calls.append(args),
+    )
+
+    assert excursion_retry_worker._repair_missing_order_links(100) == (1, 0)
+    assert calls == [(1778, ["open-1"], ["close-1"], first_fill)]

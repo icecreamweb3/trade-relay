@@ -1665,7 +1665,7 @@ def test_exchange_place_stop_limit_order_uses_algo_endpoint(monkeypatch):
         API_URL = 'https://api.binance.com/api'
         FUTURES_URL = 'https://fapi.binance.com/fapi'
 
-        def __init__(self, api_key=None, api_secret=None, requests_params=None, testnet=False):
+        def __init__(self, api_key=None, api_secret=None, requests_params=None, testnet=False, ping=True):
             self.API_KEY = api_key
             self.API_SECRET = api_secret
 
@@ -2023,12 +2023,13 @@ def test_production_binance_client_close_all_conditional_orders(monkeypatch):
     post_calls = []
 
     class StubSdkClient:
-        def __init__(self, api_key=None, api_secret=None, testnet=False):
+        def __init__(self, api_key=None, api_secret=None, testnet=False, ping=True):
             self.api_key = api_key
             self.api_secret = api_secret
             self.testnet = testnet
+            self.ping = ping
 
-        def get_server_time(self):
+        def futures_time(self):
             return {"serverTime": 1710000000000}
 
     class StubResponse:
@@ -2057,6 +2058,7 @@ def test_production_binance_client_close_all_conditional_orders(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
 
     client = exchange_binance_client.BinanceClient(api_key="key", secret_key="secret", testnet=False)
+    assert client.client.ping is False
     monkeypatch.setattr(client, "get_position_mode", lambda: False)
     monkeypatch.setattr(client, "format_price_by_precision", lambda price, symbol: f"{price:.1f}")
     monkeypatch.setattr(
@@ -3457,6 +3459,26 @@ def test_position_history_final_prefers_position_entry_and_weights_close_prices(
     assert "AS close_order_ids" in sql
     assert "UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE' AND p.id = %s" in sql
     assert params == (509,)
+
+
+def test_linked_history_cleanup_only_deletes_legacy_row_after_canonical_exists():
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params=()):
+            queries.append((" ".join(sql.split()), params))
+
+    db_module._delete_legacy_final_after_position_link_cursor(_StubCursor(), 485, 1271)
+
+    sql, params = queries[0]
+    assert "DELETE legacy FROM position_history_final legacy" in sql
+    assert "JOIN position_history_final canonical ON canonical.position_id = ph.position_id" in sql
+    assert "legacy.position_id IS NULL" in sql
+    assert "legacy.source_history_id = %s" in sql
+    assert "ph.position_id = %s" in sql
+    assert params == (485, 1271)
 
 
 def test_filled_open_order_creates_position_and_links_position_id(monkeypatch):

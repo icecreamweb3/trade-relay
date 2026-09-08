@@ -168,7 +168,11 @@ class BinanceClient:
         self.client = BinanceClientBase(
             api_key=self.api_key,
             api_secret=self.secret_key,
-            testnet=self.testnet
+            testnet=self.testnet,
+            # This project only uses USD-M futures APIs.  The SDK's default
+            # constructor ping targets api.binance.com (spot) and can block
+            # otherwise healthy futures workers when that route is unavailable.
+            ping=False,
         )
         # Disable SSL verification when using a proxy that does TLS interception
         if self.proxy_config:
@@ -224,7 +228,7 @@ class BinanceClient:
             
             # Sync timestamp_offset with server time to avoid timestamp errors
             # SDK uses time.time() * 1000 + timestamp_offset, so we need to set offset correctly
-            server_time = self.client.get_server_time()
+            server_time = self.client.futures_time()
             
             # 记录请求结束时间（用于计算网络延迟）
             request_end_ms = int(time_module.time() * 1000)
@@ -864,10 +868,9 @@ class BinanceClient:
             return []
     
     def get_server_time(self) -> Optional[datetime]:
-        """Get Binance server time and return as datetime object"""
+        """Get USD-M futures server time and return it as a datetime object."""
         try:
-            # Use SDK's get_server_time method which returns server time in milliseconds
-            server_time_ms = self.client.get_server_time()
+            server_time_ms = self.client.futures_time()
             server_time = datetime.fromtimestamp(server_time_ms['serverTime'] / 1000.0)
             return server_time
         except Exception as e:

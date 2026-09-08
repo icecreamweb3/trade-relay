@@ -1456,6 +1456,26 @@ def _backfill_unlinked_position_history_final(
     )
 
 
+def _delete_legacy_final_after_position_link_cursor(
+    cur: pymysql.cursors.Cursor,
+    history_id: int,
+    position_id: int,
+) -> None:
+    """Remove an obsolete legacy snapshot only after its canonical cycle exists."""
+    cur.execute(
+        """DELETE legacy
+             FROM position_history_final legacy
+             JOIN position_history ph
+               ON ph.id = legacy.source_history_id
+             JOIN position_history_final canonical
+               ON canonical.position_id = ph.position_id
+            WHERE legacy.position_id IS NULL
+              AND legacy.source_history_id = %s
+              AND ph.position_id = %s""",
+        (int(history_id), int(position_id)),
+    )
+
+
 def upsert_position_history_final(position_id: int) -> bool:
     conn = get_connection()
     try:
@@ -3541,6 +3561,64 @@ def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
         conn.close()
 
 
+def get_position_record_order_context(
+    record_id: int,
+    user_id: Optional[int] = None,
+    limit: int = 5000,
+) -> list:
+    """Return the exact filled orders referenced by one final position record."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            sql = """SELECT position_id, user_id, open_orders_id, close_orders_id
+                       FROM position_history_final
+                      WHERE id = %s"""
+            params: list = [int(record_id)]
+            if user_id is not None:
+                sql += " AND user_id = %s"
+                params.append(int(user_id))
+            sql += " LIMIT 1"
+            cur.execute(sql, params)
+            record = cur.fetchone()
+            if not record:
+                return []
+
+            display_ids = [
+                value.strip()
+                for raw in (record.get("open_orders_id"), record.get("close_orders_id"))
+                for value in str(raw or "").split(",")
+                if value.strip()
+            ]
+            conditions: list[str] = []
+            order_params: list = [int(record["user_id"])]
+            if record.get("position_id") is not None:
+                conditions.append("position_id = %s")
+                order_params.append(int(record["position_id"]))
+            if display_ids:
+                placeholders = ", ".join(["%s"] * len(display_ids))
+                conditions.append(
+                    f"(exchange_order_id IN ({placeholders}) OR algo_id IN ({placeholders}))"
+                )
+                order_params.extend(display_ids)
+                order_params.extend(display_ids)
+            if not conditions:
+                return []
+
+            cur.execute(
+                f"""SELECT *
+                       FROM orders
+                      WHERE user_id = %s
+                        AND UPPER(COALESCE(status, '')) = 'FILLED'
+                        AND ({' OR '.join(conditions)})
+                      ORDER BY COALESCE(filled_at, updated_at, created_at), id
+                      LIMIT %s""",
+                [*order_params, max(1, min(int(limit), 5000))],
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def get_daily_pnl(user_id: int) -> list:
     """Return daily profile rows using the position_id-based daily_profile aggregation."""
     conn = get_connection()
@@ -4270,6 +4348,11 @@ def add_position_history(
                         _backfill_unlinked_position_history_final(cur, history_id)
                     else:
                         _upsert_position_history_final_from_position_cursor(cur, int(effective_position_id))
+                        _delete_legacy_final_after_position_link_cursor(
+                            cur,
+                            history_id,
+                            int(effective_position_id),
+                        )
                     _refresh_daily_profile_for_history_row(cur, history_id)
                     conn.commit()
                     _log_db_write_result(
@@ -4893,7 +4976,7 @@ def get_missing_position_order_link_candidates(limit: int = 5000) -> list:
 
 
 def get_missing_legacy_order_link_candidates(limit: int = 5000) -> list:
-    """Return pre-position history rows whose final snapshot lacks OPEN order IDs."""
+    """Return legacy final rows missing OPEN IDs or the matched OPEN fill time."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -4904,7 +4987,8 @@ def get_missing_legacy_order_link_candidates(limit: int = 5000) -> list:
                      JOIN position_history_final f ON f.source_history_id = ph.id
                     WHERE ph.position_id IS NULL
                       AND ph.close_order_id IS NOT NULL
-                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = '')
+                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = ''
+                           OR f.open_time IS NULL)
                     ORDER BY COALESCE(ph.updated_at, ph.created_at), ph.id
                     LIMIT %s""",
                 (max(1, min(int(limit), 10000)),),
@@ -4918,17 +5002,19 @@ def update_legacy_final_order_ids(
     source_history_id: int,
     open_orders_id: list[str],
     close_orders_id: list[str],
+    open_time,
 ) -> bool:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE position_history_final
-                      SET open_orders_id = %s, close_orders_id = %s
+                      SET open_orders_id = %s, close_orders_id = %s, open_time = %s
                     WHERE source_history_id = %s AND position_id IS NULL""",
                 (
                     ",".join(value for value in open_orders_id if value) or None,
                     ",".join(value for value in close_orders_id if value) or None,
+                    _coerce_utc_naive_datetime(open_time),
                     int(source_history_id),
                 ),
             )

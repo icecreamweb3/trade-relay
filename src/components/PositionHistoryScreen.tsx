@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { Download } from 'lucide-react'
+import { BarChart3, Download } from 'lucide-react'
 import { api, type ApiPositionRecord } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { useTranslation } from '../i18n/translations'
 import { formatUtcTimestampToLocalString } from '../utils/datetime'
+import { buildPositionRecordWindow, type PositionWindow } from '../utils/orderChart'
+import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
+import { computePositionAnalysis, type TradeAnalysis } from '../utils/tradeAnalysis'
+import { TradeAnalysisModal } from './TradeAnalysisModal'
 
 interface PositionHistoryFilters {
   username: string
@@ -60,6 +64,13 @@ export function PositionHistoryScreen() {
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [hasQueried, setHasQueried] = useState(false)
+  const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
+  const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
+  const [chartLoadingRecordId, setChartLoadingRecordId] = useState<number | null>(null)
+  const [chartPendingRecord, setChartPendingRecord] = useState<ApiPositionRecord | null>(null)
+  const chartRequestRef = useRef(0)
   const tableRef = useRef<HTMLTableElement>(null)
   const selectionRef = useRef<GridSelection | null>(null)
   const cellAnchorRef = useRef<GridPoint | null>(null)
@@ -96,6 +107,7 @@ export function PositionHistoryScreen() {
 
   const handleSearch = (event: FormEvent) => {
     event.preventDefault()
+    setHasQueried(true)
     void load(filters)
   }
 
@@ -116,7 +128,37 @@ export function PositionHistoryScreen() {
 
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
+    setHasQueried(false)
     void load(INITIAL_FILTERS)
+  }
+
+  const handleAnalyze = async () => {
+    if (analyzing) return
+    if (!hasQueried) {
+      showToast('info', t('log.analyze.needQuery'))
+      return
+    }
+    setAnalyzing(true)
+    try {
+      const analysisRows: ApiPositionRecord[] = []
+      let offset = 0
+      while (true) {
+        const page = await api.getPositionRecords({ ...buildQuery(filters, EXPORT_LIMIT), offset })
+        analysisRows.push(...page)
+        if (page.length < EXPORT_LIMIT) break
+        offset += page.length
+      }
+      const result = computePositionAnalysis(analysisRows)
+      if (result.tradeCount === 0) {
+        showToast('info', t('log.analyze.empty'))
+        return
+      }
+      setAnalysis(result)
+    } catch {
+      showToast('error', t('log.analyze.failed'))
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   const handleExport = async () => {
@@ -288,6 +330,43 @@ export function PositionHistoryScreen() {
     }
   }
 
+  const handlePositionDoubleClick = async (record: ApiPositionRecord) => {
+    if (chartLoadingRecordId != null) return
+    const requestId = ++chartRequestRef.current
+    setChartLoadingRecordId(record.id)
+    setChartPosition(null)
+    setChartPendingRecord(record)
+    try {
+      const orders = await api.getPositionRecordContext(record.id)
+      if (requestId !== chartRequestRef.current) return
+      const position = buildPositionRecordWindow(orders, record)
+      if (!position) {
+        showToast('info', t('log.chart.noPosition'))
+        return
+      }
+      setChartPendingRecord(null)
+      if (window.electronAPI?.openOrderKlineWindow) {
+        await window.electronAPI.openOrderKlineWindow(position)
+      } else {
+        setChartPosition(position)
+      }
+    } catch {
+      if (requestId === chartRequestRef.current) showToast('error', t('log.chart.failed'))
+    } finally {
+      if (requestId === chartRequestRef.current) {
+        setChartPendingRecord(null)
+        setChartLoadingRecordId(null)
+      }
+    }
+  }
+
+  const closePositionChart = () => {
+    chartRequestRef.current += 1
+    setChartPendingRecord(null)
+    setChartLoadingRecordId(null)
+    setChartPosition(null)
+  }
+
   useEffect(() => {
     const stopDragging = () => { dragRef.current = null }
     window.addEventListener('mouseup', stopDragging)
@@ -380,6 +459,15 @@ export function PositionHistoryScreen() {
             <Download size={14} />
             {exporting ? t('pos.historyExport.exporting') : t('log.filter.export')}
           </button>
+          <button
+            type="button"
+            onClick={() => void handleAnalyze()}
+            disabled={analyzing}
+            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-50"
+          >
+            <BarChart3 size={14} />
+            {t('log.analyze')}
+          </button>
         </div>
       </form>
 
@@ -407,7 +495,11 @@ export function PositionHistoryScreen() {
             {rows.length === 0 ? (
               <tr><td colSpan={22} className="py-6 text-center text-[#858585]">{loading ? t('log.loading') : t('pos.empty')}</td></tr>
             ) : rows.map((row, index) => (
-              <tr key={row.id}>
+              <tr
+                key={row.id}
+                onDoubleClick={() => void handlePositionDoubleClick(row)}
+                className={chartLoadingRecordId === row.id ? 'opacity-60' : ''}
+              >
                 <td className="text-[#858585]">{index + 1}</td>
                 <td className="whitespace-nowrap text-[#858585]">{formatTimestamp(row.open_time)}</td>
                 <td className="whitespace-nowrap text-[#858585]">{formatTimestamp(row.close_time)}</td>
@@ -435,6 +527,9 @@ export function PositionHistoryScreen() {
           </tbody>
         </table>
       </div>
+      {chartPendingRecord && <OrderKlineLoadingModal symbol={chartPendingRecord.symbol} onClose={closePositionChart} />}
+      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closePositionChart} />}
+      {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
     </div>
   )
 }
