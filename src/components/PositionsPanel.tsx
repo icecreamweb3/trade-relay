@@ -550,11 +550,12 @@ export function PositionsPanel({
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.status')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
+              <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
               <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={12} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr
                     key={p.id}
@@ -587,6 +588,11 @@ export function PositionsPanel({
                           {formatExcursionR(p.live_mae_usdc, p.initial_risk_usdc, '-')}
                         </span>
                       </div>
+                    </td>
+                    <td className="whitespace-nowrap font-mono" title={t('pos.initialMaxRiskHint')}>
+                      {p.initial_risk_usdc != null && p.initial_risk_usdc > 0
+                        ? `${p.initial_risk_usdc.toFixed(4)} USDC`
+                        : '—'}
                     </td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                     <td>
