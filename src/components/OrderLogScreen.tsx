@@ -30,6 +30,7 @@ interface UserOption {
 
 interface OrderFilters {
   username: string
+  symbol: string
   orderId: string
   startTime: string
   endTime: string
@@ -41,6 +42,7 @@ type Translate = (key: string, vars?: Record<string, string | number>) => string
 
 const INITIAL_FILTERS: OrderFilters = {
   username: '',
+  symbol: '',
   orderId: '',
   startTime: '',
   endTime: '',
@@ -59,6 +61,7 @@ export function OrderLogScreen() {
   const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
+  const [symbolOptions, setSymbolOptions] = useState<string[]>([])
   const [reconciling, setReconciling] = useState(false)
   const [reconcileDialog, setReconcileDialog] = useState<{ result?: ApiOrderReconcileResult; error?: string } | null>(null)
   const { user } = useAuthStore()
@@ -69,6 +72,7 @@ export function OrderLogScreen() {
       const data = await api.getOrders({
         limit: 200,
         username: nextFilters.username.trim() || undefined,
+        symbol: nextFilters.symbol || undefined,
         order_id: nextFilters.orderId.trim() || undefined,
         start_time: toBackendDateTime(nextFilters.startTime),
         end_time: toBackendDateTime(nextFilters.endTime),
@@ -93,8 +97,12 @@ export function OrderLogScreen() {
 
     const loadUsers = async () => {
       try {
-        const users = await api.getOrderUsers()
+        const [users, symbols] = await Promise.all([
+          api.getOrderUsers(),
+          api.getOrderSymbols(),
+        ])
         setUserOptions(users.map((item: UserOption) => ({ id: item.id, username: item.username })))
+        setSymbolOptions(symbols)
       } catch {}
     }
 
@@ -121,10 +129,11 @@ export function OrderLogScreen() {
     const saturday = new Date(sunday)
     saturday.setDate(sunday.getDate() + 6)
     saturday.setHours(23, 59, 59, 0)
+    const rangeEnd = saturday.getTime() > now.getTime() ? now : saturday
     setFilters((current) => ({
       ...current,
       startTime: toLocalDateTimeInputValue(sunday),
-      endTime: toLocalDateTimeInputValue(saturday),
+      endTime: toLocalDateTimeInputValue(rangeEnd),
     }))
   }
 
@@ -140,6 +149,7 @@ export function OrderLogScreen() {
       const data = await api.getOrders({
         limit: EXPORT_LIMIT,
         username: filters.username.trim() || undefined,
+        symbol: filters.symbol || undefined,
         order_id: filters.orderId.trim() || undefined,
         start_time: toBackendDateTime(filters.startTime),
         end_time: toBackendDateTime(filters.endTime),
@@ -246,6 +256,16 @@ export function OrderLogScreen() {
             {userOptions.map((item) => (
               <option key={item.id} value={item.username}>{item.username}</option>
             ))}
+          </select>
+        </FilterField>
+        <FilterField label={t('log.symbol')} className="w-[180px]">
+          <select
+            value={filters.symbol}
+            onChange={(event) => setFilters((current) => ({ ...current, symbol: event.target.value }))}
+            className={INPUT_CLS}
+          >
+            <option value="">{t('log.filter.allSymbols')}</option>
+            {symbolOptions.map((symbol) => <option key={symbol} value={symbol}>{symbol}</option>)}
           </select>
         </FilterField>
         <FilterField label={t('log.filter.orderId')} className="w-[220px]">

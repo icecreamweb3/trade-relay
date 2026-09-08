@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from trade_relay.trading import order_history_reconciliation as reconciliation
 
@@ -53,3 +53,32 @@ def test_reconcile_inserts_missing_and_updates_existing_orders(monkeypatch):
     assert result["inserted"] == 1
     assert result["updated"] == 1
     assert result["failed"] == 0
+
+
+def test_reconcile_clamps_future_end_time(monkeypatch):
+    requested_at = datetime.now(timezone.utc)
+    observed_ranges = []
+
+    class FakeClient:
+        def get_account_trades_range(self, start_ms, end_ms):
+            observed_ranges.append((start_ms, end_ms))
+            return [{"id": 1, "orderId": 101, "symbol": "ETHUSDC", "qty": "0.5", "price": "2477.01", "time": end_ms}]
+
+        def get_all_orders_range(self, symbol, start_ms, end_ms):
+            observed_ranges.append((start_ms, end_ms))
+            return []
+
+    monkeypatch.setattr(reconciliation.db, "get_order_symbols_for_user_range", lambda *args: [])
+
+    result = reconciliation.reconcile_order_history(
+        username="Will",
+        client=FakeClient(),
+        start_time=requested_at - timedelta(hours=1),
+        end_time=requested_at + timedelta(days=4),
+    )
+
+    assert len(observed_ranges) == 2
+    assert all(end_ms <= int(datetime.now(timezone.utc).timestamp() * 1000) for _, end_ms in observed_ranges)
+    assert result["symbols"] == ["ETHUSDC"]
+    assert result["failed"] == 0
+    assert any("future" in warning for warning in result["warnings"])

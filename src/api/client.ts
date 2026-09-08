@@ -446,7 +446,7 @@ export const api = {
   },
 
   async getOrders(params?: {
-    limit?: number; user_id?: number; username?: string; order_id?: string
+    limit?: number; user_id?: number; username?: string; symbol?: string; order_id?: string
     start_time?: string; end_time?: string; status?: string; trade_direction?: 'OPEN' | 'CLOSE'
   }): Promise<ApiOrder[]> {
     return request<ApiOrder[]>('GET', '/api/orders', { params })
@@ -454,6 +454,10 @@ export const api = {
 
   async getOrderUsers(): Promise<ApiOrderUser[]> {
     return request<ApiOrderUser[]>('GET', '/api/orders/users')
+  },
+
+  async getOrderSymbols(): Promise<string[]> {
+    return request<string[]>('GET', '/api/orders/symbols')
   },
 
   async getOrderMarkers(params: {

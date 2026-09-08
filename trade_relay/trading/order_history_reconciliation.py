@@ -40,9 +40,16 @@ def reconcile_order_history(*, username: str, client, start_time: datetime, end_
     # suffix. Treat naive values as UTC instead of the backend host timezone.
     start_utc = start_time.replace(tzinfo=timezone.utc) if start_time.tzinfo is None else start_time.astimezone(timezone.utc)
     end_utc = end_time.replace(tzinfo=timezone.utc) if end_time.tzinfo is None else end_time.astimezone(timezone.utc)
+    warnings: list[str] = []
+    now_utc = datetime.now(timezone.utc)
+    if end_utc > now_utc:
+        end_utc = now_utc
+        end_time = end_utc.replace(tzinfo=None)
+        warnings.append("The requested end time was in the future and was limited to the current time")
+    if end_utc <= start_utc:
+        raise ValueError("The reconciliation time range does not include any elapsed time")
     start_ms = int(start_utc.timestamp() * 1000)
     end_ms = int(end_utc.timestamp() * 1000)
-    warnings: list[str] = []
 
     trades: list[dict] = []
     try:

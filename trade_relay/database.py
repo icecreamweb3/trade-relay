@@ -3369,6 +3369,7 @@ def query_orders(
     limit: int = 200,
     user_id: Optional[int] = None,
     username: Optional[str] = None,
+    symbol: Optional[str] = None,
     order_id: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
@@ -3376,7 +3377,7 @@ def query_orders(
     trade_direction: Optional[str] = None,
     sort_by_filled_at: bool = False,
 ) -> list:
-    """Return orders with optional filters for user, order id, time range, and status."""
+    """Return orders with optional filters for user, symbol, order id, time range, and status."""
     sql = "SELECT * FROM orders WHERE 1 = 1"
     params: list = []
 
@@ -3387,6 +3388,10 @@ def query_orders(
     if username:
         sql += " AND username LIKE %s"
         params.append(f"%{username}%")
+
+    if symbol:
+        sql += " AND UPPER(symbol) = %s"
+        params.append(symbol.strip().upper())
 
     if order_id:
         sql += " AND (CAST(id AS CHAR) LIKE %s OR exchange_order_id LIKE %s OR algo_id LIKE %s OR algo_client_id LIKE %s OR client_order_id LIKE %s)"
@@ -3420,6 +3425,25 @@ def query_orders(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_distinct_order_symbols() -> list[str]:
+    """Return normalized symbols that are present in the orders table."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT UPPER(TRIM(symbol)) AS symbol
+                FROM orders
+                WHERE symbol IS NOT NULL
+                  AND TRIM(symbol) <> ''
+                ORDER BY symbol
+                """
+            )
+            return [str(row["symbol"]) for row in (cur.fetchall() or []) if row.get("symbol")]
     finally:
         conn.close()
 

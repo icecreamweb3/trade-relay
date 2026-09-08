@@ -315,6 +315,7 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
 def list_orders(
     limit: int = 200,
     username: Optional[str] = None,
+    symbol: Optional[str] = None,
     order_id: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
@@ -326,6 +327,7 @@ def list_orders(
         limit=limit,
         user_id=None,
         username=username,
+        symbol=symbol,
         order_id=order_id,
         start_time=start_time,
         end_time=end_time,
@@ -334,6 +336,11 @@ def list_orders(
         sort_by_filled_at=True,
     )
     return [_row_to_out(r) for r in rows]
+
+
+@router.get("/symbols", response_model=list[str])
+def list_order_symbols(user: dict = Depends(get_current_user)):
+    return db_module.get_distinct_order_symbols()
 
 
 @router.get("/users", response_model=list[OrderUserOption])

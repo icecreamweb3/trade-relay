@@ -404,7 +404,7 @@ export function PositionHistoryScreen() {
           <input
             value={filters.symbol}
             onChange={(event) => setFilters((current) => ({ ...current, symbol: event.target.value.toUpperCase() }))}
-            placeholder="BTCUSDC"
+            placeholder={t('pos.historyFilter.allSymbols')}
             className={INPUT_CLS}
           />
         </FilterField>
