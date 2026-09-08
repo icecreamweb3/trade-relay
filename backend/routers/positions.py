@@ -16,6 +16,8 @@ from trade_relay import database as db_module
 from trade_relay import config as cfg_module
 from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
 from trade_relay.trading.tpsl_service import place_tp_sl_orders, validate_tpsl_prices
+from trade_relay.trading.excursion_retry_worker import _repair_missing_order_links
+from task.recalculate_historical_excursion_metrics import recalculate_missing_metrics
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
 from backend.time_utils import serialize_utc_timestamp, serialize_utc_timestamp_required
@@ -97,6 +99,8 @@ _POSITIONS_CACHE_TTL = 0.5  # seconds — short enough that an account_update fe
 _startup_position_sync_inflight: set[str] = set()
 _startup_position_sync_lock = threading.Lock()
 _STARTUP_POSITION_SYNC_DELAY_SECONDS = 3.0
+_maintenance_inflight: set[int | None] = set()
+_maintenance_lock = threading.Lock()
 
 
 def _normalize_positions_status(status: str | None) -> str:
@@ -156,6 +160,59 @@ class PositionOut(BaseModel):
     live_mae_usdc: float = 0.0
     live_mfe_at: Optional[str] = None
     live_mae_at: Optional[str] = None
+
+
+class PositionMaintenanceIn(BaseModel):
+    username: Optional[str] = None
+
+
+class PositionOrderLinkBackfillOut(BaseModel):
+    repaired: int
+    skipped: int
+
+
+class PositionExcursionRecalculationOut(BaseModel):
+    scanned: int
+    calculated: int
+    queued: int
+    failed: int
+    duplicate_history_rows: int
+
+
+def _resolve_maintenance_user_id(user: dict, requested_username: str | None) -> int | None:
+    username = str(requested_username or "").strip()
+    if user.get("role") != "admin":
+        if username and username != str(user.get("username") or ""):
+            raise HTTPException(status_code=403, detail="Cannot maintain another user's positions")
+        return int(user["sub"])
+    if not username:
+        return None
+    target = db_module.get_user_by_username(username)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return int(target["id"])
+
+
+async def _run_position_maintenance(task_name: str, user_id: int | None, operation):
+    with _maintenance_lock:
+        conflicts = (
+            bool(_maintenance_inflight)
+            if user_id is None
+            else None in _maintenance_inflight or user_id in _maintenance_inflight
+        )
+        if conflicts:
+            raise HTTPException(status_code=409, detail="This maintenance task is already running")
+        _maintenance_inflight.add(user_id)
+    try:
+        return await asyncio.to_thread(operation)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Position maintenance failed task=%s user_id=%s", task_name, user_id)
+        raise HTTPException(status_code=500, detail=f"Position maintenance failed: {exc}") from exc
+    finally:
+        with _maintenance_lock:
+            _maintenance_inflight.discard(user_id)
 
 
 def _derive_conditional_position_side(side: str, trade_direction: str | None) -> str:
@@ -605,6 +662,35 @@ def get_positions(
     _positions_cache[cache_key] = (now, result)
     _log.info("[POSITION_SYNC] phase=cache_miss user_id=%s status=%s positions=%s", user_id, normalized_status, len(result))
     return result
+
+
+@router.post("/maintenance/backfill-open-orders", response_model=PositionOrderLinkBackfillOut)
+async def backfill_position_open_orders(
+    body: PositionMaintenanceIn,
+    user: dict = Depends(get_current_user),
+):
+    """Repair missing OPEN order IDs and opening times from local filled orders."""
+    user_id = _resolve_maintenance_user_id(user, body.username)
+
+    def operation() -> dict[str, int]:
+        repaired, skipped = _repair_missing_order_links(10000, user_id=user_id)
+        return {"repaired": repaired, "skipped": skipped}
+
+    return await _run_position_maintenance("backfill-open-orders", user_id, operation)
+
+
+@router.post("/maintenance/recalculate-mfe", response_model=PositionExcursionRecalculationOut)
+async def recalculate_position_mfe(
+    body: PositionMaintenanceIn,
+    user: dict = Depends(get_current_user),
+):
+    """Recalculate closed positions whose excursion metrics are not current."""
+    user_id = _resolve_maintenance_user_id(user, body.username)
+    return await _run_position_maintenance(
+        "recalculate-mfe",
+        user_id,
+        lambda: recalculate_missing_metrics(user_id=user_id, dry_run=False),
+    )
 
 
 class TpSlIn(BaseModel):

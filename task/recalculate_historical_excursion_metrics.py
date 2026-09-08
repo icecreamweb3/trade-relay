@@ -269,6 +269,90 @@ def _validate_local_cycle(row: dict, expected_realized: float) -> None:
     _validate_realized_pnl(checked_row, metrics)
 
 
+def recalculate_missing_metrics(
+    user_id: int | None = None,
+    start_time: datetime | None = None,
+    *,
+    dry_run: bool = False,
+    progress: ProgressBar | None = None,
+    _candidates: list[dict] | None = None,
+) -> dict[str, int]:
+    """Recalculate eligible position metrics and return a UI/API-friendly summary."""
+    rows = _candidates if _candidates is not None else _fetch_candidates(user_id, start_time)
+    clients: dict = {}
+    calculated = queued = failed = duplicate_rows = 0
+    if progress:
+        progress.update(0, "calculated=0 queued=0 failed=0 duplicates=0")
+
+    for index, original_row in enumerate(rows, start=1):
+        position_id = int(original_row["id"])
+        history_rows = _fetch_history_rows(position_id)
+        keepers, shadows = _classify_history_rows(history_rows)
+        expected_realized = _sum_realized(keepers)
+        duplicate_rows += len(shadows)
+        shadow_ids = ",".join(str(row["id"]) for row in shadows) or "-"
+
+        if dry_run:
+            try:
+                _validate_local_cycle(original_row, expected_realized)
+                if progress:
+                    progress.log(
+                        f"READY position_id={position_id} user_id={original_row.get('user_id')}"
+                        f" symbol={original_row.get('symbol')} duplicate_history_ids={shadow_ids}"
+                        f" corrected_realized_pnl={expected_realized:.10f}"
+                    )
+                queued += 1
+            except Exception as exc:
+                failed += 1
+                if progress:
+                    progress.log(
+                        f"UNRESOLVED position_id={position_id} user_id={original_row.get('user_id')}"
+                        f" symbol={original_row.get('symbol')} duplicate_history_ids={shadow_ids} error={exc}"
+                    )
+        else:
+            try:
+                deleted_ids, corrected_realized = _repair_and_requeue(position_id)
+                row = {**original_row, "realized_pnl": corrected_realized, "excursion_attempts": 0}
+                _process_candidate(row, clients)
+                calculated += 1
+                if progress:
+                    progress.log(
+                        f"CALCULATED position_id={position_id} user_id={row.get('user_id')}"
+                        f" symbol={row.get('symbol')} deleted_history_ids="
+                        f"{','.join(str(value) for value in deleted_ids) or '-'}"
+                    )
+            except Exception as exc:
+                failed += 1
+                try:
+                    db.schedule_position_excursion_retry(position_id, 0, f"{type(exc).__name__}: {exc}")
+                    queued += 1
+                except Exception as queue_exc:
+                    if progress:
+                        progress.log(f"QUEUE_FAIL position_id={position_id} error={queue_exc}")
+                if progress:
+                    progress.log(
+                        f"FAILED position_id={position_id} user_id={original_row.get('user_id')}"
+                        f" symbol={original_row.get('symbol')} error={exc}"
+                    )
+        if progress:
+            progress.update(
+                index,
+                f"calculated={calculated} queued={queued} failed={failed} duplicates={duplicate_rows}",
+            )
+
+    if progress:
+        progress.finish(
+            f"calculated={calculated} queued={queued} failed={failed} duplicates={duplicate_rows}"
+        )
+    return {
+        "scanned": len(rows),
+        "calculated": calculated,
+        "queued": queued,
+        "failed": failed,
+        "duplicate_history_rows": duplicate_rows,
+    }
+
+
 def main() -> int:
     args = parse_args()
     if args.user_id is not None and args.user_id <= 0:
@@ -289,72 +373,22 @@ def main() -> int:
     )
     rows = _fetch_candidates(args.user_id, start_time)
     print(f"LOAD         complete total={len(rows)}", flush=True)
-
+    # Keep the CLI progress bar while sharing the actual operation with the API.
     progress = ProgressBar("RECALCULATE", len(rows))
-    clients: dict = {}
-    calculated = queued = failed = duplicate_rows = 0
-    progress.update(0, "calculated=0 queued=0 failed=0 duplicates=0")
-    for index, original_row in enumerate(rows, start=1):
-        position_id = int(original_row["id"])
-        history_rows = _fetch_history_rows(position_id)
-        keepers, shadows = _classify_history_rows(history_rows)
-        expected_realized = _sum_realized(keepers)
-        duplicate_rows += len(shadows)
-        shadow_ids = ",".join(str(row["id"]) for row in shadows) or "-"
-
-        if args.dry_run:
-            try:
-                _validate_local_cycle(original_row, expected_realized)
-                progress.log(
-                    f"READY position_id={position_id} user_id={original_row.get('user_id')}"
-                    f" symbol={original_row.get('symbol')} duplicate_history_ids={shadow_ids}"
-                    f" corrected_realized_pnl={expected_realized:.10f}"
-                )
-                queued += 1
-            except Exception as exc:
-                failed += 1
-                progress.log(
-                    f"UNRESOLVED position_id={position_id} user_id={original_row.get('user_id')}"
-                    f" symbol={original_row.get('symbol')} duplicate_history_ids={shadow_ids} error={exc}"
-                )
-        else:
-            try:
-                deleted_ids, corrected_realized = _repair_and_requeue(position_id)
-                row = {**original_row, "realized_pnl": corrected_realized, "excursion_attempts": 0}
-                _process_candidate(row, clients)
-                calculated += 1
-                progress.log(
-                    f"CALCULATED position_id={position_id} user_id={row.get('user_id')}"
-                    f" symbol={row.get('symbol')} deleted_history_ids="
-                    f"{','.join(str(value) for value in deleted_ids) or '-'}"
-                )
-            except Exception as exc:
-                failed += 1
-                try:
-                    db.schedule_position_excursion_retry(position_id, 0, f"{type(exc).__name__}: {exc}")
-                    queued += 1
-                except Exception as queue_exc:
-                    progress.log(
-                        f"QUEUE_FAIL position_id={position_id} error={queue_exc}"
-                    )
-                progress.log(
-                    f"FAILED position_id={position_id} user_id={original_row.get('user_id')}"
-                    f" symbol={original_row.get('symbol')} error={exc}"
-                )
-        progress.update(
-            index,
-            f"calculated={calculated} queued={queued} failed={failed} duplicates={duplicate_rows}",
-        )
-
-    progress.finish(
-        f"calculated={calculated} queued={queued} failed={failed} duplicates={duplicate_rows}"
+    result = recalculate_missing_metrics(
+        args.user_id,
+        start_time,
+        dry_run=args.dry_run,
+        progress=progress,
+        _candidates=rows,
     )
     print(
-        f"DONE mode={mode} scanned={len(rows)} calculated={calculated}"
-        f" ready_or_queued={queued} failed={failed} duplicate_history_rows={duplicate_rows}",
+        f"DONE mode={mode} scanned={result['scanned']} calculated={result['calculated']}"
+        f" ready_or_queued={result['queued']} failed={result['failed']}"
+        f" duplicate_history_rows={result['duplicate_history_rows']}",
         flush=True,
     )
-    return 1 if not args.dry_run and failed else 0
+    return 1 if not args.dry_run and result["failed"] else 0
 
 
 if __name__ == "__main__":

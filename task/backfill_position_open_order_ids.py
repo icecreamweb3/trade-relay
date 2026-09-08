@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate and report repairable rows without updating the database.",
     )
+    parser.add_argument("--user-id", "--user_id", type=int, help="Only process one users.id.")
     return parser.parse_args()
 
 
@@ -52,7 +53,14 @@ def main() -> int:
         print("ERROR limit must be greater than zero", file=sys.stderr)
         return 2
 
-    repaired, failed = _repair_missing_order_links(args.limit, dry_run=args.dry_run)
+    if args.user_id is not None and args.user_id <= 0:
+        print("ERROR --user-id must be greater than zero", file=sys.stderr)
+        return 2
+    repaired, failed = _repair_missing_order_links(
+        args.limit,
+        dry_run=args.dry_run,
+        user_id=args.user_id,
+    )
     print(
         "DONE"
         f" mode={'dry-run' if args.dry_run else 'apply'}"

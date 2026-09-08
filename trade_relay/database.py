@@ -4976,11 +4976,17 @@ def get_due_position_excursion_candidates(limit: int = 100, current_version: int
         conn.close()
 
 
-def get_missing_position_order_link_candidates(limit: int = 5000) -> list:
+def get_missing_position_order_link_candidates(
+    limit: int = 5000,
+    user_id: int | None = None,
+) -> list:
     """Return closed positions whose final snapshot still lacks OPEN order IDs."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            user_filter = " AND p.user_id = %s" if user_id is not None else ""
+            params = [int(user_id)] if user_id is not None else []
+            params.append(max(1, min(int(limit), 10000)))
             cur.execute(
                 """SELECT p.*,
                           (SELECT GROUP_CONCAT(ph.close_order_id ORDER BY ph.id)
@@ -4990,21 +4996,29 @@ def get_missing_position_order_link_candidates(limit: int = 5000) -> list:
                      FROM positions p
                      JOIN position_history_final f ON f.position_id = p.id
                     WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'
-                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = '')
+                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = ''
+                           OR f.open_time IS NULL)
+                """ + user_filter + """
                     ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at), p.id
                     LIMIT %s""",
-                (max(1, min(int(limit), 10000)),),
+                params,
             )
             return cur.fetchall()
     finally:
         conn.close()
 
 
-def get_missing_legacy_order_link_candidates(limit: int = 5000) -> list:
+def get_missing_legacy_order_link_candidates(
+    limit: int = 5000,
+    user_id: int | None = None,
+) -> list:
     """Return legacy final rows missing OPEN IDs or the matched OPEN fill time."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            user_filter = " AND ph.user_id = %s" if user_id is not None else ""
+            params = [int(user_id)] if user_id is not None else []
+            params.append(max(1, min(int(limit), 10000)))
             cur.execute(
                 """SELECT ph.*, ph.side AS position_side, 'binance' AS exchange,
                           CAST(ph.close_order_id AS CHAR) AS target_close_order_ids
@@ -5014,9 +5028,10 @@ def get_missing_legacy_order_link_candidates(limit: int = 5000) -> list:
                       AND ph.close_order_id IS NOT NULL
                       AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = ''
                            OR f.open_time IS NULL)
+                """ + user_filter + """
                     ORDER BY COALESCE(ph.updated_at, ph.created_at), ph.id
                     LIMIT %s""",
-                (max(1, min(int(limit), 10000)),),
+                params,
             )
             return cur.fetchall()
     finally:

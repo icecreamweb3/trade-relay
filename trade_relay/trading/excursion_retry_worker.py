@@ -160,9 +160,14 @@ def _validate_cycle_identity(row: dict, cycle: list[dict]) -> None:
 def _repair_missing_order_links(
     limit: int = ORDER_LINK_BACKFILL_SIZE,
     dry_run: bool = False,
+    user_id: int | None = None,
 ) -> tuple[int, int]:
     """One-time local-only repair for historical OPEN/CLOSE order associations."""
-    rows = db_module.get_missing_position_order_link_candidates(limit)
+    rows = (
+        db_module.get_missing_position_order_link_candidates(limit, user_id=user_id)
+        if user_id is not None
+        else db_module.get_missing_position_order_link_candidates(limit)
+    )
     orders_cache: dict[tuple[int, str, str], list[dict]] = {}
     repaired = 0
     failed = 0
@@ -201,7 +206,11 @@ def _repair_missing_order_links(
                 row.get("symbol"),
                 exc,
             )
-    legacy_rows = db_module.get_missing_legacy_order_link_candidates(limit)
+    legacy_rows = (
+        db_module.get_missing_legacy_order_link_candidates(limit, user_id=user_id)
+        if user_id is not None
+        else db_module.get_missing_legacy_order_link_candidates(limit)
+    )
     for row in legacy_rows:
         try:
             target_ids = _target_ids(row.get("target_close_order_ids"))

@@ -263,3 +263,20 @@ def test_legacy_backfill_sets_open_time_from_first_open_fill(monkeypatch):
 
     assert excursion_retry_worker._repair_missing_order_links(100) == (1, 0)
     assert calls == [(1778, ["open-1"], ["close-1"], first_fill)]
+
+
+def test_order_link_backfill_scopes_candidate_queries_to_user(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        excursion_retry_worker.db_module,
+        "get_missing_position_order_link_candidates",
+        lambda limit, user_id=None: calls.append(("linked", limit, user_id)) or [],
+    )
+    monkeypatch.setattr(
+        excursion_retry_worker.db_module,
+        "get_missing_legacy_order_link_candidates",
+        lambda limit, user_id=None: calls.append(("legacy", limit, user_id)) or [],
+    )
+
+    assert excursion_retry_worker._repair_missing_order_links(100, user_id=5) == (0, 0)
+    assert calls == [("linked", 100, 5), ("legacy", 100, 5)]

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { BarChart3, Download } from 'lucide-react'
+import { BarChart3, Calculator, DatabaseBackup, Download } from 'lucide-react'
 import { api, type ApiPositionRecord } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -65,6 +65,7 @@ export function PositionHistoryScreen() {
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
+  const [maintenanceTask, setMaintenanceTask] = useState<'backfill' | 'mfe' | null>(null)
   const [hasQueried, setHasQueried] = useState(false)
   const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null)
   const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
@@ -192,6 +193,44 @@ export function PositionHistoryScreen() {
       showToast('error', t('pos.historyExport.failed'))
     } finally {
       setExporting(false)
+    }
+  }
+
+  const maintenanceUsername = user?.role === 'admin' ? filters.username.trim() || undefined : undefined
+
+  const handleBackfillOpenOrders = async () => {
+    if (maintenanceTask) return
+    setMaintenanceTask('backfill')
+    try {
+      const result = await api.backfillPositionOpenOrders(maintenanceUsername)
+      showToast('success', t('pos.maintenance.backfillSuccess', {
+        repaired: result.repaired,
+        skipped: result.skipped,
+      }))
+      await load(filters)
+    } catch (error: unknown) {
+      showToast('error', getRequestErrorMessage(error, t('pos.maintenance.failed')))
+    } finally {
+      setMaintenanceTask(null)
+    }
+  }
+
+  const handleRecalculateMfe = async () => {
+    if (maintenanceTask) return
+    setMaintenanceTask('mfe')
+    try {
+      const result = await api.recalculatePositionMfe(maintenanceUsername)
+      showToast(result.failed > 0 ? 'info' : 'success', t('pos.maintenance.mfeSuccess', {
+        scanned: result.scanned,
+        calculated: result.calculated,
+        queued: result.queued,
+        failed: result.failed,
+      }), { duration: 8000 })
+      await load(filters)
+    } catch (error: unknown) {
+      showToast('error', getRequestErrorMessage(error, t('pos.maintenance.failed')))
+    } finally {
+      setMaintenanceTask(null)
     }
   }
 
@@ -385,6 +424,28 @@ export function PositionHistoryScreen() {
         <span className="text-xs text-[#858585]">
           {user?.role === 'admin' ? t('log.allUsers') : user?.username ?? ''}
         </span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleBackfillOpenOrders()}
+            disabled={maintenanceTask !== null}
+            title={t('pos.maintenance.scopeHint')}
+            className="flex h-8 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-xs text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-50"
+          >
+            <DatabaseBackup size={14} className={maintenanceTask === 'backfill' ? 'animate-pulse' : ''} />
+            {maintenanceTask === 'backfill' ? t('pos.maintenance.backfilling') : t('pos.maintenance.backfill')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleRecalculateMfe()}
+            disabled={maintenanceTask !== null}
+            title={t('pos.maintenance.scopeHint')}
+            className="flex h-8 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-xs text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-50"
+          >
+            <Calculator size={14} className={maintenanceTask === 'mfe' ? 'animate-pulse' : ''} />
+            {maintenanceTask === 'mfe' ? t('pos.maintenance.recalculating') : t('pos.maintenance.recalculateMfe')}
+          </button>
+        </div>
       </div>
 
       <form onSubmit={handleSearch} className="flex shrink-0 flex-wrap items-end gap-3 border-b border-[#3e3e42] px-4 py-3">

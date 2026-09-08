@@ -90,3 +90,15 @@ def test_fetch_candidates_applies_user_and_start_filters(monkeypatch):
     assert "p.user_id = %s" in captured["sql"]
     assert "COALESCE(f.close_time, f.updated_at, f.created_at) >= %s" in captured["sql"]
     assert captured["params"] == [task.ALGORITHM_VERSION, 5, start]
+
+
+def test_recalculate_missing_metrics_returns_empty_summary(monkeypatch):
+    monkeypatch.setattr(task, "_fetch_candidates", lambda user_id, start_time: [])
+
+    assert task.recalculate_missing_metrics(user_id=5) == {
+        "scanned": 0,
+        "calculated": 0,
+        "queued": 0,
+        "failed": 0,
+        "duplicate_history_rows": 0,
+    }

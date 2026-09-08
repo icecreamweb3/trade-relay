@@ -239,6 +239,19 @@ export interface ApiPositionRecord {
   excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
 }
 
+export interface ApiPositionOrderLinkBackfillResult {
+  repaired: number
+  skipped: number
+}
+
+export interface ApiPositionExcursionRecalculationResult {
+  scanned: number
+  calculated: number
+  queued: number
+  failed: number
+  duplicate_history_rows: number
+}
+
 interface ApiAccountSummary {
   symbol?: string | null
   base_asset?: string | null
@@ -500,6 +513,18 @@ export const api = {
 
   async syncPositions(status = 'OPEN'): Promise<ApiPosition[]> {
     return request<ApiPosition[]>('POST', '/api/positions/sync', { params: { status } })
+  },
+
+  async backfillPositionOpenOrders(username?: string): Promise<ApiPositionOrderLinkBackfillResult> {
+    return request<ApiPositionOrderLinkBackfillResult>('POST', '/api/positions/maintenance/backfill-open-orders', {
+      body: { username: username || null },
+    })
+  },
+
+  async recalculatePositionMfe(username?: string): Promise<ApiPositionExcursionRecalculationResult> {
+    return request<ApiPositionExcursionRecalculationResult>('POST', '/api/positions/maintenance/recalculate-mfe', {
+      body: { username: username || null },
+    })
   },
 
   async setPositionTpSl(positionId: number, tpPrice: number | null, slPrice: number | null): Promise<ApiResult> {
