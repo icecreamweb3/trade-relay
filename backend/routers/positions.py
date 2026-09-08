@@ -270,10 +270,40 @@ def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | N
 
 
 def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price: float | None) -> tuple[float | None, float | None]:
-    """Recover a legacy open position's 1R from its first observable active loss-side stop."""
+    """Recover or reconcile a legacy open position's 1R."""
     planned_stop = float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None
     initial_risk = float(row["initial_risk_usdc"]) if row.get("initial_risk_usdc") is not None else None
     if initial_risk is not None and math.isfinite(initial_risk) and initial_risk > 0:
+        entry_price = float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None
+        quantity = abs(float(row.get("quantity") or 0))
+        if (
+            planned_stop is not None
+            and entry_price is not None
+            and math.isfinite(planned_stop)
+            and math.isfinite(entry_price)
+            and math.isfinite(quantity)
+            and planned_stop > 0
+            and entry_price > 0
+            and quantity > 0
+        ):
+            reconciled_risk = abs(entry_price - planned_stop) * quantity
+            if math.isfinite(reconciled_risk) and reconciled_risk > initial_risk + 1e-12:
+                try:
+                    db_module.update_position_initial_risk(position_id, reconciled_risk)
+                except Exception:
+                    _log.exception(
+                        "Failed to reconcile stale position risk: position_id=%s risk=%s",
+                        position_id,
+                        reconciled_risk,
+                    )
+                else:
+                    _log.info(
+                        "[POSITION_SYNC] phase=risk_reconciled pos=%s old_risk=%s initial_risk_usdc=%s",
+                        position_id,
+                        initial_risk,
+                        reconciled_risk,
+                    )
+                return planned_stop, reconciled_risk
         return planned_stop, initial_risk
 
     entry_price = float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None

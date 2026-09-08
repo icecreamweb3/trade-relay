@@ -59,8 +59,9 @@ def _risk_after_position_increase(
     """Recalculate 1R for a larger position while retaining its original stop.
 
     Any positive amount already included above the old price risk (for example an
-    opening commission) is retained. The calculation deliberately runs only for
-    increases, so partial closes do not shrink the cycle's risk baseline.
+    opening commission) is retained. Equal-quantity snapshots are also checked so
+    an upgrade can repair risk left stale by an older server. Partial closes never
+    shrink the cycle's risk baseline.
     """
     previous_quantity = _safe_float(existing.get("quantity"))
     previous_entry_price = _safe_float(existing.get("avg_entry_price"))
@@ -68,7 +69,6 @@ def _risk_after_position_increase(
     if (
         previous_quantity is None
         or previous_quantity <= 0
-        or quantity <= previous_quantity + 1e-12
         or entry_price is None
         or entry_price <= 0
         or planned_stop is None
@@ -76,13 +76,26 @@ def _risk_after_position_increase(
     ):
         return None
 
-    retained_cost = 0.0
     stored_risk = _safe_float(existing.get("initial_risk_usdc"))
+    current_price_risk = abs(entry_price - planned_stop) * quantity
+
+    # A server running the pre-recalculation code may already have persisted the
+    # larger quantity and its new average entry price while leaving 1R at the
+    # first fill's value.  There is then no quantity increase left to observe on
+    # the first sync after an upgrade.  Reconcile that stale state when the risk
+    # implied by the current position is larger.  This also keeps partial closes
+    # from reducing the cycle's risk baseline.
+    if quantity <= previous_quantity + 1e-12:
+        if stored_risk is None or stored_risk <= 0:
+            return current_price_risk if current_price_risk > 0 else None
+        return current_price_risk if current_price_risk > stored_risk + 1e-12 else None
+
+    retained_cost = 0.0
     if stored_risk is not None and stored_risk > 0 and previous_entry_price and previous_entry_price > 0:
         previous_price_risk = abs(previous_entry_price - planned_stop) * previous_quantity
         retained_cost = max(0.0, stored_risk - previous_price_risk)
 
-    updated_risk = abs(entry_price - planned_stop) * quantity + retained_cost
+    updated_risk = current_price_risk + retained_cost
     return updated_risk if updated_risk > 0 else None
 
 

@@ -1326,6 +1326,23 @@ def test_sync_positions_does_not_reduce_initial_risk_after_partial_close(monkeyp
     assert order_status_stream._risk_after_position_increase(existing, 0.012, 77783.28) is None
 
 
+def test_sync_positions_repairs_stale_initial_risk_after_legacy_increase(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    existing = {
+        "quantity": 0.02,
+        "avg_entry_price": 78381.20,
+        "planned_stop_price": 78107.0,
+        "initial_risk_usdc": 0.0704,
+    }
+
+    assert order_status_stream._risk_after_position_increase(
+        existing,
+        0.02,
+        78381.20,
+    ) == pytest.approx((78381.20 - 78107.0) * 0.02)
+
+
 def test_initial_position_sync_marks_missing_positions_closed(monkeypatch):
     from trade_relay.trading import order_status_stream
 
@@ -4004,6 +4021,43 @@ def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeyp
     assert positions[0].sl_price == 79450.0
     assert positions[0].initial_risk_usdc == 13.75
     assert restored_risks == [(15, 79450.0, 13.75)]
+
+
+def test_positions_reconcile_stale_risk_after_legacy_increase(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None, status=None: [{
+            "id": 21,
+            "symbol": "BTCUSDC",
+            "position_side": "LONG",
+            "quantity": 0.02,
+            "avg_entry_price": 78381.20,
+            "unrealized_pnl": 3.93,
+            "leverage": 20,
+            "margin_type": "cross",
+            "planned_stop_price": 78107.0,
+            "initial_risk_usdc": 0.0704,
+        }],
+    )
+    monkeypatch.setattr(positions_router.db_module, "query_orders", lambda **kwargs: [])
+    risk_updates = []
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "update_position_initial_risk",
+        lambda position_id, risk: risk_updates.append((position_id, risk)) or True,
+    )
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+
+    positions = positions_router._db_positions(user_id=5)
+
+    expected_risk = (78381.20 - 78107.0) * 0.02
+    assert positions[0].initial_risk_usdc == pytest.approx(expected_risk)
+    assert risk_updates == [(21, pytest.approx(expected_risk))]
 
 
 def test_positions_do_not_infer_risk_from_stop_already_moved_into_profit(monkeypatch):
