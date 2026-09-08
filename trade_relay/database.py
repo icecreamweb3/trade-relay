@@ -4928,7 +4928,11 @@ def initialize_position_risk(
     planned_stop_price: float,
     initial_risk_usdc: float,
 ) -> bool:
-    """只写入本轮持仓首次确定的计划止损和 1R，后续加仓不会静默改写基准。"""
+    """只写入本轮持仓首次确定的计划止损和 1R。
+
+    计划止损始终保持首次值；后续加仓引起的 1R 重算由
+    ``update_position_initial_risk`` 显式完成。
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -4938,6 +4942,24 @@ def initialize_position_risk(
                        initial_risk_usdc = COALESCE(initial_risk_usdc, %s)
                    WHERE id = %s""",
                 (planned_stop_price, initial_risk_usdc, position_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_position_initial_risk(position_id: int, initial_risk_usdc: float) -> bool:
+    """在持仓加仓后更新 1R，不改变本轮首次确定的计划止损。"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET initial_risk_usdc = %s
+                   WHERE id = %s
+                     AND planned_stop_price IS NOT NULL""",
+                (initial_risk_usdc, position_id),
             )
             conn.commit()
             return cur.rowcount > 0

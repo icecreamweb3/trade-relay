@@ -51,6 +51,41 @@ def _normalize_stored_position_side(raw_position_side: str | None, position_amou
     return "BOTH"
 
 
+def _risk_after_position_increase(
+    existing: dict,
+    quantity: float,
+    entry_price: Optional[float],
+) -> float | None:
+    """Recalculate 1R for a larger position while retaining its original stop.
+
+    Any positive amount already included above the old price risk (for example an
+    opening commission) is retained. The calculation deliberately runs only for
+    increases, so partial closes do not shrink the cycle's risk baseline.
+    """
+    previous_quantity = _safe_float(existing.get("quantity"))
+    previous_entry_price = _safe_float(existing.get("avg_entry_price"))
+    planned_stop = _safe_float(existing.get("planned_stop_price"))
+    if (
+        previous_quantity is None
+        or previous_quantity <= 0
+        or quantity <= previous_quantity + 1e-12
+        or entry_price is None
+        or entry_price <= 0
+        or planned_stop is None
+        or planned_stop <= 0
+    ):
+        return None
+
+    retained_cost = 0.0
+    stored_risk = _safe_float(existing.get("initial_risk_usdc"))
+    if stored_risk is not None and stored_risk > 0 and previous_entry_price and previous_entry_price > 0:
+        previous_price_risk = abs(previous_entry_price - planned_stop) * previous_quantity
+        retained_cost = max(0.0, stored_risk - previous_price_risk)
+
+    updated_risk = abs(entry_price - planned_stop) * quantity + retained_cost
+    return updated_risk if updated_risk > 0 else None
+
+
 def _get_initial_position_rows(client) -> list[dict]:
     """Use strict exchange reads when supported, retaining compatibility with test clients."""
     try:
@@ -1413,6 +1448,17 @@ class UserOrderStatusStream:
                 position_mode=position_mode,
                 status="OPEN",
             )
+            updated_initial_risk = _risk_after_position_increase(existing, abs(amount), entry_price)
+            if updated_initial_risk is not None and existing.get("id") is not None:
+                try:
+                    db.update_position_initial_risk(int(existing["id"]), updated_initial_risk)
+                except Exception:
+                    logger.exception(
+                        "Failed to refresh position risk after increase: user=%s position_id=%s symbol=%s",
+                        self.username,
+                        existing["id"],
+                        symbol,
+                    )
             self._sync_close_tpsl_quantity(
                 user_id=user_id,
                 symbol=symbol,

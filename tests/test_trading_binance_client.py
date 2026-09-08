@@ -1270,6 +1270,62 @@ def test_sync_positions_reopens_position_with_open_status(monkeypatch):
     assert upsert_calls[0]["quantity"] == 0.037
 
 
+def test_sync_positions_recalculates_initial_risk_when_position_increases(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    risk_updates = []
+    existing = {
+        "id": 525,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "status": "OPEN",
+        "quantity": 0.012,
+        "avg_entry_price": 77800.0,
+        "planned_stop_price": 77400.0,
+        "initial_risk_usdc": 4.8,
+        "leverage": 20,
+        "position_mode": "DUAL",
+    }
+
+    monkeypatch.setattr(order_status_stream.db, "get_user_by_username", lambda username: {"id": 5, "username": username})
+    monkeypatch.setattr(order_status_stream.db, "get_positions", lambda user_id=None, status=None: [existing])
+    monkeypatch.setattr(order_status_stream.db, "upsert_position", lambda **kwargs: None)
+    monkeypatch.setattr(order_status_stream.db, "get_position", lambda *args, **kwargs: existing)
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_position_initial_risk",
+        lambda position_id, risk: risk_updates.append((position_id, risk)) or True,
+    )
+    monkeypatch.setattr(stream, "_sync_close_tpsl_quantity", lambda **kwargs: None)
+
+    stream._sync_positions([{
+        "s": "BTCUSDC",
+        "ps": "LONG",
+        "pa": "0.018",
+        "ep": "77783.28",
+        "lp": "76000",
+        "up": "0.02",
+        "mt": "cross",
+        "l": "20",
+    }])
+
+    assert risk_updates == [(525, pytest.approx((77783.28 - 77400.0) * 0.018))]
+
+
+def test_sync_positions_does_not_reduce_initial_risk_after_partial_close(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    existing = {
+        "quantity": 0.018,
+        "avg_entry_price": 77783.28,
+        "planned_stop_price": 77400.0,
+        "initial_risk_usdc": 6.89904,
+    }
+
+    assert order_status_stream._risk_after_position_increase(existing, 0.012, 77783.28) is None
+
+
 def test_initial_position_sync_marks_missing_positions_closed(monkeypatch):
     from trade_relay.trading import order_status_stream
 
