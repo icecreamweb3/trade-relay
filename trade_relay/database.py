@@ -4138,7 +4138,8 @@ def close_position(
                      AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'""",
                 (user_id, exchange, symbol, position_side),
             )
-            success = cur.rowcount > 0
+            affected_rows = cur.rowcount
+            success = affected_rows > 0
             for closing_position_id in closing_position_ids:
                 _upsert_position_history_final_from_position_cursor(cur, closing_position_id)
             conn.commit()

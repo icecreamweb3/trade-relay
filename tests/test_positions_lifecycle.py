@@ -14,6 +14,20 @@ class FakePositionsCursor:
 
     def execute(self, sql, params=None):
         normalized_sql = " ".join(sql.split())
+        if normalized_sql.startswith("SELECT id FROM positions WHERE user_id = %s"):
+            user_id, exchange, symbol, position_side = params
+            self.result = [
+                {"id": row["id"]}
+                for row in self.state["rows"]
+                if row["user_id"] == user_id
+                and row["exchange"] == exchange
+                and row["symbol"] == symbol
+                and row["position_side"] == position_side
+                and str(row.get("status") or "OPEN").upper() == "OPEN"
+            ]
+            self.rowcount = len(self.result)
+            return
+
         if normalized_sql.startswith("INSERT INTO positions"):
             (
                 user_id,
@@ -130,6 +144,9 @@ class FakePositionsCursor:
     def fetchone(self):
         return self.result
 
+    def fetchall(self):
+        return self.result if isinstance(self.result, list) else []
+
     def __enter__(self):
         return self
 
@@ -153,8 +170,19 @@ class FakePositionsConnection:
 
 def test_position_reopen_gets_new_id_while_add_keeps_existing_id(monkeypatch):
     state = {"rows": [], "next_id": 1}
+    write_results = []
 
     monkeypatch.setattr(db, "get_connection", lambda: FakePositionsConnection(state))
+    monkeypatch.setattr(
+        db,
+        "_upsert_position_history_final_from_position_cursor",
+        lambda cursor, position_id: None,
+    )
+    monkeypatch.setattr(
+        db,
+        "_log_db_write_result",
+        lambda action, table, **result: write_results.append((action, table, result)),
+    )
 
     db.upsert_position(
         user_id=7,
@@ -204,3 +232,11 @@ def test_position_reopen_gets_new_id_while_add_keeps_existing_id(monkeypatch):
     assert len(closed_rows) == 1
     assert closed_rows[0]["id"] == 1
     assert closed_rows[0]["open_position_slot"] is None
+    assert any(
+        action == "update"
+        and table == "positions"
+        and result.get("status") == "CLOSE"
+        and result.get("affected_rows") == 1
+        and result.get("success") is True
+        for action, table, result in write_results
+    )
