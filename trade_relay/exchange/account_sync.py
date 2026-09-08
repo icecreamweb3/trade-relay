@@ -77,9 +77,40 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
         persisted_summary = db_module.get_account_summary_from_db(user_id, normalized) or {}
         client = BinanceClient(api_key=api_key, secret_key=api_secret, testnet=testnet)
         account = client.get_account_info() or {}
-        positions = client.get_position_information(symbol=normalized, recv_window=5000) or []
+        # Fetch all position rows once: account summary calculations may target one
+        # symbol, while live MFE/MAE sampling must cover every open position.
+        all_positions = client.get_position_information(symbol=None, recv_window=5000) or []
+        positions = (
+            [row for row in all_positions if str(row.get("symbol") or "").upper() == normalized]
+            if normalized
+            else all_positions
+        )
         dual_side_position = client.get_position_mode()
         position_mode = 'DUAL' if dual_side_position is True else 'SINGLE'
+
+        for pos in all_positions:
+            position_amt = float(pos.get("positionAmt", 0) or 0)
+            if position_amt == 0:
+                continue
+            position_side = str(pos.get("positionSide", "BOTH") or "BOTH").upper()
+            stored_side = position_side
+            if stored_side not in ("LONG", "SHORT"):
+                stored_side = "LONG" if position_amt > 0 else "SHORT"
+            try:
+                db_module.update_open_position_live_excursion(
+                    user_id=user_id,
+                    symbol=str(pos.get("symbol") or "").upper(),
+                    position_side=stored_side,
+                    unrealized_pnl=float(pos.get("unRealizedProfit", 0) or 0),
+                )
+            except Exception:
+                # 极值采样失败不应阻断账户摘要同步；完整平仓后仍会用 K 线复算。
+                _log.exception(
+                    "[ACCOUNT_SYNC] phase=excursion_sample_error user=%s symbol=%s side=%s",
+                    username,
+                    pos.get("symbol"),
+                    stored_side,
+                )
 
         assets = account.get("assets", []) or []
         selected_asset = None
@@ -136,26 +167,6 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
             elif position_amt < 0:
                 short_position_qty += abs(position_amt)
                 short_position_value += notional
-
-            if position_amt != 0:
-                stored_side = position_side
-                if stored_side not in ("LONG", "SHORT"):
-                    stored_side = "LONG" if position_amt > 0 else "SHORT"
-                try:
-                    db_module.update_open_position_live_excursion(
-                        user_id=user_id,
-                        symbol=str(pos.get("symbol") or normalized or "").upper(),
-                        position_side=stored_side,
-                        unrealized_pnl=float(pos.get("unRealizedProfit", 0) or 0),
-                    )
-                except Exception:
-                    # 极值采样失败不应阻断账户摘要同步；完整平仓后仍会用 K 线复算。
-                    _log.exception(
-                        "[ACCOUNT_SYNC] phase=excursion_sample_error user=%s symbol=%s side=%s",
-                        username,
-                        pos.get("symbol") or normalized,
-                        stored_side,
-                    )
 
             leverage = float(pos.get("leverage", 0) or 0)
             if configured_leverage is None and leverage > 0:

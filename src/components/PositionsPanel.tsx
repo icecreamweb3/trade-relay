@@ -198,6 +198,17 @@ export function PositionsPanel({
     return () => clearInterval(timer)
   }, [isActive, isAuthenticated])
 
+  // Live excursion extrema are sampled by the backend every 15 seconds. Poll the
+  // current-position snapshot at the same cadence so MFE/MAE changes reach the UI
+  // even when Binance emits no account/order event for a mark-price-only move.
+  useEffect(() => {
+    if (!isActive || !isAuthenticated) return
+    const timer = setInterval(() => {
+      if (tabRef.current === 'positions') void loadPositionsRef.current()
+    }, 15_000)
+    return () => clearInterval(timer)
+  }, [isActive, isAuthenticated])
+
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
 
@@ -521,11 +532,12 @@ export function PositionsPanel({
             <thead><tr>
               <th>{t('pos.symbol')}</th><th>{t('pos.side')}</th><th>{t('pos.status')}</th><th>{sizeHeaderLabel}</th><th>{t('pos.entry')}</th>
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
+              <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={11} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={12} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => (
                   <tr key={p.id}>
                     <td className="font-semibold">{p.symbol}</td>
@@ -537,6 +549,22 @@ export function PositionsPanel({
                     <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
                     <td className={`font-mono font-semibold ${(getLiveUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice) ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
                       {formatUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice)}
+                    </td>
+                    <td className="whitespace-nowrap" title={t('pos.liveExcursionHint')}>
+                      <div className="flex items-center gap-1 font-mono text-[11px]">
+                        <span className="text-profit">+{(p.live_mfe_usdc ?? 0).toFixed(4)}</span>
+                        <span className="text-[#5f6670]">/</span>
+                        <span className="text-loss">-{(p.live_mae_usdc ?? 0).toFixed(4)}</span>
+                      </div>
+                      <div className="mt-0.5 font-mono text-[9px]">
+                        <span className="text-buy">
+                          {formatExcursionR(p.live_mfe_usdc, p.initial_risk_usdc, '+')}
+                        </span>
+                        <span className="mx-1 text-[#4d535c]">/</span>
+                        <span className="text-sell">
+                          {formatExcursionR(p.live_mae_usdc, p.initial_risk_usdc, '-')}
+                        </span>
+                      </div>
                     </td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
                     <td>
@@ -1517,6 +1545,11 @@ function formatUnrealizedPnl(position: Position, activeSymbol: string, livePrice
   const pnl = getLiveUnrealizedPnl(position, activeSymbol, livePrice)
   if (pnl == null) return '-'
   return `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`
+}
+
+function formatExcursionR(value?: number | null, initialRisk?: number | null, prefix = '') {
+  if (value == null || initialRisk == null || initialRisk <= 0) return 'R —'
+  return `${prefix}${(value / initialRisk).toFixed(2)} R`
 }
 
 function formatR(value?: number | null) {
