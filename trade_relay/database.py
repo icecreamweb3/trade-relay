@@ -972,7 +972,7 @@ def _index_exists(cur: pymysql.cursors.Cursor, table_name: str, index_name: str)
 def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
     cur.execute("""
         CREATE TABLE IF NOT EXISTS positions (
-            id              BIGINT          NOT NULL AUTO_INCREMENT,
+            id              BIGINT          NOT NULL AUTO_INCREMENT COMMENT '持仓周期ID；被关联表的 position_id 引用',
             user_id         BIGINT          NOT NULL,
             username        VARCHAR(64)     NOT NULL,
             exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
@@ -1266,6 +1266,225 @@ def _refresh_position_realized_pnl(cur: pymysql.cursors.Cursor, position_id: Opt
     )
 
 
+def _upsert_position_history_final_from_position_cursor(
+    cur: pymysql.cursors.Cursor,
+    position_id: Optional[int] = None,
+) -> None:
+    """Aggregate complete OPEN/CLOSE cycles into the immutable-style final table."""
+    position_filter = " AND p.id = %s" if position_id is not None else ""
+    params = (position_id,) if position_id is not None else ()
+    cur.execute(
+        f"""INSERT INTO position_history_final
+                    (position_id, source_history_id, user_id, username, symbol, side, position_mode,
+                     open_time, close_time, entry_avg_price, close_avg_price, quantity,
+                     realized_pnl, commission, commission_asset, net_pnl,
+                     open_orders_id, close_orders_id,
+                     planned_stop_price, initial_risk_usdc,
+                     mfe_usdc, mae_usdc, mfe_at, mae_at, mfe_r, mae_r, net_pnl_r,
+                     profit_capture_rate, exit_efficiency, profit_giveback_usdc,
+                     profit_giveback_rate, metric_status, metric_source, metric_version,
+                     metric_calculated_at, created_at, updated_at)
+             SELECT p.id, NULL, p.user_id, p.username, p.symbol, p.position_side, p.position_mode,
+                    COALESCE(oa.open_time, p.opened_at),
+                    COALESCE(oa.close_time, pha.close_time, p.updated_at),
+                    COALESCE(
+                        NULLIF(p.avg_entry_price, 0),
+                        CASE WHEN COALESCE(oa.open_qty, 0) > 0
+                             THEN oa.open_notional / oa.open_qty ELSE NULL END
+                    ),
+                    CASE WHEN COALESCE(oa.close_qty, 0) > 0
+                         THEN oa.close_notional / oa.close_qty ELSE pha.close_avg_price END,
+                    COALESCE(NULLIF(oa.close_qty, 0), pha.close_qty, 0),
+                    COALESCE(pha.realized_pnl, oa.realized_pnl, p.realized_pnl, 0),
+                    COALESCE(oa.open_commission, 0)
+                      + COALESCE(NULLIF(pha.close_commission, 0), oa.close_commission, 0),
+                    COALESCE(oa.commission_asset, pha.commission_asset),
+                    COALESCE(
+                        p.net_pnl,
+                        COALESCE(pha.realized_pnl, oa.realized_pnl, p.realized_pnl, 0)
+                          - (COALESCE(oa.open_commission, 0)
+                             + COALESCE(NULLIF(pha.close_commission, 0), oa.close_commission, 0))
+                    ),
+                    oa.open_order_ids,
+                    COALESCE(oa.close_order_ids, pha.close_order_ids),
+                    p.planned_stop_price, p.initial_risk_usdc,
+                    p.mfe_usdc, p.mae_usdc, p.mfe_at, p.mae_at,
+                    p.mfe_r, p.mae_r, p.net_pnl_r,
+                    p.profit_capture_rate, p.exit_efficiency,
+                    p.profit_giveback_usdc, p.profit_giveback_rate,
+                    p.excursion_status, p.excursion_source, p.excursion_version,
+                    p.excursion_calculated_at,
+                    COALESCE(oa.open_time, p.opened_at, UTC_TIMESTAMP(3)), UTC_TIMESTAMP(3)
+               FROM positions p
+               JOIN (
+                    SELECT ph.position_id,
+                           SUM(COALESCE(NULLIF(ABS(co.filled_qty), 0), ABS(ph.quantity))) AS close_qty,
+                           CASE WHEN SUM(COALESCE(NULLIF(ABS(co.filled_qty), 0), ABS(ph.quantity))) > 0
+                                THEN SUM(COALESCE(NULLIF(co.avg_price, 0), ph.close_price)
+                                         * COALESCE(NULLIF(ABS(co.filled_qty), 0), ABS(ph.quantity)))
+                                     / SUM(COALESCE(NULLIF(ABS(co.filled_qty), 0), ABS(ph.quantity)))
+                                ELSE NULL END AS close_avg_price,
+                           SUM(COALESCE(ph.realized_pnl, 0)) AS realized_pnl,
+                           SUM(COALESCE(ph.commission, 0)) AS close_commission,
+                           CASE WHEN COUNT(DISTINCT ph.commission_asset) = 1
+                                THEN MAX(ph.commission_asset) ELSE NULL END AS commission_asset,
+                           MAX(COALESCE(co.filled_at, ph.updated_at, ph.created_at)) AS close_time,
+                           GROUP_CONCAT(
+                               CASE WHEN UPPER(COALESCE(co.order_category, '')) = 'CONDITIONAL'
+                                    THEN COALESCE(NULLIF(co.algo_id, ''), NULLIF(co.exchange_order_id, ''))
+                                    ELSE COALESCE(NULLIF(co.exchange_order_id, ''), NULLIF(co.algo_id, '')) END
+                               ORDER BY COALESCE(co.filled_at, ph.updated_at, ph.created_at), ph.id
+                               SEPARATOR ','
+                           ) AS close_order_ids
+                      FROM position_history ph
+                      LEFT JOIN orders co ON co.id = ph.close_order_id
+                     WHERE ph.position_id IS NOT NULL
+                     GROUP BY ph.position_id
+               ) pha ON pha.position_id = p.id
+               LEFT JOIN (
+                    SELECT position_id,
+                           MIN(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'OPEN'
+                                    THEN COALESCE(filled_at, updated_at, created_at) END) AS open_time,
+                           MAX(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                                    THEN COALESCE(filled_at, updated_at, created_at) END) AS close_time,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'OPEN'
+                                    THEN ABS(COALESCE(filled_qty, 0)) ELSE 0 END) AS open_qty,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'OPEN'
+                                    THEN ABS(COALESCE(filled_qty, 0))
+                                       * COALESCE(NULLIF(avg_price, 0), NULLIF(price, 0), stop_price, 0)
+                                    ELSE 0 END) AS open_notional,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                                    THEN ABS(COALESCE(filled_qty, 0)) ELSE 0 END) AS close_qty,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                                    THEN ABS(COALESCE(filled_qty, 0))
+                                       * COALESCE(NULLIF(avg_price, 0), NULLIF(price, 0), stop_price, 0)
+                                    ELSE 0 END) AS close_notional,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                                    THEN COALESCE(realized_pnl, 0) ELSE 0 END) AS realized_pnl,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'OPEN'
+                                    THEN ABS(COALESCE(commission, 0)) ELSE 0 END) AS open_commission,
+                           SUM(CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE'
+                                    THEN ABS(COALESCE(commission, 0)) ELSE 0 END) AS close_commission,
+                           CASE WHEN COUNT(DISTINCT commission_asset) = 1
+                                THEN MAX(commission_asset) ELSE NULL END AS commission_asset,
+                           GROUP_CONCAT(
+                               CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'OPEN' THEN
+                                   CASE WHEN UPPER(COALESCE(order_category, '')) = 'CONDITIONAL'
+                                        THEN COALESCE(NULLIF(algo_id, ''), NULLIF(exchange_order_id, ''))
+                                        ELSE COALESCE(NULLIF(exchange_order_id, ''), NULLIF(algo_id, '')) END
+                               END
+                               ORDER BY COALESCE(filled_at, updated_at, created_at), id SEPARATOR ','
+                           ) AS open_order_ids,
+                           GROUP_CONCAT(
+                               CASE WHEN UPPER(COALESCE(trade_direction, '')) = 'CLOSE' THEN
+                                   CASE WHEN UPPER(COALESCE(order_category, '')) = 'CONDITIONAL'
+                                        THEN COALESCE(NULLIF(algo_id, ''), NULLIF(exchange_order_id, ''))
+                                        ELSE COALESCE(NULLIF(exchange_order_id, ''), NULLIF(algo_id, '')) END
+                               END
+                               ORDER BY COALESCE(filled_at, updated_at, created_at), id SEPARATOR ','
+                           ) AS close_order_ids
+                      FROM orders
+                     WHERE position_id IS NOT NULL
+                       AND UPPER(COALESCE(status, '')) = 'FILLED'
+                       AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
+                     GROUP BY position_id
+               ) oa ON oa.position_id = p.id
+              WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'{position_filter}
+             ON DUPLICATE KEY UPDATE
+                    user_id = VALUES(user_id), username = VALUES(username), symbol = VALUES(symbol),
+                    side = VALUES(side), position_mode = VALUES(position_mode),
+                    open_time = VALUES(open_time), close_time = VALUES(close_time),
+                    entry_avg_price = VALUES(entry_avg_price), close_avg_price = VALUES(close_avg_price),
+                    quantity = VALUES(quantity), realized_pnl = VALUES(realized_pnl),
+                    commission = VALUES(commission), commission_asset = VALUES(commission_asset),
+                    net_pnl = VALUES(net_pnl),
+                    open_orders_id = VALUES(open_orders_id),
+                    close_orders_id = VALUES(close_orders_id),
+                    planned_stop_price = VALUES(planned_stop_price),
+                    initial_risk_usdc = VALUES(initial_risk_usdc),
+                    mfe_usdc = VALUES(mfe_usdc), mae_usdc = VALUES(mae_usdc),
+                    mfe_at = VALUES(mfe_at), mae_at = VALUES(mae_at),
+                    mfe_r = VALUES(mfe_r), mae_r = VALUES(mae_r), net_pnl_r = VALUES(net_pnl_r),
+                    profit_capture_rate = VALUES(profit_capture_rate),
+                    exit_efficiency = VALUES(exit_efficiency),
+                    profit_giveback_usdc = VALUES(profit_giveback_usdc),
+                    profit_giveback_rate = VALUES(profit_giveback_rate),
+                    metric_status = VALUES(metric_status), metric_source = VALUES(metric_source),
+                    metric_version = VALUES(metric_version),
+                    metric_calculated_at = VALUES(metric_calculated_at), updated_at = VALUES(updated_at)""",
+        params,
+    )
+
+
+def _backfill_unlinked_position_history_final(
+    cur: pymysql.cursors.Cursor,
+    history_id: Optional[int] = None,
+) -> None:
+    """Preserve legacy close history that cannot safely be assigned to a position cycle."""
+    history_filter = " AND ph.id = %s" if history_id is not None else ""
+    params = (history_id,) if history_id is not None else ()
+    cur.execute(
+        f"""INSERT INTO position_history_final
+                    (position_id, source_history_id, user_id, username, symbol, side, position_mode,
+                     open_time, close_time, entry_avg_price, close_avg_price, quantity,
+                     realized_pnl, commission, commission_asset, net_pnl,
+                     open_orders_id, close_orders_id,
+                     created_at, updated_at)
+             SELECT NULL, ph.id, ph.user_id, ph.username, ph.symbol, ph.side, ph.position_mode,
+                    NULL, COALESCE(co.filled_at, ph.updated_at, ph.created_at), ph.entry_price,
+                    COALESCE(NULLIF(co.avg_price, 0), ph.close_price),
+                    COALESCE(NULLIF(ABS(co.filled_qty), 0), ABS(ph.quantity)),
+                    ph.realized_pnl, ph.commission, ph.commission_asset,
+                    ph.realized_pnl - ph.commission, NULL,
+                    CASE WHEN UPPER(COALESCE(co.order_category, '')) = 'CONDITIONAL'
+                         THEN COALESCE(NULLIF(co.algo_id, ''), NULLIF(co.exchange_order_id, ''))
+                         ELSE COALESCE(NULLIF(co.exchange_order_id, ''), NULLIF(co.algo_id, '')) END,
+                    ph.created_at, ph.updated_at
+               FROM position_history ph
+               LEFT JOIN orders co ON co.id = ph.close_order_id
+              WHERE ph.position_id IS NULL{history_filter}
+             ON DUPLICATE KEY UPDATE
+                    user_id = VALUES(user_id), username = VALUES(username), symbol = VALUES(symbol),
+                    side = VALUES(side), position_mode = VALUES(position_mode),
+                    close_time = VALUES(close_time), entry_avg_price = VALUES(entry_avg_price),
+                    close_avg_price = VALUES(close_avg_price), quantity = VALUES(quantity),
+                    realized_pnl = VALUES(realized_pnl), commission = VALUES(commission),
+                    commission_asset = VALUES(commission_asset), net_pnl = VALUES(net_pnl),
+                    open_orders_id = VALUES(open_orders_id),
+                    close_orders_id = VALUES(close_orders_id), updated_at = VALUES(updated_at)""",
+        params,
+    )
+
+
+def upsert_position_history_final(position_id: int) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            _upsert_position_history_final_from_position_cursor(cur, int(position_id))
+            affected_rows = cur.rowcount
+            conn.commit()
+            return affected_rows > 0
+    finally:
+        conn.close()
+
+
+def update_position_history_final_entry_average(position_id: int, entry_avg_price: float) -> bool:
+    """Update only the validated lifecycle entry average on a final snapshot."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE position_history_final
+                      SET entry_avg_price = %s, updated_at = UTC_TIMESTAMP(3)
+                    WHERE position_id = %s""",
+                (float(entry_avg_price), int(position_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def init_db() -> None:
     """Initialize database schema – idempotent, safe to call on every startup."""
     conn = get_connection()
@@ -1359,6 +1578,7 @@ def init_db() -> None:
                     KEY idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at),
                     KEY idx_username_exchange_order (username, exchange_order_id),
                     KEY idx_username_algo_id (username, algo_id),
+                    KEY idx_orders_position_trade_time (position_id, trade_direction, filled_at),
                     KEY idx_created_at (created_at DESC),
                     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -1402,6 +1622,7 @@ def init_db() -> None:
                 "ALTER TABLE orders ADD INDEX idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at)",
                 "ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id)",
                 "ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id)",
+                "ALTER TABLE orders ADD INDEX idx_orders_position_trade_time (position_id, trade_direction, filled_at)",
                 "ALTER TABLE orders ADD INDEX idx_trade_details_retry_due (status, trade_details_sync_next_retry_at)",
                 "ALTER TABLE orders ADD INDEX idx_close_tpsl_retry_due (status, close_tpsl_sync_next_retry_at)",
             ]:
@@ -1519,7 +1740,75 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE position_history ADD INDEX idx_close_order_id (close_order_id)")
             except Exception:
                 pass
-
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS position_history_final (
+                    id BIGINT NOT NULL AUTO_INCREMENT,
+                    position_id BIGINT DEFAULT NULL COMMENT '关联 positions.id；一个持仓周期一行',
+                    source_history_id BIGINT DEFAULT NULL COMMENT '无 position_id 的旧 position_history 行',
+                    user_id BIGINT NOT NULL, username VARCHAR(64) NOT NULL DEFAULT '',
+                    symbol VARCHAR(32) NOT NULL, side VARCHAR(8) NOT NULL,
+                    position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+                    open_time DATETIME(3) DEFAULT NULL, close_time DATETIME(3) DEFAULT NULL,
+                    entry_avg_price DECIMAL(30,10) DEFAULT NULL COMMENT 'OPEN 成交数量加权均价',
+                    close_avg_price DECIMAL(30,10) DEFAULT NULL COMMENT 'CLOSE 成交数量加权均价',
+                    quantity DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期累计平仓数量',
+                    realized_pnl DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期已实现毛盈亏',
+                    commission DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期 OPEN+CLOSE 总手续费',
+                    commission_asset VARCHAR(16) DEFAULT NULL,
+                    net_pnl DECIMAL(30,10) DEFAULT NULL,
+                    open_orders_id LONGTEXT COMMENT '周期 OPEN 订单ID，逗号分隔',
+                    close_orders_id LONGTEXT COMMENT '周期 CLOSE 订单ID，逗号分隔',
+                    planned_stop_price DECIMAL(30,10) DEFAULT NULL,
+                    initial_risk_usdc DECIMAL(30,10) DEFAULT NULL,
+                    mfe_usdc DECIMAL(30,10) DEFAULT NULL, mae_usdc DECIMAL(30,10) DEFAULT NULL,
+                    mfe_at DATETIME(3) DEFAULT NULL, mae_at DATETIME(3) DEFAULT NULL,
+                    mfe_r DECIMAL(20,10) DEFAULT NULL, mae_r DECIMAL(20,10) DEFAULT NULL,
+                    net_pnl_r DECIMAL(20,10) DEFAULT NULL,
+                    profit_capture_rate DECIMAL(20,10) DEFAULT NULL,
+                    exit_efficiency DECIMAL(20,10) DEFAULT NULL,
+                    profit_giveback_usdc DECIMAL(30,10) DEFAULT NULL,
+                    profit_giveback_rate DECIMAL(20,10) DEFAULT NULL,
+                    metric_status VARCHAR(16) DEFAULT NULL COMMENT 'PENDING/CALCULATED/FAILED',
+                    metric_source VARCHAR(32) DEFAULT NULL, metric_version SMALLINT DEFAULT NULL,
+                    metric_calculated_at DATETIME(3) DEFAULT NULL,
+                    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_position_history_final_position (position_id),
+                    UNIQUE KEY uk_position_history_final_legacy (source_history_id),
+                    KEY idx_position_history_final_user_close (user_id, close_time DESC),
+                    KEY idx_position_history_final_symbol_side (symbol, side)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='完整持仓周期最终复盘快照'
+            """)
+            cur.execute("SHOW COLUMNS FROM position_history_final")
+            final_history_columns = {row["Field"] for row in cur.fetchall()}
+            if "close_orders_id" not in final_history_columns and "orders_id" in final_history_columns:
+                cur.execute(
+                    "ALTER TABLE position_history_final CHANGE COLUMN orders_id close_orders_id "
+                    "LONGTEXT COMMENT '周期 CLOSE 订单ID，逗号分隔'"
+                )
+                final_history_columns.remove("orders_id")
+                final_history_columns.add("close_orders_id")
+            elif "close_orders_id" in final_history_columns and "orders_id" in final_history_columns:
+                cur.execute(
+                    "UPDATE position_history_final "
+                    "SET close_orders_id = COALESCE(close_orders_id, orders_id)"
+                )
+                cur.execute("ALTER TABLE position_history_final DROP COLUMN orders_id")
+                final_history_columns.remove("orders_id")
+            elif "close_orders_id" not in final_history_columns:
+                cur.execute(
+                    "ALTER TABLE position_history_final ADD COLUMN close_orders_id LONGTEXT "
+                    "COMMENT '周期 CLOSE 订单ID，逗号分隔' AFTER net_pnl"
+                )
+                final_history_columns.add("close_orders_id")
+            if "open_orders_id" not in final_history_columns:
+                cur.execute(
+                    "ALTER TABLE position_history_final ADD COLUMN open_orders_id LONGTEXT "
+                    "COMMENT '周期 OPEN 订单ID，逗号分隔' AFTER net_pnl"
+                )
+            _upsert_position_history_final_from_position_cursor(cur)
+            _backfill_unlinked_position_history_final(cur)
             _rebuild_positions_realized_pnl(cur)
 
             cur.execute("""
@@ -2065,7 +2354,8 @@ def update_user_api_credentials(
                 (enc_key, enc_secret, int(testnet), int(mock_mode), user_id),
             )
             conn.commit()
-            success = cur.rowcount > 0
+            affected_rows = cur.rowcount
+            success = affected_rows > 0
             _log_db_write_result("update", "users", user_id=user_id, affected_rows=cur.rowcount, success=success)
             return success
     finally:
@@ -3538,6 +3828,78 @@ def get_profile_current_balance(user_id: int) -> float | None:
 # Position CRUD（头寸信息）
 # ──────────────────────────────────────────────
 
+def link_filled_open_order_to_position(order_id: int) -> Optional[int]:
+    """Create/reuse the live position for a filled OPEN order and link it atomically."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM orders WHERE id = %s FOR UPDATE", (int(order_id),))
+            order = cur.fetchone()
+            if not order:
+                return None
+            if str(order.get("status") or "").upper() != "FILLED":
+                return None
+            if str(order.get("trade_direction") or "").upper() != "OPEN":
+                return None
+
+            existing_position_id = order.get("position_id")
+            if existing_position_id is not None:
+                return int(existing_position_id)
+
+            position_mode = str(order.get("position_mode") or "UNKNOWN").upper()
+            side = str(order.get("side") or "").upper()
+            if position_mode == "SINGLE":
+                position_side = "BOTH"
+            else:
+                position_side = "LONG" if side == "BUY" else "SHORT" if side == "SELL" else "BOTH"
+            quantity = abs(_safe_float(order.get("filled_qty") or order.get("quantity")))
+            entry_price = _safe_float(order.get("avg_price") or order.get("price") or order.get("stop_price"))
+            opened_at = _coerce_utc_naive_datetime(
+                order.get("filled_at") or order.get("updated_at") or order.get("created_at")
+            ) or _utc_now_naive()
+            if quantity <= 0 or entry_price <= 0:
+                return None
+
+            cur.execute(
+                """INSERT INTO positions
+                       (user_id, username, exchange, symbol, position_side, position_mode,
+                        status, open_position_slot, quantity, avg_entry_price, realized_pnl,
+                        leverage, margin_type, opened_at)
+                   VALUES (%s, %s, %s, %s, %s, %s,
+                           'OPEN', 1, %s, %s, NULL, 1, 'CROSS', %s)
+                   ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)""",
+                (
+                    int(order["user_id"]), str(order.get("username") or ""),
+                    str(order.get("exchange") or "binance"), str(order.get("symbol") or ""),
+                    position_side, position_mode, quantity, entry_price, opened_at,
+                ),
+            )
+            position_id = int(cur.lastrowid)
+            if position_id <= 0:
+                cur.execute(
+                    """SELECT id FROM positions
+                        WHERE user_id = %s AND exchange = %s AND symbol = %s
+                          AND position_side = %s AND open_position_slot = 1
+                        LIMIT 1""",
+                    (
+                        int(order["user_id"]), str(order.get("exchange") or "binance"),
+                        str(order.get("symbol") or ""), position_side,
+                    ),
+                )
+                position = cur.fetchone()
+                if not position:
+                    return None
+                position_id = int(position["id"])
+
+            cur.execute(
+                "UPDATE orders SET position_id = %s WHERE id = %s AND position_id IS NULL",
+                (position_id, int(order_id)),
+            )
+            conn.commit()
+            return position_id
+    finally:
+        conn.close()
+
 def upsert_position(
     user_id: int,
     username: str,
@@ -3674,6 +4036,14 @@ def close_position(
     try:
         with conn.cursor() as cur:
             cur.execute(
+                """SELECT id FROM positions
+                    WHERE user_id = %s AND exchange = %s
+                      AND symbol = %s AND position_side = %s
+                      AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'""",
+                (user_id, exchange, symbol, position_side),
+            )
+            closing_position_ids = [int(row["id"]) for row in cur.fetchall()]
+            cur.execute(
                 """UPDATE positions
                    SET status = 'CLOSE',
                        open_position_slot = NULL,
@@ -3690,9 +4060,11 @@ def close_position(
                      AND UPPER(COALESCE(status, 'OPEN')) = 'OPEN'""",
                 (user_id, exchange, symbol, position_side),
             )
-            conn.commit()
             success = cur.rowcount > 0
-            _log_db_write_result("update", "positions", user_id=user_id, symbol=symbol, position_side=position_side, status="CLOSE", affected_rows=cur.rowcount, success=success)
+            for closing_position_id in closing_position_ids:
+                _upsert_position_history_final_from_position_cursor(cur, closing_position_id)
+            conn.commit()
+            _log_db_write_result("update", "positions", user_id=user_id, symbol=symbol, position_side=position_side, status="CLOSE", affected_rows=affected_rows, success=success)
             return success
     finally:
         conn.close()
@@ -3860,24 +4232,55 @@ def add_position_history(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            if position_id is not None and close_order_id is not None:
+                cur.execute(
+                    "UPDATE orders SET position_id = COALESCE(position_id, %s) WHERE id = %s",
+                    (position_id, close_order_id),
+                )
             # Dedup guard: if close_order_id is set, check for an existing row first.
             # This prevents duplicate rows when WS and REST poll paths race each other.
             if close_order_id is not None:
                 cur.execute(
-                    "SELECT id FROM position_history WHERE close_order_id = %s AND username = %s LIMIT 1",
+                    "SELECT id, position_id FROM position_history WHERE close_order_id = %s AND username = %s LIMIT 1",
                     (close_order_id, username),
                 )
                 existing = cur.fetchone()
                 if existing:
+                    history_id = int(existing["id"])
+                    effective_position_id = position_id or existing.get("position_id")
+                    cur.execute(
+                        """UPDATE position_history
+                              SET close_price = CASE WHEN %s >= quantity THEN %s ELSE close_price END,
+                                  realized_pnl = CASE WHEN %s >= quantity THEN %s ELSE realized_pnl END,
+                                  commission = GREATEST(commission, %s),
+                                  commission_asset = COALESCE(%s, commission_asset),
+                                  position_id = COALESCE(position_id, %s),
+                                  quantity = GREATEST(quantity, %s)
+                            WHERE id = %s""",
+                        (
+                            quantity, close_price,
+                            quantity, realized_pnl,
+                            commission, commission_asset,
+                            position_id, quantity,
+                            history_id,
+                        ),
+                    )
+                    _refresh_position_realized_pnl(cur, effective_position_id)
+                    if effective_position_id is None:
+                        _backfill_unlinked_position_history_final(cur, history_id)
+                    else:
+                        _upsert_position_history_final_from_position_cursor(cur, int(effective_position_id))
+                    _refresh_daily_profile_for_history_row(cur, history_id)
+                    conn.commit()
                     _log_db_write_result(
-                        "insert_skipped_duplicate",
+                        "updated_duplicate",
                         "position_history",
-                        history_id=existing["id"],
+                        history_id=history_id,
                         user_id=user_id,
                         symbol=symbol,
                         side=side.upper(),
                     )
-                    return existing["id"]
+                    return history_id
 
             cur.execute(
                 """INSERT INTO position_history
@@ -3903,6 +4306,10 @@ def add_position_history(
             )
             history_id = int(cur.lastrowid)
             _refresh_position_realized_pnl(cur, position_id)
+            if position_id is None:
+                _backfill_unlinked_position_history_final(cur, history_id)
+            else:
+                _upsert_position_history_final_from_position_cursor(cur, int(position_id))
             _refresh_daily_profile_for_user_date(cur, user_id, username, normalized_created_at.date())
             conn.commit()
             _log_db_write_result("insert", "position_history", history_id=history_id, user_id=user_id, symbol=symbol, side=side.upper())
@@ -3944,7 +4351,12 @@ def update_position_history_values(
                 )
             affected_rows = cur.rowcount
             if affected_rows > 0:
-                _refresh_position_realized_pnl(cur, history_row.get("position_id"))
+                history_position_id = history_row.get("position_id")
+                _refresh_position_realized_pnl(cur, history_position_id)
+                if history_position_id is None:
+                    _backfill_unlinked_position_history_final(cur, history_id)
+                else:
+                    _upsert_position_history_final_from_position_cursor(cur, int(history_position_id))
                 _refresh_daily_profile_for_history_row(cur, history_id)
             conn.commit()
             success = affected_rows > 0
@@ -4229,8 +4641,16 @@ def get_position(
         conn.close()
 
 
-def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> list:
-    """返回持仓历史记录。user_id=None 时返回所有用户。"""
+def get_position_history(
+    user_id: Optional[int] = None,
+    limit: int = 200,
+    username: Optional[str] = None,
+    symbol: Optional[str] = None,
+    side: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> list:
+    """返回可按用户、交易对、方向和持仓结束时间筛选的持仓历史。"""
     params: list = []
     sql = """SELECT ph.id, ph.user_id, ph.username, ph.symbol, ph.side, ph.position_mode,
                     ph.entry_price, ph.close_price, ph.quantity, ph.realized_pnl,
@@ -4244,16 +4664,120 @@ def get_position_history(user_id: Optional[int] = None, limit: int = 200) -> lis
                     p.excursion_status, p.excursion_source, p.excursion_calculated_at
              FROM position_history ph
              LEFT JOIN positions p ON p.id = ph.position_id"""
+    conditions: list[str] = []
     if user_id is not None:
-        sql += " WHERE ph.user_id = %s"
+        conditions.append("ph.user_id = %s")
         params.append(user_id)
+    if username:
+        conditions.append("ph.username = %s")
+        params.append(username.strip())
+    if symbol:
+        conditions.append("UPPER(ph.symbol) LIKE %s")
+        params.append(f"%{symbol.strip().upper()}%")
+    normalized_side = str(side or "").strip().upper()
+    if normalized_side in {"LONG", "SHORT"}:
+        conditions.append("UPPER(ph.side) = %s")
+        params.append(normalized_side)
+    if start_time:
+        conditions.append("COALESCE(ph.updated_at, ph.created_at) >= %s")
+        params.append(start_time)
+    if end_time:
+        conditions.append("COALESCE(ph.updated_at, ph.created_at) <= %s")
+        params.append(end_time)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY COALESCE(ph.updated_at, ph.created_at) DESC, ph.id DESC LIMIT %s"
-    params.append(limit)
+    params.append(max(1, min(int(limit), 5000)))
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def query_position_records(
+    user_id: Optional[int] = None,
+    limit: int = 200,
+    offset: int = 0,
+    username: Optional[str] = None,
+    symbol: Optional[str] = None,
+    side: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> list:
+    """Query one durable final snapshot per completed position cycle."""
+    sql = """SELECT f.id, f.position_id, f.user_id, f.username, f.symbol, f.side,
+                    f.position_mode, 'CLOSE' AS status,
+                    f.quantity, f.entry_avg_price AS entry_price,
+                    f.close_avg_price AS close_price, f.realized_pnl,
+                    f.commission, f.commission_asset, f.net_pnl,
+                    f.open_time, f.close_time, f.open_orders_id, f.close_orders_id,
+                    f.planned_stop_price, f.initial_risk_usdc,
+                    f.mfe_usdc, f.mae_usdc, f.mfe_at, f.mae_at,
+                    f.mfe_r, f.mae_r, f.net_pnl_r,
+                    f.profit_capture_rate, f.exit_efficiency,
+                    f.profit_giveback_usdc, f.profit_giveback_rate,
+                    f.metric_status AS excursion_status,
+                    f.metric_source AS excursion_source,
+                    f.metric_calculated_at AS excursion_calculated_at,
+                    f.created_at, f.updated_at
+               FROM position_history_final f
+              WHERE 1 = 1"""
+    params: list = []
+    if user_id is not None:
+        sql += " AND f.user_id = %s"
+        params.append(user_id)
+    if username:
+        sql += " AND f.username = %s"
+        params.append(username.strip())
+    if symbol:
+        sql += " AND UPPER(f.symbol) LIKE %s"
+        params.append(f"%{symbol.strip().upper()}%")
+    normalized_side = str(side or "").strip().upper()
+    if normalized_side in {"LONG", "SHORT"}:
+        sql += " AND UPPER(f.side) = %s"
+        params.append(normalized_side)
+    if start_time:
+        sql += " AND COALESCE(f.close_time, f.updated_at, f.created_at) >= %s"
+        params.append(start_time)
+    if end_time:
+        sql += " AND COALESCE(f.close_time, f.updated_at, f.created_at) <= %s"
+        params.append(end_time)
+    sql += " ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at) DESC, f.id DESC LIMIT %s OFFSET %s"
+    params.extend((max(1, min(int(limit), 5000)), max(0, int(offset))))
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def replace_filled_orders_for_position(position_id: int, order_ids: list[int]) -> int:
+    """用已验证的完整成交周期替换持仓的订单关联。"""
+    normalized_ids = sorted({int(value) for value in order_ids if int(value) > 0})
+    if not normalized_ids:
+        return 0
+    placeholders = ", ".join(["%s"] * len(normalized_ids))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE orders SET position_id = NULL WHERE position_id = %s",
+                (position_id,),
+            )
+            cur.execute(
+                f"""UPDATE orders
+                       SET position_id = %s
+                     WHERE id IN ({placeholders})""",
+                [position_id, *normalized_ids],
+            )
+            conn.commit()
+            return cur.rowcount
     finally:
         conn.close()
 
@@ -4312,7 +4836,7 @@ def initialize_position_risk(
         conn.close()
 
 
-def get_due_position_excursion_candidates(limit: int = 100) -> list:
+def get_due_position_excursion_candidates(limit: int = 100, current_version: int = 2) -> list:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -4324,13 +4848,92 @@ def get_due_position_excursion_candidates(limit: int = 100) -> list:
                           ) AS target_close_order_ids
                      FROM positions p
                     WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'
-                      AND p.excursion_status = 'PENDING'
+                      AND (p.excursion_status = 'PENDING'
+                           OR (p.excursion_status = 'CALCULATED'
+                               AND COALESCE(p.excursion_version, 0) < %s)
+                           OR (COALESCE(p.excursion_status, '') <> 'FAILED'
+                               AND EXISTS (
+                                   SELECT 1 FROM position_history_final f
+                                    WHERE f.position_id = p.id
+                                      AND (f.open_orders_id IS NULL
+                                           OR TRIM(f.open_orders_id) = '')
+                               )))
                       AND (p.excursion_next_retry_at IS NULL OR p.excursion_next_retry_at <= UTC_TIMESTAMP(3))
                     ORDER BY COALESCE(p.excursion_next_retry_at, p.updated_at), p.id
                     LIMIT %s""",
-                (max(1, int(limit)),),
+                (max(1, int(current_version)), max(1, int(limit))),
             )
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_missing_position_order_link_candidates(limit: int = 5000) -> list:
+    """Return closed positions whose final snapshot still lacks OPEN order IDs."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT p.*,
+                          (SELECT GROUP_CONCAT(ph.close_order_id ORDER BY ph.id)
+                             FROM position_history ph
+                            WHERE ph.position_id = p.id AND ph.close_order_id IS NOT NULL
+                          ) AS target_close_order_ids
+                     FROM positions p
+                     JOIN position_history_final f ON f.position_id = p.id
+                    WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'
+                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = '')
+                    ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at), p.id
+                    LIMIT %s""",
+                (max(1, min(int(limit), 10000)),),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_missing_legacy_order_link_candidates(limit: int = 5000) -> list:
+    """Return pre-position history rows whose final snapshot lacks OPEN order IDs."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT ph.*, ph.side AS position_side, 'binance' AS exchange,
+                          CAST(ph.close_order_id AS CHAR) AS target_close_order_ids
+                     FROM position_history ph
+                     JOIN position_history_final f ON f.source_history_id = ph.id
+                    WHERE ph.position_id IS NULL
+                      AND ph.close_order_id IS NOT NULL
+                      AND (f.open_orders_id IS NULL OR TRIM(f.open_orders_id) = '')
+                    ORDER BY COALESCE(ph.updated_at, ph.created_at), ph.id
+                    LIMIT %s""",
+                (max(1, min(int(limit), 10000)),),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def update_legacy_final_order_ids(
+    source_history_id: int,
+    open_orders_id: list[str],
+    close_orders_id: list[str],
+) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE position_history_final
+                      SET open_orders_id = %s, close_orders_id = %s
+                    WHERE source_history_id = %s AND position_id IS NULL""",
+                (
+                    ",".join(value for value in open_orders_id if value) or None,
+                    ",".join(value for value in close_orders_id if value) or None,
+                    int(source_history_id),
+                ),
+            )
+            conn.commit()
+            return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -4372,12 +4975,20 @@ def schedule_position_excursion_retry(
                    SET excursion_status = 'PENDING',
                        excursion_attempts = excursion_attempts + 1,
                        excursion_next_retry_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL %s SECOND),
-                       excursion_last_error = %s
+                       excursion_last_error = %s,
+                       mfe_usdc = NULL, mae_usdc = NULL, mfe_at = NULL, mae_at = NULL,
+                       net_pnl = NULL, mfe_r = NULL, mae_r = NULL, net_pnl_r = NULL,
+                       profit_capture_rate = NULL, exit_efficiency = NULL,
+                       profit_giveback_usdc = NULL, profit_giveback_rate = NULL,
+                       excursion_source = NULL, excursion_version = NULL,
+                       excursion_calculated_at = NULL
                    WHERE id = %s""",
                 (max(0, int(delay_seconds)), str(error_message)[:2000], position_id),
             )
+            affected_rows = cur.rowcount
+            _upsert_position_history_final_from_position_cursor(cur, position_id)
             conn.commit()
-            return cur.rowcount > 0
+            return affected_rows > 0
     finally:
         conn.close()
 
@@ -4410,12 +5021,20 @@ def mark_position_excursion_failed(position_id: int, error_message: str) -> bool
             cur.execute(
                 """UPDATE positions
                    SET excursion_status = 'FAILED', excursion_next_retry_at = NULL,
-                       excursion_last_error = %s
+                       excursion_last_error = %s,
+                       mfe_usdc = NULL, mae_usdc = NULL, mfe_at = NULL, mae_at = NULL,
+                       net_pnl = NULL, mfe_r = NULL, mae_r = NULL, net_pnl_r = NULL,
+                       profit_capture_rate = NULL, exit_efficiency = NULL,
+                       profit_giveback_usdc = NULL, profit_giveback_rate = NULL,
+                       excursion_source = NULL, excursion_version = NULL,
+                       excursion_calculated_at = NULL
                    WHERE id = %s""",
                 (str(error_message)[:2000], position_id),
             )
+            affected_rows = cur.rowcount
+            _upsert_position_history_final_from_position_cursor(cur, position_id)
             conn.commit()
-            return cur.rowcount > 0
+            return affected_rows > 0
     finally:
         conn.close()
 
@@ -4449,7 +5068,9 @@ def save_position_excursion_metrics(position_id: int, metrics: dict) -> bool:
                     metrics.get("excursion_version", 1), position_id,
                 ),
             )
+            affected_rows = cur.rowcount
+            _upsert_position_history_final_from_position_cursor(cur, position_id)
             conn.commit()
-            return cur.rowcount > 0
+            return affected_rows > 0
     finally:
         conn.close()

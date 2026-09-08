@@ -9,7 +9,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 from trade_relay import database as db_module
@@ -60,6 +60,36 @@ class PositionHistoryOut(BaseModel):
     excursion_calculated_at: Optional[str] = None
     created_at: str
     updated_at: Optional[str] = None
+
+
+class PositionRecordOut(BaseModel):
+    id: int
+    username: str
+    symbol: str
+    side: str
+    status: str
+    position_mode: str
+    quantity: float
+    entry_price: Optional[float] = None
+    close_price: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    commission: float = 0.0
+    commission_asset: Optional[str] = None
+    open_time: Optional[str] = None
+    close_time: Optional[str] = None
+    open_orders_id: list[str] = Field(default_factory=list)
+    close_orders_id: list[str] = Field(default_factory=list)
+    planned_stop_price: Optional[float] = None
+    initial_risk_usdc: Optional[float] = None
+    mfe_usdc: Optional[float] = None
+    mae_usdc: Optional[float] = None
+    net_pnl: Optional[float] = None
+    mfe_r: Optional[float] = None
+    mae_r: Optional[float] = None
+    net_pnl_r: Optional[float] = None
+    profit_capture_rate: Optional[float] = None
+    profit_giveback_usdc: Optional[float] = None
+    excursion_status: Optional[str] = None
 
 # Per-user TTL cache: (user_id, status) (None = admin) → (timestamp, result)
 _positions_cache: dict[tuple[int | None, str], tuple[float, list]] = {}
@@ -753,9 +783,25 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
 
 
 @router.get("/history", response_model=list[PositionHistoryOut])
-def get_position_history(user: dict = Depends(get_current_user)):
+def get_position_history(
+    limit: int = Query(200, ge=1, le=5000),
+    username: Optional[str] = None,
+    symbol: Optional[str] = None,
+    side: Optional[str] = Query(None, pattern="^(LONG|SHORT)$"),
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
     user_id = int(user["sub"]) if user["role"] != "admin" else None
-    rows = db_module.get_position_history(user_id=user_id)
+    rows = db_module.get_position_history(
+        user_id=user_id,
+        limit=limit,
+        username=username if user["role"] == "admin" else None,
+        symbol=symbol,
+        side=side,
+        start_time=start_time,
+        end_time=end_time,
+    )
     return [
         PositionHistoryOut(
             id=int(r["id"]),
@@ -791,6 +837,62 @@ def get_position_history(user: dict = Depends(get_current_user)):
             updated_at=serialize_utc_timestamp(r.get("updated_at")),
         )
         for r in rows
+    ]
+
+
+@router.get("/records", response_model=list[PositionRecordOut])
+def get_position_records(
+    limit: int = Query(200, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+    username: Optional[str] = None,
+    symbol: Optional[str] = None,
+    side: Optional[str] = Query(None, pattern="^(LONG|SHORT)$"),
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    user_id = int(user["sub"]) if user["role"] != "admin" else None
+    rows = db_module.query_position_records(
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        username=username if user["role"] == "admin" else None,
+        symbol=symbol,
+        side=side,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    return [
+        PositionRecordOut(
+            id=int(row["id"]),
+            username=str(row.get("username") or ""),
+            symbol=str(row.get("symbol") or ""),
+            side=str(row.get("side") or ""),
+            status=str(row.get("status") or "CLOSE").upper(),
+            position_mode=str(row.get("position_mode") or "UNKNOWN").upper(),
+            quantity=float(row.get("quantity") or 0),
+            entry_price=float(row["entry_price"]) if row.get("entry_price") is not None else None,
+            close_price=float(row["close_price"]) if row.get("close_price") is not None else None,
+            realized_pnl=float(row["realized_pnl"]) if row.get("realized_pnl") is not None else None,
+            commission=float(row.get("commission") or 0),
+            commission_asset=str(row["commission_asset"]) if row.get("commission_asset") is not None else None,
+            open_time=serialize_utc_timestamp(row.get("open_time")),
+            close_time=serialize_utc_timestamp(row.get("close_time")),
+            open_orders_id=[value for value in str(row.get("open_orders_id") or "").split(",") if value],
+            close_orders_id=[value for value in str(row.get("close_orders_id") or "").split(",") if value],
+            planned_stop_price=float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None,
+            initial_risk_usdc=float(row["initial_risk_usdc"]) if row.get("initial_risk_usdc") is not None else None,
+            mfe_usdc=float(row["mfe_usdc"]) if row.get("mfe_usdc") is not None else None,
+            mae_usdc=float(row["mae_usdc"]) if row.get("mae_usdc") is not None else None,
+            net_pnl=float(row["net_pnl"]) if row.get("net_pnl") is not None else None,
+            mfe_r=float(row["mfe_r"]) if row.get("mfe_r") is not None else None,
+            mae_r=float(row["mae_r"]) if row.get("mae_r") is not None else None,
+            net_pnl_r=float(row["net_pnl_r"]) if row.get("net_pnl_r") is not None else None,
+            profit_capture_rate=float(row["profit_capture_rate"]) if row.get("profit_capture_rate") is not None else None,
+            profit_giveback_usdc=float(row["profit_giveback_usdc"]) if row.get("profit_giveback_usdc") is not None else None,
+            excursion_status=str(row["excursion_status"]) if row.get("excursion_status") is not None else None,
+        )
+        for row in rows
     ]
 
 

@@ -12,7 +12,7 @@ from typing import Iterable, Optional
 
 
 EPSILON = 1e-10
-ALGORITHM_VERSION = 1
+ALGORITHM_VERSION = 2
 
 
 class ExcursionCalculationError(ValueError):
@@ -60,6 +60,41 @@ def order_position_side(order: dict) -> Optional[str]:
     return None
 
 
+def calculate_cycle_entry_average(cycle: Iterable[dict]) -> tuple[float, float]:
+    """Return the entry average immediately before a cycle's final close.
+
+    Partial closes reduce the remaining quantity without changing its entry
+    average. Later opens are averaged with only that remaining quantity.
+    The second return value is total valid OPEN quantity, used for validation.
+    """
+    remaining_quantity = 0.0
+    average_entry = 0.0
+    total_open_quantity = 0.0
+    for order in cycle:
+        direction = str(order.get("trade_direction") or "").upper()
+        quantity = order_quantity(order)
+        if quantity <= EPSILON:
+            continue
+        if direction == "CLOSE":
+            remaining_quantity = max(
+                0.0,
+                remaining_quantity - min(remaining_quantity, quantity),
+            )
+            continue
+        if direction != "OPEN":
+            continue
+        price = order_price(order)
+        if price <= 0:
+            continue
+        next_quantity = remaining_quantity + quantity
+        average_entry = (
+            (average_entry * remaining_quantity) + (price * quantity)
+        ) / next_quantity
+        remaining_quantity = next_quantity
+        total_open_quantity += quantity
+    return average_entry, total_open_quantity
+
+
 def split_complete_cycles(orders: Iterable[dict], position_side: str) -> list[list[dict]]:
     """按成交数量把订单重建为从空仓到再次空仓的完整周期。"""
     wanted_side = position_side.upper()
@@ -98,16 +133,57 @@ def choose_position_cycle(
     target_close_order_ids: Iterable[int] = (),
     closed_at: Optional[datetime] = None,
 ) -> list[dict]:
+    targets = {int(value) for value in target_close_order_ids if value is not None}
+    if targets:
+        wanted_side = position_side.upper()
+        relevant = [
+            row for row in orders
+            if order_position_side(row) == wanted_side and order_quantity(row) > EPSILON
+        ]
+        relevant.sort(key=lambda row: (order_time(row), int(row.get("id") or 0)))
+        target_indexes = [
+            index for index, row in enumerate(relevant)
+            if int(row.get("id") or 0) in targets
+            and str(row.get("trade_direction") or "").upper() == "CLOSE"
+        ]
+        if not target_indexes:
+            raise ExcursionCalculationError("没有找到目标平仓订单")
+
+        # Reconstruct backwards from the latest known close. A missing/incorrect
+        # quantity in an older cycle must not contaminate every later cycle.
+        target_index = target_indexes[-1]
+        required_open_qty = 0.0
+        reversed_cycle: list[dict] = []
+        saw_close = False
+        for row in reversed(relevant[:target_index + 1]):
+            direction = str(row.get("trade_direction") or "").upper()
+            qty = order_quantity(row)
+            reversed_cycle.append(row)
+            if direction == "CLOSE":
+                required_open_qty += qty
+                saw_close = True
+            elif direction == "OPEN":
+                required_open_qty -= qty
+                if saw_close and required_open_qty <= EPSILON:
+                    start_index = target_index - len(reversed_cycle) + 1
+                    cycle: list[dict] = []
+                    open_qty = 0.0
+                    for index, cycle_row in enumerate(relevant[start_index:], start=start_index):
+                        cycle.append(cycle_row)
+                        cycle_direction = str(cycle_row.get("trade_direction") or "").upper()
+                        cycle_qty = order_quantity(cycle_row)
+                        if cycle_direction == "OPEN":
+                            open_qty += cycle_qty
+                        elif cycle_direction == "CLOSE":
+                            open_qty = max(0.0, open_qty - min(open_qty, cycle_qty))
+                        if index >= target_index and open_qty <= EPSILON:
+                            return cycle
+                    raise ExcursionCalculationError("目标成交周期尚未完全平仓")
+        raise ExcursionCalculationError("目标平仓单之前没有足量开仓成交")
+
     cycles = split_complete_cycles(orders, position_side)
     if not cycles:
         raise ExcursionCalculationError("没有找到从开仓到完全平仓的完整成交周期")
-
-    targets = {int(value) for value in target_close_order_ids if value is not None}
-    if targets:
-        for cycle in reversed(cycles):
-            ids = {int(row.get("id") or 0) for row in cycle}
-            if ids & targets:
-                return cycle
 
     if closed_at is None:
         return cycles[-1]
@@ -245,6 +321,7 @@ def calculate_excursion_metrics(
         "mae_usdc": mae,
         "mfe_at": max_at,
         "mae_at": min_at,
+        "realized_pnl": realized,
         "net_pnl": net_pnl,
         "mfe_r": mfe / initial_risk if initial_risk else None,
         "mae_r": mae / initial_risk if initial_risk else None,

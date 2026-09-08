@@ -175,7 +175,7 @@ export interface ApiOrderReconcileResult {
   warnings: string[]
 }
 
-interface ApiPositionHistory {
+export interface ApiPositionHistory {
   id: number
   username: string
   symbol: string
@@ -207,6 +207,36 @@ interface ApiPositionHistory {
   excursion_calculated_at?: string | null
   created_at: string
   updated_at?: string | null
+}
+
+export interface ApiPositionRecord {
+  id: number
+  username: string
+  symbol: string
+  side: string
+  status: string
+  position_mode: string
+  quantity: number
+  entry_price?: number | null
+  close_price?: number | null
+  realized_pnl?: number | null
+  commission: number
+  commission_asset?: string | null
+  open_time?: string | null
+  close_time?: string | null
+  open_orders_id: string[]
+  close_orders_id: string[]
+  planned_stop_price?: number | null
+  initial_risk_usdc?: number | null
+  mfe_usdc?: number | null
+  mae_usdc?: number | null
+  net_pnl?: number | null
+  mfe_r?: number | null
+  mae_r?: number | null
+  net_pnl_r?: number | null
+  profit_capture_rate?: number | null
+  profit_giveback_usdc?: number | null
+  excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
 }
 
 interface ApiAccountSummary {
@@ -506,8 +536,27 @@ export const api = {
     return request<ApiTrade[]>('GET', '/api/orders/fills')
   },
 
-  async getPositionHistory(): Promise<ApiPositionHistory[]> {
-    return request<ApiPositionHistory[]>('GET', '/api/positions/history')
+  async getPositionHistory(params?: {
+    limit?: number
+    username?: string
+    symbol?: string
+    side?: 'LONG' | 'SHORT'
+    start_time?: string
+    end_time?: string
+  }): Promise<ApiPositionHistory[]> {
+    return request<ApiPositionHistory[]>('GET', '/api/positions/history', { params })
+  },
+
+  async getPositionRecords(params?: {
+    limit?: number
+    offset?: number
+    username?: string
+    symbol?: string
+    side?: 'LONG' | 'SHORT'
+    start_time?: string
+    end_time?: string
+  }): Promise<ApiPositionRecord[]> {
+    return request<ApiPositionRecord[]>('GET', '/api/positions/records', { params })
   },
 
   async getRecentFills(): Promise<ApiTrade[]> {

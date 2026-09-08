@@ -376,6 +376,14 @@ def sync_filled_order_trade_details(*, username: str, client, order_row: Optiona
         str(latest_order_row.get("status") or "FILLED"),
         **update_kwargs,
     )
+    if trade_direction == "OPEN":
+        try:
+            db.link_filled_open_order_to_position(int(latest_order_row["id"]))
+        except Exception:
+            logger.exception(
+                "Failed to create/link position while syncing filled OPEN order_id=%s",
+                latest_order_row.get("id"),
+            )
     requested_qty = abs(_safe_float(latest_order_row.get("quantity")))
     latest_exchange_status = str(latest_order_row.get("status") or "").upper()
     if (

@@ -1114,7 +1114,10 @@ class UserOrderStatusStream:
                 exchange_order_id,
                 {
                     "commission": 0.0,
-                    "realized_pnl": 0.0,
+                    # _persist_status runs before this handler but does not
+                    # overwrite realized_pnl, so this seeds the accumulator
+                    # correctly after a restart between partial fills.
+                    "realized_pnl": _safe_float(db_order.get("realized_pnl")) or 0.0,
                     "commission_asset": None,
                 },
             )
@@ -1151,10 +1154,10 @@ class UserOrderStatusStream:
                 symbol=symbol,
                 side=position_side,
                 entry_price=entry_price,
-                close_price=last_fill_price,
-                quantity=last_fill_qty,
-                realized_pnl=realized_pnl,
-                commission=commission,
+                close_price=cumulative_avg_price if cumulative_avg_price > 0 else last_fill_price,
+                quantity=cumulative_filled_qty if cumulative_filled_qty > 0 else last_fill_qty,
+                realized_pnl=accumulated_realized_pnl,
+                commission=accumulated_commission,
                 commission_asset=str(commission_asset) if commission_asset else None,
                 position_id=position_id,
                 close_order_id=int(db_order["id"]) if db_order and db_order.get("id") else None,
@@ -1201,6 +1204,18 @@ class UserOrderStatusStream:
         if not db_order:
             return
 
+        if db_order.get("id") and db_order.get("position_id") is None:
+            try:
+                position_id = db.link_filled_open_order_to_position(int(db_order["id"]))
+                if position_id is not None:
+                    db_order = {**db_order, "position_id": position_id}
+            except Exception:
+                logger.exception(
+                    "Failed to create/link position for filled OPEN order: user=%s order_id=%s",
+                    self.username,
+                    db_order.get("id"),
+                )
+
         sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_order)
 
         executed_qty = _safe_float(order.get("z") or order.get("executedQty") or db_order.get("filled_qty") or 0)
@@ -1219,6 +1234,18 @@ class UserOrderStatusStream:
         if trade_direction != "OPEN":
             return
 
+        if db_order.get("id") and db_order.get("position_id") is None:
+            try:
+                position_id = db.link_filled_open_order_to_position(int(db_order["id"]))
+                if position_id is not None:
+                    db_order = {**db_order, "position_id": position_id}
+            except Exception:
+                logger.exception(
+                    "Failed to link filled OPEN order to position: user=%s order_id=%s",
+                    self.username,
+                    db_order.get("id"),
+                )
+
         tp_price = _safe_float(db_order.get("tp_price") or 0)
         sl_price = _safe_float(db_order.get("sl_price") or 0)
         if not tp_price and not sl_price:
@@ -1235,14 +1262,17 @@ class UserOrderStatusStream:
 
         symbol = str(db_order.get("symbol") or "")
         order_side = str(db_order.get("side") or "").upper()
-        position_side = "LONG" if order_side == "BUY" else "SHORT"
+        db_position_mode = str(db_order.get("position_mode") or "UNKNOWN").upper()
+        position_side = "BOTH" if db_position_mode == "SINGLE" else ("LONG" if order_side == "BUY" else "SHORT")
         quantity = executed_qty if executed_qty and executed_qty > 0 else _safe_float(db_order.get("filled_qty") or db_order.get("quantity") or 0)
         entry_price = avg_price if avg_price and avg_price > 0 else _safe_float(db_order.get("avg_price") or db_order.get("price") or 0)
         if not quantity or quantity <= 0:
             return
 
         position = db.get_position(user_id, symbol, position_side)
-        position_id = int(position["id"]) if position and position.get("id") else None
+        position_id = int(position["id"]) if position and position.get("id") else (
+            int(db_order["position_id"]) if db_order.get("position_id") is not None else None
+        )
         if position_id is not None and sl_price and entry_price:
             open_commission = abs(_safe_float(db_order.get("commission") or 0) or 0.0)
             initial_risk = abs(float(entry_price) - float(sl_price)) * float(quantity) + open_commission
@@ -1267,7 +1297,7 @@ class UserOrderStatusStream:
             tp_price=tp_price,
             sl_price=sl_price,
             position_id=position_id,
-            position_mode=str((position or {}).get("position_mode") or "UNKNOWN").upper(),
+            position_mode=str((position or {}).get("position_mode") or db_position_mode).upper(),
         )
         if errors:
             logger.warning(

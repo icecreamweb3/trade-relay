@@ -57,13 +57,14 @@ CREATE TABLE orders (
     KEY idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at),
     KEY idx_username_exchange_order (username, exchange_order_id),
     KEY idx_username_algo_id (username, algo_id),
+    KEY idx_orders_position_trade_time (position_id, trade_direction, filled_at),
     KEY idx_trade_details_retry_due (status, trade_details_sync_next_retry_at),
     KEY idx_created_at (created_at DESC),
     CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE positions (
-    id              BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    id              BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT COMMENT '持仓周期ID；被 orders/position_history/position_history_final.position_id 引用',
     user_id         BIGINT          NOT NULL,
     username        VARCHAR(64)     NOT NULL,
     exchange        VARCHAR(32)     NOT NULL DEFAULT 'binance',
@@ -145,6 +146,51 @@ CREATE TABLE position_history (
     KEY idx_close_order_id (close_order_id),
     KEY idx_created_at (created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓历史';
+
+CREATE TABLE position_history_final (
+    id BIGINT NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    position_id BIGINT DEFAULT NULL COMMENT '关联 positions.id；一个持仓周期一行',
+    source_history_id BIGINT DEFAULT NULL COMMENT '无 position_id 的旧 position_history 行',
+    user_id BIGINT NOT NULL,
+    username VARCHAR(64) NOT NULL DEFAULT '',
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(8) NOT NULL COMMENT 'LONG/SHORT',
+    position_mode VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN',
+    open_time DATETIME(3) DEFAULT NULL,
+    close_time DATETIME(3) DEFAULT NULL,
+    entry_avg_price DECIMAL(30,10) DEFAULT NULL COMMENT '平仓前最终持仓开仓均价（优先采用 Binance 持仓快照）',
+    close_avg_price DECIMAL(30,10) DEFAULT NULL COMMENT '周期内 CLOSE 成交数量加权均价',
+    quantity DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期累计平仓数量',
+    realized_pnl DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期已实现毛盈亏',
+    commission DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '周期 OPEN+CLOSE 总手续费',
+    commission_asset VARCHAR(16) DEFAULT NULL,
+    net_pnl DECIMAL(30,10) DEFAULT NULL,
+    open_orders_id LONGTEXT COMMENT '周期 OPEN 订单ID，逗号分隔',
+    close_orders_id LONGTEXT COMMENT '周期 CLOSE 订单ID，逗号分隔',
+    planned_stop_price DECIMAL(30,10) DEFAULT NULL,
+    initial_risk_usdc DECIMAL(30,10) DEFAULT NULL,
+    mfe_usdc DECIMAL(30,10) DEFAULT NULL,
+    mae_usdc DECIMAL(30,10) DEFAULT NULL,
+    mfe_at DATETIME(3) DEFAULT NULL,
+    mae_at DATETIME(3) DEFAULT NULL,
+    mfe_r DECIMAL(20,10) DEFAULT NULL,
+    mae_r DECIMAL(20,10) DEFAULT NULL,
+    net_pnl_r DECIMAL(20,10) DEFAULT NULL,
+    profit_capture_rate DECIMAL(20,10) DEFAULT NULL,
+    exit_efficiency DECIMAL(20,10) DEFAULT NULL,
+    profit_giveback_usdc DECIMAL(30,10) DEFAULT NULL,
+    profit_giveback_rate DECIMAL(20,10) DEFAULT NULL,
+    metric_status VARCHAR(16) DEFAULT NULL COMMENT 'PENDING/CALCULATED/FAILED',
+    metric_source VARCHAR(32) DEFAULT NULL,
+    metric_version SMALLINT DEFAULT NULL,
+    metric_calculated_at DATETIME(3) DEFAULT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_position_history_final_position (position_id),
+    UNIQUE KEY uk_position_history_final_legacy (source_history_id),
+    KEY idx_position_history_final_user_close (user_id, close_time DESC),
+    KEY idx_position_history_final_symbol_side (symbol, side)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='完整持仓周期最终复盘快照';
 
 CREATE TABLE daily_profile (
     id            BIGINT          NOT NULL PRIMARY KEY AUTO_INCREMENT,
@@ -302,6 +348,7 @@ ALTER TABLE orders ADD INDEX idx_username_status_created (username, status, crea
 ALTER TABLE orders ADD INDEX idx_user_symbol_status_filled_at (user_id, symbol, status, filled_at);
 ALTER TABLE orders ADD INDEX idx_username_exchange_order (username, exchange_order_id);
 ALTER TABLE orders ADD INDEX idx_username_algo_id (username, algo_id);
+ALTER TABLE orders ADD INDEX idx_orders_position_trade_time (position_id, trade_direction, filled_at);
 ALTER TABLE orders ADD INDEX idx_trade_details_retry_due (status, trade_details_sync_next_retry_at);
 
 ALTER TABLE position_history

@@ -551,6 +551,13 @@ def test_order_status_stream_keeps_close_tpsl_refresh_suppressed_until_final_fil
     from trade_relay.trading import order_status_stream
     from trade_relay.trading import close_tpsl_sync
 
+    class _StubClient:
+        proxy_config = None
+
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(order_status_stream, "BinanceClient", _StubClient)
     stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
     placement_attempts = []
     history_rows = []
@@ -697,7 +704,10 @@ def test_order_status_stream_keeps_close_tpsl_refresh_suppressed_until_final_fil
     )
 
     assert len(history_rows) == 3
-    assert [row["quantity"] for row in history_rows] == [0.001, 0.01, 0.026]
+    assert [row["quantity"] for row in history_rows] == [0.001, 0.011, 0.037]
+    assert history_rows[-1]["close_price"] == 77673.68108108
+    assert history_rows[-1]["realized_pnl"] == pytest.approx(-2.18810000)
+    assert history_rows[-1]["commission"] == pytest.approx(1.14957076)
     assert len(placement_attempts) == 1
     assert placement_attempts[0]["quantity"] == 0.02
 
@@ -2220,6 +2230,7 @@ def test_sync_filled_open_order_trade_details_updates_order_commission_only(monk
         lambda order_id, status, **kwargs: order_updates.append((order_id, status, kwargs)) or True,
     )
     monkeypatch.setattr(close_trade_sync.db, "clear_order_trade_details_sync_state", lambda order_id: True)
+    monkeypatch.setattr(close_trade_sync.db, "link_filled_open_order_to_position", lambda order_id: 10)
     monkeypatch.setattr(
         close_trade_sync.db,
         "update_position_history_values",
@@ -3331,12 +3342,190 @@ def test_get_position_history_orders_by_latest_updated_at(monkeypatch):
 
     monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
 
-    rows = db_module.get_position_history(user_id=5, limit=20)
+    rows = db_module.get_position_history(
+        user_id=5,
+        limit=20,
+        username="Will",
+        symbol="btcusdc",
+        side="LONG",
+        start_time="2026-09-01 00:00:00",
+        end_time="2026-09-07 23:59:59",
+    )
 
     assert rows == []
     sql, params = queries[-1]
+    assert "ph.user_id = %s" in sql
+    assert "ph.username = %s" in sql
+    assert "UPPER(ph.symbol) LIKE %s" in sql
+    assert "UPPER(ph.side) = %s" in sql
+    assert "COALESCE(ph.updated_at, ph.created_at) >= %s" in sql
+    assert "COALESCE(ph.updated_at, ph.created_at) <= %s" in sql
     assert "ORDER BY COALESCE(ph.updated_at, ph.created_at) DESC, ph.id DESC LIMIT %s" in sql
-    assert params == [5, 20]
+    assert params == [
+        5,
+        "Will",
+        "%BTCUSDC%",
+        "LONG",
+        "2026-09-01 00:00:00",
+        "2026-09-07 23:59:59",
+        20,
+    ]
+
+
+def test_query_position_records_exports_closed_position_cycles(monkeypatch):
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params):
+            queries.append((sql, params))
+
+        def fetchall(self):
+            return []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+
+    rows = db_module.query_position_records(
+        user_id=5,
+        limit=9000,
+        offset=25,
+        symbol="btc",
+        side="SHORT",
+        start_time="2026-09-01 00:00:00",
+        end_time="2026-09-07 23:59:59",
+    )
+
+    assert rows == []
+    sql, params = queries[-1]
+    assert "FROM position_history_final f" in sql
+    assert "f.entry_avg_price AS entry_price" in sql
+    assert "f.close_avg_price AS close_price" in sql
+    assert "f.open_orders_id" in sql
+    assert "f.close_orders_id" in sql
+    assert "f.metric_status AS excursion_status" in sql
+    assert "f.user_id = %s" in sql
+    assert "UPPER(f.symbol) LIKE %s" in sql
+    assert "UPPER(f.side) = %s" in sql
+    assert "ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at) DESC, f.id DESC LIMIT %s OFFSET %s" in sql
+    assert params == [
+        5,
+        "%BTC%",
+        "SHORT",
+        "2026-09-01 00:00:00",
+        "2026-09-07 23:59:59",
+        5000,
+        25,
+    ]
+
+
+def test_position_history_final_prefers_position_entry_and_weights_close_prices():
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        rowcount = 1
+
+        def execute(self, sql, params=()):
+            queries.append((sql, params))
+
+    cursor = _StubCursor()
+    db_module._upsert_position_history_final_from_position_cursor(cursor, 509)
+
+    sql, params = queries[-1]
+    assert "INSERT INTO position_history_final" in sql
+    assert "NULLIF(p.avg_entry_price, 0)" in sql
+    assert "oa.open_notional / oa.open_qty" in sql
+    assert "oa.close_notional / oa.close_qty" in sql
+    assert "COALESCE(oa.open_commission, 0)" in sql
+    assert "COALESCE(NULLIF(pha.close_commission, 0), oa.close_commission, 0)" in sql
+    assert "AS open_order_ids" in sql
+    assert "AS close_order_ids" in sql
+    assert "UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE' AND p.id = %s" in sql
+    assert params == (509,)
+
+
+def test_filled_open_order_creates_position_and_links_position_id(monkeypatch):
+    from trade_relay import database as db_module
+
+    statements = []
+
+    class _StubCursor:
+        lastrowid = 0
+        rowcount = 0
+
+        def execute(self, sql, params=()):
+            normalized = " ".join(sql.split())
+            statements.append((normalized, params))
+            if normalized.startswith("SELECT * FROM orders"):
+                self.result = {
+                    "id": 81,
+                    "user_id": 5,
+                    "username": "Will",
+                    "exchange": "binance",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "position_mode": "DUAL",
+                    "trade_direction": "OPEN",
+                    "status": "FILLED",
+                    "filled_qty": 0.01,
+                    "avg_price": 79000,
+                    "filled_at": "2026-09-08 01:02:03",
+                    "position_id": None,
+                }
+            elif normalized.startswith("INSERT INTO positions"):
+                self.lastrowid = 321
+                self.result = None
+            elif normalized.startswith("UPDATE orders SET position_id"):
+                self.rowcount = 1
+                self.result = None
+            else:
+                raise AssertionError(normalized)
+
+        def fetchone(self):
+            return self.result
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        committed = False
+
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            return None
+
+    connection = _StubConn()
+    monkeypatch.setattr(db_module, "get_connection", lambda: connection)
+
+    position_id = db_module.link_filled_open_order_to_position(81)
+
+    assert position_id == 321
+    assert connection.committed is True
+    assert any("ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)" in sql for sql, _ in statements)
+    assert statements[-1][1] == (321, 81)
 
 
 def test_update_order_status_skips_noop_update(monkeypatch):

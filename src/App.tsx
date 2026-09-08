@@ -12,13 +12,14 @@ import { PositionsPanel } from './components/PositionsPanel'
 import { OrderBook } from './components/OrderBook'
 import { RecentTrades } from './components/RecentTrades'
 import { OrderLogScreen } from './components/OrderLogScreen'
+import { PositionHistoryScreen } from './components/PositionHistoryScreen'
 import { AdminScreen } from './components/AdminScreen'
 import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
 import { GlobalToast } from './components/GlobalToast'
 import { useUiPreferencesStore } from './store/uiPreferencesStore'
 
-type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
+type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings'
 type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
 
 function MainApp() {
@@ -33,6 +34,7 @@ function MainApp() {
     switch (screen) {
       case 'trade': return t('nav.trade')
       case 'orders': return t('nav.orders')
+      case 'positions': return t('nav.positions')
       case 'users': return t('nav.users')
       case 'profile': return t('nav.profile')
       case 'settings': return t('nav.settings')
@@ -174,6 +176,7 @@ function MainApp() {
       {activeScreen !== 'trade' && (
         <>
           {activeScreen === 'orders'   && <div className="flex-1 overflow-hidden"><OrderLogScreen /></div>}
+          {activeScreen === 'positions' && <div className="flex-1 overflow-hidden"><PositionHistoryScreen /></div>}
           {activeScreen === 'users'    && <div className="flex-1 overflow-hidden"><AdminScreen /></div>}
           {activeScreen === 'profile'  && <div className="flex-1 overflow-hidden"><ProfileScreen /></div>}
           {activeScreen === 'settings' && <div className="flex-1 overflow-hidden"><ConfigScreen /></div>}

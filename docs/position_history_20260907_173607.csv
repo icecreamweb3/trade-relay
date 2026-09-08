@@ -1,0 +1,6 @@
+﻿#,Time,User,Symbol,Side,Mode,Qty,Entry Price,Close Price,Realized PnL,Commission,Commission Asset,Net PnL,Planned Stop,Initial Risk (USDC),MFE,MAE,MFE (R),MAE (R),Net PnL (R),Profit Capture,Profit Giveback (USDC),Metric Status
+1,"09/07/2026, 11:01:09",Will,BTCUSDC,LONG,Dual,0.02,79975.65,79750,-4.513,0.638,USDC,,,,,,,,,,,
+2,"09/07/2026, 07:03:24",Will,BTCUSDC,LONG,Dual,0.01,79979.8,80185,2.052,0,USDC,,,,,,,,,,,
+3,"09/06/2026, 22:32:19",Will,BTCUSDC,LONG,Dual,0.001,79743.1,79400,-3.431,0.31759997,USDC,,,,,,,,,,,
+4,"09/06/2026, 12:28:52",Will,BTCUSDC,LONG,Dual,0.01,79770,79899,1.29,0,USDC,,,,,,,,,,,
+5,"09/06/2026, 00:26:27",Will,BTCUSDC,LONG,Dual,0.01,79716.6,79850,1.334,0,USDC,,,,,,,,,,,

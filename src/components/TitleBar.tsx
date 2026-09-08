@@ -1,11 +1,11 @@
 import React from 'react'
-import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2, BriefcaseBusiness } from 'lucide-react'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 
-type Screen = 'trade' | 'orders' | 'users' | 'profile' | 'settings'
+type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings'
 
 interface TitleBarProps {
   activeScreen: Screen
@@ -85,6 +85,7 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
           <div className="flex items-center gap-0.5 ml-3">
             <ScreenTab active={activeScreen === 'trade'} onClick={() => onNavigate('trade')} icon={<Activity size={11} />}>{t('nav.trade')}</ScreenTab>
             <ScreenTab active={activeScreen === 'orders'} onClick={() => onNavigate('orders')} icon={<ClipboardList size={11} />}>{t('nav.orders')}</ScreenTab>
+            <ScreenTab active={activeScreen === 'positions'} onClick={() => onNavigate('positions')} icon={<BriefcaseBusiness size={11} />}>{t('nav.positions')}</ScreenTab>
             {user?.role === 'admin' && (
               <ScreenTab active={activeScreen === 'users'} onClick={() => onNavigate('users')} icon={<Users size={11} />}>{t('nav.users')}</ScreenTab>
             )}
