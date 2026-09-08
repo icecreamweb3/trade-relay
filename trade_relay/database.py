@@ -16,6 +16,7 @@ Tables:
 """
 import base64
 import logging
+import math
 import os
 from decimal import Decimal
 from queue import Empty, Full, Queue
@@ -5034,6 +5035,208 @@ def get_missing_legacy_order_link_candidates(
                 params,
             )
             return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_unlinked_position_cycle_candidates(
+    limit: int = 5000,
+    user_id: int | None = None,
+) -> list:
+    """Return legacy final snapshots that may be promoted to canonical cycles."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            user_filter = " AND ph.user_id = %s" if user_id is not None else ""
+            params = [int(user_id)] if user_id is not None else []
+            params.append(max(1, min(int(limit), 10000)))
+            cur.execute(
+                """SELECT ph.*, f.id AS final_id,
+                          f.entry_avg_price AS avg_entry_price,
+                          f.close_avg_price AS final_close_price,
+                          f.open_time AS final_open_time,
+                          f.close_time AS final_close_time,
+                          f.realized_pnl AS final_realized_pnl,
+                          'binance' AS exchange,
+                          CAST(ph.close_order_id AS CHAR) AS target_close_order_ids
+                     FROM position_history ph
+                     JOIN position_history_final f ON f.source_history_id = ph.id
+                    WHERE ph.position_id IS NULL
+                      AND f.position_id IS NULL
+                      AND ph.close_order_id IS NOT NULL
+                """ + user_filter + """
+                    ORDER BY COALESCE(f.close_time, ph.updated_at, ph.created_at), ph.id
+                    LIMIT %s""",
+                params,
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_unlinked_position_history_for_close_orders(
+    user_id: int,
+    symbol: str,
+    side: str,
+    close_order_ids: list[int],
+) -> list:
+    normalized_ids = sorted({int(value) for value in close_order_ids if int(value) > 0})
+    if not normalized_ids:
+        return []
+    placeholders = ", ".join(["%s"] * len(normalized_ids))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT * FROM position_history
+                      WHERE user_id = %s AND symbol = %s AND UPPER(side) = %s
+                        AND position_id IS NULL
+                        AND close_order_id IN ({placeholders})
+                      ORDER BY created_at, id""",
+                [int(user_id), str(symbol), str(side).upper(), *normalized_ids],
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def promote_unlinked_position_cycle(
+    history_ids: list[int],
+    order_ids: list[int],
+    *,
+    entry_avg_price: float,
+    opened_at,
+) -> int | None:
+    """Atomically turn a strictly validated legacy cycle into a closed position."""
+    normalized_history_ids = sorted({int(value) for value in history_ids if int(value) > 0})
+    normalized_order_ids = sorted({int(value) for value in order_ids if int(value) > 0})
+    if not normalized_history_ids or not normalized_order_ids:
+        raise ValueError("A position cycle requires history rows and filled orders")
+
+    history_placeholders = ", ".join(["%s"] * len(normalized_history_ids))
+    order_placeholders = ", ".join(["%s"] * len(normalized_order_ids))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""SELECT * FROM position_history
+                      WHERE id IN ({history_placeholders})
+                      ORDER BY created_at, id FOR UPDATE""",
+                normalized_history_ids,
+            )
+            histories = cur.fetchall()
+            if len(histories) != len(normalized_history_ids):
+                return None
+            if any(row.get("position_id") is not None for row in histories):
+                return None
+
+            first = histories[0]
+            identity = (
+                int(first["user_id"]),
+                str(first.get("username") or ""),
+                str(first.get("symbol") or ""),
+                str(first.get("side") or "").upper(),
+            )
+            if any(
+                (
+                    int(row["user_id"]),
+                    str(row.get("username") or ""),
+                    str(row.get("symbol") or ""),
+                    str(row.get("side") or "").upper(),
+                ) != identity
+                for row in histories
+            ):
+                raise ValueError("Position history rows do not share one cycle identity")
+
+            cur.execute(
+                f"""SELECT * FROM orders
+                      WHERE id IN ({order_placeholders})
+                      ORDER BY COALESCE(filled_at, updated_at, created_at), id FOR UPDATE""",
+                normalized_order_ids,
+            )
+            orders = cur.fetchall()
+            if len(orders) != len(normalized_order_ids):
+                return None
+            if any(row.get("position_id") is not None for row in orders):
+                return None
+            if any(str(row.get("status") or "").upper() != "FILLED" for row in orders):
+                raise ValueError("Position cycle contains a non-filled order")
+
+            user_id, username, symbol, position_side = identity
+            exchange = str(orders[0].get("exchange") or "binance")
+            if any(
+                int(row.get("user_id") or 0) != user_id
+                or str(row.get("symbol") or "") != symbol
+                or str(row.get("exchange") or "binance") != exchange
+                for row in orders
+            ):
+                raise ValueError("Filled orders do not share the position cycle identity")
+            normalized_opened_at = _coerce_utc_naive_datetime(opened_at)
+            if normalized_opened_at is None:
+                raise ValueError("Position cycle has no opening time")
+
+            cur.execute(
+                """SELECT id FROM positions
+                    WHERE user_id = %s AND exchange = %s AND symbol = %s
+                      AND position_side = %s
+                      AND ABS(TIMESTAMPDIFF(MICROSECOND, opened_at, %s)) <= 1000000
+                    LIMIT 1 FOR UPDATE""",
+                (user_id, exchange, symbol, position_side, normalized_opened_at),
+            )
+            if cur.fetchone():
+                raise ValueError("A position cycle already exists at the same opening time")
+
+            realized_pnl = math.fsum(_safe_float(row.get("realized_pnl")) for row in histories)
+            position_mode = str(first.get("position_mode") or "UNKNOWN").upper()
+            cur.execute(
+                """INSERT INTO positions
+                       (user_id, username, exchange, symbol, position_side, position_mode,
+                        status, open_position_slot, quantity, avg_entry_price,
+                        realized_pnl, leverage, margin_type, opened_at,
+                        excursion_status, excursion_attempts, excursion_next_retry_at)
+                   VALUES (%s, %s, %s, %s, %s, %s,
+                           'CLOSE', NULL, 0, %s,
+                           %s, 1, 'CROSS', %s,
+                           'PENDING', 0, UTC_TIMESTAMP(3))""",
+                (
+                    user_id, username, exchange, symbol, position_side, position_mode,
+                    float(entry_avg_price), realized_pnl, normalized_opened_at,
+                ),
+            )
+            position_id = int(cur.lastrowid)
+            cur.execute(
+                f"UPDATE orders SET position_id = %s WHERE id IN ({order_placeholders}) AND position_id IS NULL",
+                [position_id, *normalized_order_ids],
+            )
+            if cur.rowcount != len(normalized_order_ids):
+                raise ValueError("Not every order could be linked to the reconstructed position")
+            cur.execute(
+                f"UPDATE position_history SET position_id = %s WHERE id IN ({history_placeholders}) AND position_id IS NULL",
+                [position_id, *normalized_history_ids],
+            )
+            if cur.rowcount != len(normalized_history_ids):
+                raise ValueError("Not every history row could be linked to the reconstructed position")
+
+            _refresh_position_realized_pnl(cur, position_id)
+            _upsert_position_history_final_from_position_cursor(cur, position_id)
+            cur.execute(
+                f"""DELETE FROM position_history_final
+                      WHERE position_id IS NULL
+                        AND source_history_id IN ({history_placeholders})""",
+                normalized_history_ids,
+            )
+            affected_dates = {
+                value.date()
+                for row in histories
+                if (value := row.get("created_at")) is not None and hasattr(value, "date")
+            }
+            for trade_date in affected_dates:
+                _refresh_daily_profile_for_user_date(cur, user_id, username, trade_date)
+            conn.commit()
+            return position_id
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -19,6 +19,7 @@ from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
 from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
 from trade_relay.trading.order_history_reconciliation import reconcile_order_history
+from trade_relay.trading.position_id_backfill import backfill_missing_position_ids
 from trade_relay.exchange.binance_client import BinanceClient as FuturesBinanceClient
 from backend.routers.auth import get_current_user, require_admin
 from backend.logger import get_logger
@@ -36,6 +37,8 @@ _CLIENT_CACHE_TTL = 300.0
 _CLIENT_CACHE_MAX = 16
 _client_cache: dict[tuple[str, str, bool], tuple[float, FuturesBinanceClient]] = {}
 _client_cache_lock = Lock()
+_position_id_backfill_lock = Lock()
+_position_id_backfill_inflight: set[int | None] = set()
 
 
 def _get_futures_client(api_key: str, api_secret: str, testnet: bool) -> FuturesBinanceClient:
@@ -146,6 +149,18 @@ class OrderReconcileResult(BaseModel):
     inserted: int
     updated: int
     unchanged: int
+    failed: int
+    warnings: list[str]
+
+
+class PositionIdBackfillRequest(BaseModel):
+    username: Optional[str] = None
+
+
+class PositionIdBackfillResult(BaseModel):
+    scanned: int
+    repaired: int
+    skipped: int
     failed: int
     warnings: list[str]
 
@@ -454,6 +469,44 @@ async def reconcile_orders(body: OrderReconcileRequest, user: dict = Depends(get
     except Exception as exc:
         _log.exception("order reconciliation failed username=%s", username)
         raise HTTPException(status_code=502, detail=f"Binance order reconciliation failed: {exc}") from exc
+
+
+@router.post("/backfill-position-ids", response_model=PositionIdBackfillResult)
+async def backfill_order_position_ids(
+    body: PositionIdBackfillRequest,
+    user: dict = Depends(get_current_user),
+):
+    requested_username = str(body.username or "").strip()
+    if user.get("role") == "admin":
+        if requested_username:
+            target = db_module.get_user_by_username(requested_username)
+            if target is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            user_id: int | None = int(target["id"])
+        else:
+            user_id = None
+    else:
+        if requested_username and requested_username != str(user.get("username") or ""):
+            raise HTTPException(status_code=403, detail="Cannot maintain another user's orders")
+        user_id = int(user["sub"])
+
+    with _position_id_backfill_lock:
+        conflicts = (
+            bool(_position_id_backfill_inflight)
+            if user_id is None
+            else None in _position_id_backfill_inflight or user_id in _position_id_backfill_inflight
+        )
+        if conflicts:
+            raise HTTPException(status_code=409, detail="Position ID backfill is already running")
+        _position_id_backfill_inflight.add(user_id)
+    try:
+        return await asyncio.to_thread(backfill_missing_position_ids, user_id=user_id, dry_run=False)
+    except Exception as exc:
+        _log.exception("Position ID backfill failed user_id=%s", user_id)
+        raise HTTPException(status_code=500, detail=f"Position ID backfill failed: {exc}") from exc
+    finally:
+        with _position_id_backfill_lock:
+            _position_id_backfill_inflight.discard(user_id)
 
 
 _KLINE_INTERVAL_MS = {

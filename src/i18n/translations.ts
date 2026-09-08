@@ -305,6 +305,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.reconcile.updated': '更新',
     'log.reconcile.unchanged': '无变化',
     'log.reconcile.errors': '失败',
+    'log.positionIdBackfill.action': '回填 Position ID',
+    'log.positionIdBackfill.running': '正在回填 Position ID...',
+    'log.positionIdBackfill.hint': '从本地已成交订单严格重建完整持仓周期；请先同步补齐 Binance 订单',
+    'log.positionIdBackfill.success': 'Position ID 回填完成：扫描 {scanned} 条，修复 {repaired} 个周期，跳过 {skipped} 条，失败 {failed} 条',
+    'log.positionIdBackfill.failed': 'Position ID 回填失败，请稍后重试',
     'common.close': '关闭',
 
     // Status
@@ -782,6 +787,11 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.reconcile.updated': 'Updated',
     'log.reconcile.unchanged': 'Unchanged',
     'log.reconcile.errors': 'Failed',
+    'log.positionIdBackfill.action': 'Backfill Position IDs',
+    'log.positionIdBackfill.running': 'Backfilling Position IDs...',
+    'log.positionIdBackfill.hint': 'Strictly rebuild complete cycles from local filled orders; reconcile missing Binance orders first',
+    'log.positionIdBackfill.success': 'Position ID backfill complete: {scanned} scanned, {repaired} cycles repaired, {skipped} skipped, {failed} failed',
+    'log.positionIdBackfill.failed': 'Position ID backfill failed, please try again',
     'common.close': 'Close',
 
     'status.filled': 'FILLED',

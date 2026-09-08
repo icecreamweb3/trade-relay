@@ -175,6 +175,14 @@ export interface ApiOrderReconcileResult {
   warnings: string[]
 }
 
+export interface ApiPositionIdBackfillResult {
+  scanned: number
+  repaired: number
+  skipped: number
+  failed: number
+  warnings: string[]
+}
+
 export interface ApiPositionHistory {
   id: number
   username: string
@@ -494,6 +502,12 @@ export const api = {
     end_time: string
   }): Promise<ApiOrderReconcileResult> {
     return request<ApiOrderReconcileResult>('POST', '/api/orders/reconcile', { body })
+  },
+
+  async backfillOrderPositionIds(username?: string): Promise<ApiPositionIdBackfillResult> {
+    return request<ApiPositionIdBackfillResult>('POST', '/api/orders/backfill-position-ids', {
+      body: { username: username || null },
+    })
   },
 
   async getHistoricalKlines(params: {

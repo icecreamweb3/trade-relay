@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { Calendar, Download, RefreshCw, X } from 'lucide-react'
+import { Calendar, Download, Link2, RefreshCw, X } from 'lucide-react'
 import { api, type ApiOrderReconcileResult } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -63,6 +63,7 @@ export function OrderLogScreen() {
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const [symbolOptions, setSymbolOptions] = useState<string[]>([])
   const [reconciling, setReconciling] = useState(false)
+  const [backfillingPositionIds, setBackfillingPositionIds] = useState(false)
   const [reconcileDialog, setReconcileDialog] = useState<{ result?: ApiOrderReconcileResult; error?: string } | null>(null)
   const { user } = useAuthStore()
 
@@ -212,6 +213,29 @@ export function OrderLogScreen() {
     }
   }
 
+  const handleBackfillPositionIds = async () => {
+    if (backfillingPositionIds) return
+    setBackfillingPositionIds(true)
+    try {
+      const username = user?.role === 'admin' ? filters.username.trim() || undefined : undefined
+      const result = await api.backfillOrderPositionIds(username)
+      showToast(result.failed > 0 || result.skipped > 0 ? 'info' : 'success', t('log.positionIdBackfill.success', {
+        scanned: result.scanned,
+        repaired: result.repaired,
+        skipped: result.skipped,
+        failed: result.failed,
+      }), { duration: 8000 })
+      await load(filters)
+    } catch (error) {
+      const message = typeof error === 'object' && error !== null && 'message' in error
+        ? String((error as { message?: unknown }).message || t('log.positionIdBackfill.failed'))
+        : t('log.positionIdBackfill.failed')
+      showToast('error', message)
+    } finally {
+      setBackfillingPositionIds(false)
+    }
+  }
+
   const formatNotional = (order: Order) => {
     const refPrice = order.avg_price ?? (order.price && order.price > 0 ? order.price : null)
     if (refPrice == null) return '—'
@@ -243,6 +267,16 @@ export function OrderLogScreen() {
         >
           <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
           {reconciling ? t('log.reconcile.running') : t('log.reconcile')}
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleBackfillPositionIds()}
+          disabled={backfillingPositionIds || reconciling}
+          title={t('log.positionIdBackfill.hint')}
+          className="flex h-8 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-60"
+        >
+          <Link2 size={14} className={backfillingPositionIds ? 'animate-pulse' : ''} />
+          {backfillingPositionIds ? t('log.positionIdBackfill.running') : t('log.positionIdBackfill.action')}
         </button>
       </div>
       <form onSubmit={handleSearch} className="flex flex-wrap items-end gap-3 border-b border-[#3e3e42] px-4 py-3 shrink-0">
