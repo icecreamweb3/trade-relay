@@ -15,6 +15,13 @@ type MarginType = 'CROSS' | 'ISOLATED'
 type PositionDir = 'OPEN' | 'CLOSE'
 type PositionMode = 'SINGLE' | 'DUAL'
 
+interface SubmittedSizeSnapshot {
+  username?: string
+  symbol: string
+  sizeUnit: 'QUOTE' | 'BASE'
+  quantity: string
+}
+
 interface AccountSummary {
   symbol?: string | null
   base_asset?: string | null
@@ -142,6 +149,10 @@ function getAdvancedOrderTypeStorageKey(username: string, symbol: string) {
   return `trade-relay:advanced-order-type:${username}:${symbol.toUpperCase()}`
 }
 
+function getOrderSizeStorageKey(username: string, symbol: string, sizeUnit: 'QUOTE' | 'BASE') {
+  return `trade-relay:order-size:${username}:${symbol.toUpperCase()}:${sizeUnit}`
+}
+
 function applyLiveSymbolSnapshot(
   symbol: string,
   positions: PositionSnapshot[],
@@ -234,6 +245,27 @@ function writeStoredAdvancedOrderType(username: string, symbol: string, type: Ad
   }
 }
 
+function readStoredOrderSize(username: string, symbol: string, sizeUnit: 'QUOTE' | 'BASE'): string {
+  try {
+    const raw = window.localStorage.getItem(getOrderSizeStorageKey(username, symbol, sizeUnit))?.trim() ?? ''
+    const value = Number(raw)
+    return raw && Number.isFinite(value) && value > 0 ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredOrderSize(username: string, symbol: string, sizeUnit: 'QUOTE' | 'BASE', quantity: string) {
+  const normalizedQuantity = quantity.trim()
+  const value = Number(normalizedQuantity)
+  if (!normalizedQuantity || !Number.isFinite(value) || value <= 0) return
+  try {
+    window.localStorage.setItem(getOrderSizeStorageKey(username, symbol, sizeUnit), normalizedQuantity)
+  } catch {
+    // Ignore storage errors; a successful order must not be affected by preference persistence.
+  }
+}
+
 // ── Ticker strip ─────────────────────────────────────────────────────────────
 
 function TickerStrip() {
@@ -316,7 +348,12 @@ export function OrderFormWidget({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null)
   const [accountLoading, setAccountLoading] = useState(false)
-  const [marketConfirm, setMarketConfirm] = useState<{ side: Side; baseQty: number; body: Parameters<typeof api.submitOrder>[0] } | null>(null)
+  const [marketConfirm, setMarketConfirm] = useState<{
+    side: Side
+    baseQty: number
+    body: Parameters<typeof api.submitOrder>[0]
+    sizeSnapshot: SubmittedSizeSnapshot
+  } | null>(null)
   const [positionLongQty, setPositionLongQty] = useState<number | null>(null)
   const [positionShortQty, setPositionShortQty] = useState<number | null>(null)
   const [pendingLongCloseQty, setPendingLongCloseQty] = useState<number>(0)
@@ -328,6 +365,11 @@ export function OrderFormWidget({
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const loadSymbolPositionsRef = useRef<(() => Promise<void>) | null>(null)
   const _accountFirstLoadDone = useRef(false)
+
+  useEffect(() => {
+    const username = user?.username
+    setQty(username ? readStoredOrderSize(username, symbol, sizeUnit) : '')
+  }, [user?.username, symbol, sizeUnit])
 
   useEffect(() => {
     let alive = true
@@ -1003,6 +1045,12 @@ export function OrderFormWidget({
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)
     if (!qtyNum || qtyNum <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
+    const sizeSnapshot: SubmittedSizeSnapshot = {
+      username: user?.username,
+      symbol,
+      sizeUnit,
+      quantity: qty,
+    }
 
     // API 始终接收 base 数量（BTC）；若用户以 USDT 输入则按参考价格换算
     let baseQty = qtyNum
@@ -1058,21 +1106,26 @@ export function OrderFormWidget({
 
     // Market orders require confirmation before submission
     if (orderType === 'MARKET') {
-      setMarketConfirm({ side: submitSide, baseQty, body })
+      setMarketConfirm({ side: submitSide, baseQty, body, sizeSnapshot })
       return
     }
 
-    await doSubmit(submitSide, baseQty, body)
+    await doSubmit(submitSide, baseQty, body, sizeSnapshot)
   }
 
-  const doSubmit = async (submitSide: Side, baseQty: number, body: Parameters<typeof api.submitOrder>[0]) => {
+  const doSubmit = async (
+    submitSide: Side,
+    baseQty: number,
+    body: Parameters<typeof api.submitOrder>[0],
+    sizeSnapshot: SubmittedSizeSnapshot,
+  ) => {
     setIsSubmitting(true)
     try {
       window.electronAPI?.logToMain?.('info', 'submit order', {
-        username: user?.username ?? null,
+        username: sizeSnapshot.username ?? null,
         body,
-        sizeUnit,
-        inputQty: qty,
+        sizeUnit: sizeSnapshot.sizeUnit,
+        inputQty: sizeSnapshot.quantity,
         baseQty,
       })
 
@@ -1082,7 +1135,14 @@ export function OrderFormWidget({
       } else {
         showToast('success', t('order.success'))
       }
-      setQty('')
+      if (sizeSnapshot.username) {
+        writeStoredOrderSize(
+          sizeSnapshot.username,
+          sizeSnapshot.symbol,
+          sizeSnapshot.sizeUnit,
+          sizeSnapshot.quantity,
+        )
+      }
       onOrderPlaced?.()
     } catch (err: unknown) {
       const msg =
@@ -1148,7 +1208,7 @@ export function OrderFormWidget({
                 onClick={async () => {
                   const c = marketConfirm
                   setMarketConfirm(null)
-                  await doSubmit(c.side, c.baseQty, c.body)
+                  await doSubmit(c.side, c.baseQty, c.body, c.sizeSnapshot)
                 }}
                 disabled={isSubmitting}
                 className={`py-2 text-[12px] font-bold rounded transition-colors disabled:opacity-50 ${
@@ -1355,7 +1415,7 @@ export function OrderFormWidget({
               className="flex-1 min-w-0 bg-[#1E2026] border border-[#2B2F36] border-r-0 focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded-l px-2.5 py-1.5 outline-none selectable" />
             <select
               value={sizeUnit}
-              onChange={e => { onSizeUnitChange(e.target.value as 'QUOTE' | 'BASE'); setQty('') }}
+              onChange={e => onSizeUnitChange(e.target.value as 'QUOTE' | 'BASE')}
               className="bg-[#2B2F36] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded-r px-2 py-1.5 outline-none cursor-pointer shrink-0">
               <option value="QUOTE">{quoteAsset}</option>
               <option value="BASE">{baseTicker}</option>
