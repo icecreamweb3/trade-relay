@@ -45,6 +45,30 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_ambiguous_submit_exception(exc: Exception) -> bool:
+    """True when Binance may have accepted the order before transport failure."""
+    try:
+        import requests
+
+        if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+            return True
+    except Exception:
+        pass
+    error_type = type(exc).__name__.lower()
+    message = str(exc).lower()
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    return (
+        (isinstance(status_code, int) and 500 <= status_code <= 599)
+        or "timeout" in error_type
+        or "connection" in error_type
+        or "timed out" in message
+        or "connection reset" in message
+        or "remote end closed" in message
+        or any(f"http {code}" in message for code in (500, 502, 503, 504))
+    )
+
+
 def _fix_ssl_cert_env():
     """修复 PyInstaller 打包环境下的 SSL 证书问题（详见 binance_api.py 中的说明）。"""
     # Step 1: 清除失效的 SSL 环境变量
@@ -82,6 +106,8 @@ _leverage_cache: dict[tuple, tuple] = {}
 _leverage_cache_lock = threading.Lock()
 _position_mode_cache: dict[tuple, tuple] = {}
 _position_mode_cache_lock = threading.Lock()
+_symbol_precision_cache: dict[tuple, dict] = {}
+_symbol_precision_cache_lock = threading.Lock()
 
 
 
@@ -93,6 +119,8 @@ class BinanceClient:
     READ_TIMEOUT = 10  # 读取超时（秒）
     DEFAULT_TIMEOUT = 10  # 默认超时（秒，用于向后兼容）
     MAX_RETRIES = 2  # 默认最大重试次数
+    TRADE_CONNECT_TIMEOUT = 2
+    TRADE_READ_TIMEOUT = 4
 
     @staticmethod
     def _normalize_credential(value: Optional[str]) -> str:
@@ -203,7 +231,11 @@ class BinanceClient:
         self.timestamp_buffer = 3000  # 时间戳缓冲（增加到3000ms，考虑网络延迟和时钟漂移）
         self.DEFAULT_RECV_WINDOW = 60000  # 默认接收窗口 60 秒（最大限度增加容错性，彻底解决时间戳问题）
         self.MAX_TIMESTAMP_RETRIES = 2  # 时间戳错误最大重试次数
-        self.set_timestamp_offset()
+        # Keep order startup off the public time endpoint. The host clock and a
+        # generous recvWindow are sufficient normally; -1021 triggers a forced
+        # time sync and a safe retry in the individual trading methods.
+        self.client.timestamp_offset = 0
+        self.last_time_sync = time.time()
     
     
     def set_timestamp_offset(self, force: bool = False):
@@ -756,6 +788,11 @@ class BinanceClient:
     
     def get_symbol_precision_info(self, symbol: str) -> Optional[dict]:
         """Get all precision information for a symbol from exchange info"""
+        cache_key = (self.base_url, self.testnet, str(symbol).upper())
+        with _symbol_precision_cache_lock:
+            cached = _symbol_precision_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
         try:
             exchange_info = self.client.futures_exchange_info()
             symbol_info = None
@@ -824,6 +861,8 @@ class BinanceClient:
                             quantity_precision = 0
                     result['quantity_precision'] = quantity_precision
             
+            with _symbol_precision_cache_lock:
+                _symbol_precision_cache[cache_key] = dict(result)
             return result
         except Exception as e:
             logger.debug(f"Failed to get symbol precision info for {symbol}: {e}")
@@ -1029,6 +1068,11 @@ class BinanceClient:
         with _position_mode_cache_lock:
             _position_mode_cache[cache_key] = (now, mode)
         return mode
+
+    def remember_position_mode(self, hedge_mode: bool) -> None:
+        """Prime the mode cache from an already validated application snapshot."""
+        with _position_mode_cache_lock:
+            _position_mode_cache[(self.api_key, self.testnet)] = (time.time(), bool(hedge_mode))
     
     def set_position_mode(self, hedge_mode: bool = False) -> bool:
         """Set position mode: True = Hedge Mode, False = One-way Mode"""
@@ -1042,7 +1086,15 @@ class BinanceClient:
             logger.warning(error_message)
             raise RuntimeError(error_message) from e
     
-    def place_market_order(self, symbol: str, side: str, quantity: float, position_side: str = None, reduce_only: bool = False) -> Optional[dict]:
+    def place_market_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        position_side: str = None,
+        reduce_only: bool = False,
+        client_order_id: str = None,
+    ) -> Optional[dict]:
         """Place a market order
         
         Args:
@@ -1061,9 +1113,6 @@ class BinanceClient:
                     self.set_timestamp_offset(force=True)
                     import time
                     time.sleep(0.1)
-                else:
-                    # 第一次尝试也要确保时间戳是最新的
-                    self.set_timestamp_offset()
                 
                 # Format quantity according to symbol's precision requirements
                 quantity_str = self.format_quantity_by_precision(quantity, symbol)
@@ -1094,6 +1143,8 @@ class BinanceClient:
                         'type': 'MARKET',
                         'quantity': quantity_str  # Use formatted string
                     }
+                    if client_order_id:
+                        params['newClientOrderId'] = client_order_id
                     
                     # Hedge Mode: MUST add positionSide, CANNOT add reduceOnly
                     if position_side:
@@ -1124,7 +1175,7 @@ class BinanceClient:
                         headers=self.default_headers,
                         data=request_body,
                         proxies=self.proxy_config,
-                        timeout=10
+                        timeout=(self.TRADE_CONNECT_TIMEOUT, self.TRADE_READ_TIMEOUT)
                     )
                     
                     # Check response
@@ -1148,6 +1199,8 @@ class BinanceClient:
                         'type': ORDER_TYPE_MARKET,
                         'quantity': quantity  # Use formatted float value
                     }
+                    if client_order_id:
+                        order_params['newClientOrderId'] = client_order_id
                     
                     # ⚡ 重要：即使检测到单向持仓模式，也要添加 positionSide（双向持仓账户必需）
                     # 如果账户实际是双向持仓，但 get_position_mode() 检测失败或返回 False，会导致 -4061 错误
@@ -1170,10 +1223,11 @@ class BinanceClient:
                     logger.debug(f"   🌐 Base URL: {self.base_url}")
                     
                     # 下单前按 60s 间隔同步时间戳（本方法开头已同步过，此处通常为空操作）
-                    self.set_timestamp_offset()
-                    
                     # 使用 SDK 的 futures 下单方法
-                    result = self.client.futures_create_order(**order_params)
+                    result = self.client.futures_create_order(
+                        **order_params,
+                        requests_params={"timeout": (self.TRADE_CONNECT_TIMEOUT, self.TRADE_READ_TIMEOUT)},
+                    )
                 
                 # 打印API返回结果
                 logger.debug(f"📥 API返回结果:")
@@ -1231,6 +1285,8 @@ class BinanceClient:
                     'error': True,
                     'error_type': error_type,
                     'error_message': error_msg,
+                    'clientOrderId': client_order_id,
+                    'uncertain': _is_ambiguous_submit_exception(e),
                     'symbol': symbol,
                     'side': side
                 }
@@ -1537,7 +1593,18 @@ class BinanceClient:
                 'side': side,
             }
 
-    def place_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: str = None, post_only: bool = False, expire_seconds: int = None, reduce_only: bool = False) -> Optional[dict]:
+    def place_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        position_side: str = None,
+        post_only: bool = False,
+        expire_seconds: int = None,
+        reduce_only: bool = False,
+        client_order_id: str = None,
+    ) -> Optional[dict]:
         """Place a limit order
         
         Args:
@@ -1559,9 +1626,6 @@ class BinanceClient:
                     self.set_timestamp_offset(force=True)
                     import time
                     time.sleep(0.1)
-                else:
-                    # 第一次尝试也要确保时间戳是最新的
-                    self.set_timestamp_offset()
                 
                 # Format price according to symbol's precision
                 price_str = self.format_price_by_precision(price, symbol)
@@ -1599,6 +1663,8 @@ class BinanceClient:
                         'price': price_str,  # Use formatted price string
                         'timeInForce': 'GTX' if post_only else 'GTC'
                     }
+                    if client_order_id:
+                        params['newClientOrderId'] = client_order_id
                     
                     # 如果指定了过期时间，尝试使用 GTD (Good Till Date)
                     # 注意：币安期货API使用 goodTillDate 参数（不是 expireTime）
@@ -1637,7 +1703,7 @@ class BinanceClient:
                         headers=self.default_headers,
                         data=request_body,
                         proxies=self.proxy_config,
-                        timeout=10
+                        timeout=(self.TRADE_CONNECT_TIMEOUT, self.TRADE_READ_TIMEOUT)
                     )
                     
                     # Check response
@@ -1665,6 +1731,8 @@ class BinanceClient:
                         'price': price_str,
                         'timeInForce': 'GTX' if post_only else TIME_IN_FORCE_GTC
                     }
+                    if client_order_id:
+                        order_params['newClientOrderId'] = client_order_id
                     
                     if position_side:
                         order_params['positionSide'] = position_side
@@ -1693,7 +1761,10 @@ class BinanceClient:
                     logger.debug(f"   📋 完整订单参数: {json.dumps(order_params, indent=2, default=str)}")
                     
                     # 使用 SDK 的 futures 下单方法
-                    result = self.client.futures_create_order(**order_params)
+                    result = self.client.futures_create_order(
+                        **order_params,
+                        requests_params={"timeout": (self.TRADE_CONNECT_TIMEOUT, self.TRADE_READ_TIMEOUT)},
+                    )
                 
                 # 打印API返回结果
                 logger.debug(f"📥 限价单API返回结果:")
@@ -1752,6 +1823,8 @@ class BinanceClient:
                     'error': True,
                     'error_type': error_type,
                     'error_message': error_msg,
+                    'clientOrderId': client_order_id,
+                    'uncertain': _is_ambiguous_submit_exception(e),
                     'symbol': symbol,
                     'side': side
                 }
@@ -3275,6 +3348,22 @@ class BinanceClient:
                 # 其他错误或达到最大重试次数，返回 None
                 logger.debug(f"Failed to get order status for {symbol} order {order_id}: {e}")
                 return None
+
+    def get_order_status_by_client_order_id(self, symbol: str, client_order_id: str) -> Optional[dict]:
+        """Resolve an ambiguously acknowledged order by its idempotency key."""
+        try:
+            return self.client.futures_get_order(
+                symbol=symbol,
+                origClientOrderId=client_order_id,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to get order status for %s client order %s: %s",
+                symbol,
+                client_order_id,
+                exc,
+            )
+            return None
     
     def cancel_order(self, symbol: str, order_id: str) -> Optional[dict]:
         """Cancel a regular order (not algo order)

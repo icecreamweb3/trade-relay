@@ -1076,8 +1076,12 @@ export function OrderFormWidget({
         baseQty,
       })
 
-      await api.submitOrder(body)
-      showToast('success', t('order.success'))
+      const result = await api.submitOrder(body)
+      if (result.pending_confirmation === true) {
+        showToast('info', typeof result.message === 'string' ? result.message : t('order.success'), { duration: 8000 })
+      } else {
+        showToast('success', t('order.success'))
+      }
       setQty('')
       onOrderPlaced?.()
     } catch (err: unknown) {

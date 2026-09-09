@@ -3,17 +3,155 @@ Order management: places orders via Binance and persists them to the DB.
 """
 import asyncio
 import logging
+import threading
+import time
 from typing import Optional
 
 from trade_relay.auth.manager import Session
 from trade_relay import database as db
 from trade_relay import config as cfg
-from trade_relay.trading.binance_client import place_order, place_order_mock
+from trade_relay.trading.binance_client import get_order_by_client_id, place_order, place_order_mock
 from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, sync_order_status_once
 from trade_relay.i18n import t
 
 
 _log = logging.getLogger(__name__)
+
+
+def _post_submit_sync(
+    username: str,
+    api_key: str,
+    api_secret: str,
+    testnet: bool,
+    symbol: str,
+    exchange_order_id: str,
+) -> None:
+    started_at = time.monotonic()
+    try:
+        ensure_user_order_status_stream(username, api_key, api_secret, testnet)
+        sync_order_status_once(username, api_key, api_secret, testnet, symbol, exchange_order_id)
+        _log.info(
+            "[ORDER_TIMING] phase=post_submit_sync_complete username=%s symbol=%s exchange_order_id=%s duration_ms=%.1f",
+            username,
+            symbol,
+            exchange_order_id,
+            (time.monotonic() - started_at) * 1000,
+        )
+    except Exception:
+        _log.exception(
+            "[ORDER_FLOW] phase=post_submit_sync_error username=%s symbol=%s exchange_order_id=%s",
+            username,
+            symbol,
+            exchange_order_id,
+        )
+
+
+def _schedule_post_submit_sync(
+    username: str,
+    api_key: str,
+    api_secret: str,
+    testnet: bool,
+    symbol: str,
+    exchange_order_id: str,
+) -> None:
+    threading.Thread(
+        target=_post_submit_sync,
+        args=(username, api_key, api_secret, testnet, symbol, exchange_order_id),
+        name=f"post-submit-sync-{username}-{exchange_order_id}",
+        daemon=True,
+    ).start()
+
+
+def _confirm_uncertain_order(
+    order_db_id: int,
+    username: str,
+    api_key: str,
+    api_secret: str,
+    testnet: bool,
+    symbol: str,
+    client_order_id: str,
+) -> None:
+    """Resolve a timed-out submission without risking a duplicate order."""
+    for delay_seconds in (0.0, 0.5, 1.0, 2.0, 4.0):
+        if delay_seconds:
+            time.sleep(delay_seconds)
+        try:
+            order = get_order_by_client_id(
+                api_key,
+                api_secret,
+                testnet,
+                symbol,
+                client_order_id,
+            )
+        except Exception:
+            _log.exception(
+                "[ORDER_FLOW] phase=uncertain_lookup_error username=%s symbol=%s client_order_id=%s",
+                username,
+                symbol,
+                client_order_id,
+            )
+            continue
+        if not order:
+            continue
+
+        exchange_order_id = str(order.get("orderId") or "").strip()
+        status = str(order.get("status") or "NEW").upper()
+        if exchange_order_id:
+            db.update_order_metadata(
+                order_db_id,
+                exchange_order_id=exchange_order_id,
+                error_message="",
+            )
+        db.update_order_status(
+            order_db_id,
+            status,
+            filled_qty=float(order.get("executedQty") or 0),
+            avg_price=float(order.get("avgPrice") or 0) or None,
+            error_message="",
+        )
+        _log.info(
+            "[ORDER_FLOW] phase=uncertain_resolved username=%s symbol=%s client_order_id=%s exchange_order_id=%s status=%s",
+            username,
+            symbol,
+            client_order_id,
+            exchange_order_id,
+            status,
+        )
+        if exchange_order_id:
+            _schedule_post_submit_sync(
+                username,
+                api_key,
+                api_secret,
+                testnet,
+                symbol,
+                exchange_order_id,
+            )
+        return
+
+    _log.error(
+        "[ORDER_FLOW] phase=uncertain_unresolved username=%s symbol=%s client_order_id=%s order_db_id=%s",
+        username,
+        symbol,
+        client_order_id,
+        order_db_id,
+    )
+
+
+def _schedule_uncertain_confirmation(
+    order_db_id: int,
+    username: str,
+    api_key: str,
+    api_secret: str,
+    testnet: bool,
+    symbol: str,
+    client_order_id: str,
+) -> None:
+    threading.Thread(
+        target=_confirm_uncertain_order,
+        args=(order_db_id, username, api_key, api_secret, testnet, symbol, client_order_id),
+        name=f"confirm-order-{username}-{client_order_id}",
+        daemon=True,
+    ).start()
 
 
 def _normalize_position_mode(value: Optional[str]) -> Optional[str]:
@@ -28,10 +166,17 @@ def _normalize_position_mode(value: Optional[str]) -> Optional[str]:
 
 
 class OrderResult:
-    def __init__(self, success: bool, message: str, order_id: Optional[int] = None):
+    def __init__(
+        self,
+        success: bool,
+        message: str,
+        order_id: Optional[int] = None,
+        pending_confirmation: bool = False,
+    ):
         self.success = success
         self.message = message
         self.order_id = order_id
+        self.pending_confirmation = pending_confirmation
 
 
 def _coerce_legacy_submit_order_args(
@@ -72,6 +217,7 @@ async def submit_order(
     """
     Validate, place, and record an order for the given session user.
     """
+    request_started_at = time.monotonic()
     post_only, leverage, position_direction, position_mode = _coerce_legacy_submit_order_args(
         post_only,
         leverage,
@@ -138,6 +284,7 @@ async def submit_order(
 
         testnet = cfg.is_testnet(username)
         _log.info("[ORDER_FLOW] phase=submit_exchange username=%s symbol=%s side=%s type=%s testnet=%s", username, symbol, side, order_type, testnet)
+        exchange_started_at = time.monotonic()
         result = await place_order(
             api_key=api_key,
             api_secret=api_secret,
@@ -153,6 +300,9 @@ async def submit_order(
             position_direction=position_direction,
             position_mode=normalized_position_mode,
         )
+        exchange_finished_at = time.monotonic()
+
+    accepted = result.success or bool(getattr(result, "uncertain", False))
 
     # When closing a position, look up the matching DB position to record position_id
     position_id: Optional[int] = None
@@ -204,7 +354,7 @@ async def submit_order(
             stop_price=stop_price,
             tp_price=tp_price,
             sl_price=sl_price,
-            status=result.status if result.success else "FAILED",
+            status="PENDING" if getattr(result, "uncertain", False) else result.status if result.success else "FAILED",
             binance_order_id=None if order_category == "Conditional" else result.order_id,
             algo_id=result.order_id if order_category == "Conditional" else None,
             algo_client_id=result.algo_client_id if order_category == "Conditional" else None,
@@ -223,8 +373,8 @@ async def submit_order(
         order_db_id,
         None if order_category == "Conditional" else result.order_id,
         result.order_id if order_category == "Conditional" else None,
-        result.status if hasattr(result, 'status') else None,
-        result.success,
+        "PENDING" if getattr(result, "uncertain", False) else result.status if hasattr(result, 'status') else None,
+        accepted,
     )
 
     # Post-create cleanup: the WS thread may have raced our INSERT and created an 'external'
@@ -241,30 +391,69 @@ async def submit_order(
                 )
 
     if result.success and not mock and result.order_id and api_key and api_secret and order_category == "Basic":
-        # Start the per-user user-data stream and do one immediate REST sync to
-        # close the race where an order fills before the websocket is fully up.
-        ensure_user_order_status_stream(username, api_key, api_secret, testnet)
-        try:
-            sync_order_status_once(username, api_key, api_secret, testnet, symbol, str(result.order_id))
-            _log.info("[ORDER_FLOW] phase=post_submit_sync username=%s symbol=%s exchange_order_id=%s", username, symbol, result.order_id)
-        except Exception:
-            _log.exception("[ORDER_FLOW] phase=post_submit_sync_error username=%s symbol=%s exchange_order_id=%s", username, symbol, result.order_id)
+        # Binance already accepted the order and the local record is durable.
+        # Reconciliation must not delay the response shown to the trader.
+        _schedule_post_submit_sync(
+            username,
+            api_key,
+            api_secret,
+            testnet,
+            symbol,
+            str(result.order_id),
+        )
+
+    if (
+        getattr(result, "uncertain", False)
+        and order_db_id
+        and result.client_order_id
+        and api_key
+        and api_secret
+        and order_category == "Basic"
+    ):
+        _schedule_uncertain_confirmation(
+            order_db_id,
+            username,
+            api_key,
+            api_secret,
+            testnet,
+            symbol,
+            result.client_order_id,
+        )
 
     # Log operation
-    if result.success:
+    if accepted:
         db.log_operation(
             session.user_id,
             username,
             "PLACE_ORDER",
             f"{side} {quantity} {symbol} @ {'MARKET' if order_type == 'MARKET' else price} "
-            f"→ status={result.status} id={result.order_id}",
+            f"→ status={'PENDING' if getattr(result, 'uncertain', False) else result.status} "
+            f"id={result.order_id or result.client_order_id}",
         )
-        if result.mock:
+        if getattr(result, "uncertain", False):
+            msg = t("order_pending_confirmation", result.client_order_id)
+        elif result.mock:
             msg = t("order_mock", side, quantity, symbol, quantity)
         else:
             msg = t("order_success", result.order_id)
+        finished_at = time.monotonic()
+        if not mock:
+            _log.info(
+                "[ORDER_TIMING] phase=response_ready username=%s symbol=%s type=%s exchange_ms=%.1f persistence_ms=%.1f total_ms=%.1f",
+                username,
+                symbol,
+                order_type,
+                (exchange_finished_at - exchange_started_at) * 1000,
+                (finished_at - exchange_finished_at) * 1000,
+                (finished_at - request_started_at) * 1000,
+            )
         _log.info("[ORDER_FLOW] phase=return_success username=%s order_db_id=%s message=%s", username, order_db_id, msg)
-        return OrderResult(True, msg, order_db_id)
+        return OrderResult(
+            True,
+            msg,
+            order_db_id,
+            pending_confirmation=bool(getattr(result, "uncertain", False)),
+        )
     else:
         db.log_operation(
             session.user_id,

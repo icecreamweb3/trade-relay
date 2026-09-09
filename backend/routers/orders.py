@@ -323,7 +323,12 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         _log.warning("[ORDER_FLOW] phase=failed username=%s reason=%s", user["username"], result.message)
         raise HTTPException(status_code=400, detail=result.message)
     _log.info("[ORDER_FLOW] phase=success order_id=%s username=%s", result.order_id, user["username"])
-    return {"ok": True, "order_id": result.order_id, "message": result.message}
+    return {
+        "ok": True,
+        "order_id": result.order_id,
+        "message": result.message,
+        "pending_confirmation": result.pending_confirmation,
+    }
 
 
 @router.get("", response_model=list[OrderOut])
