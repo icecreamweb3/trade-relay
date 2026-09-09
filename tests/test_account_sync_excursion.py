@@ -5,6 +5,7 @@ from trade_relay.exchange import account_sync
 def test_account_sync_samples_every_open_symbol_while_summarizing_selected_symbol(monkeypatch):
     requested_symbols = []
     excursion_updates = []
+    tracked_positions = []
     persisted_summaries = []
 
     class FakeClient:
@@ -37,6 +38,11 @@ def test_account_sync_samples_every_open_symbol_while_summarizing_selected_symbo
     monkeypatch.setattr(account_sync.cfg_module, "is_testnet", lambda username: False)
     monkeypatch.setattr(account_sync.db_module, "get_account_summary_from_db", lambda user_id, symbol: None)
     monkeypatch.setattr(
+        account_sync,
+        "replace_user_positions",
+        lambda user_id, positions: tracked_positions.append((user_id, positions)),
+    )
+    monkeypatch.setattr(
         account_sync.db_module,
         "update_open_position_live_excursion",
         lambda **kwargs: excursion_updates.append(kwargs),
@@ -51,6 +57,8 @@ def test_account_sync_samples_every_open_symbol_while_summarizing_selected_symbo
     account_sync._fetch_and_store(5, "Will", "BTCUSDC")
 
     assert requested_symbols == [None]
+    assert tracked_positions[0][0] == 5
+    assert [row["symbol"] for row in tracked_positions[0][1]] == ["BTCUSDC", "ETHUSDC"]
     assert [(row["symbol"], row["unrealized_pnl"]) for row in excursion_updates] == [
         ("BTCUSDC", 4.0),
         ("ETHUSDC", -3.0),

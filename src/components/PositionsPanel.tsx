@@ -11,6 +11,7 @@ import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreference
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
+const BINANCE_MARK_PRICE_STREAM_URL = 'wss://fstream.binance.com/market/stream?streams='
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
@@ -102,6 +103,8 @@ export function PositionsPanel({
   const [history, setHistory] = useState<Order[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([])
+  const [positionMarkPrices, setPositionMarkPrices] = useState<Record<string, number>>({})
+  const [positionExcursions, setPositionExcursions] = useState<Record<number, { mfe: number; mae: number }>>({})
   const [loading, setLoading] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<number | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
@@ -208,6 +211,83 @@ export function PositionsPanel({
     }, 15_000)
     return () => clearInterval(timer)
   }, [isActive, isAuthenticated])
+
+  const trackedMarkSymbolsKey = Array.from(new Set(
+    positions
+      .filter((position) => String(position.status || 'OPEN').toUpperCase() === 'OPEN')
+      .map((position) => position.symbol.toUpperCase())
+      .filter((symbol) => symbol && symbol !== activeSymbol.toUpperCase()),
+  )).sort().join('/')
+
+  // The chart stream only follows activeSymbol. Keep one additional combined
+  // Binance stream for every other symbol currently represented in Positions.
+  useEffect(() => {
+    setPositionMarkPrices({})
+    if (!isActive || !isAuthenticated || !trackedMarkSymbolsKey) return
+
+    let alive = true
+    let socket: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    const streams = trackedMarkSymbolsKey
+      .split('/')
+      .filter(Boolean)
+      .map((symbol) => `${symbol.toLowerCase()}@markPrice@1s`)
+      .join('/')
+
+    const connect = () => {
+      if (!alive || !streams) return
+      socket = new WebSocket(`${BINANCE_MARK_PRICE_STREAM_URL}${streams}`)
+      socket.onmessage = (event) => {
+        try {
+          const envelope = JSON.parse(event.data as string) as Record<string, unknown>
+          const data = (envelope.data ?? envelope) as Record<string, unknown>
+          if (data.e !== 'markPriceUpdate') return
+          const symbol = String(data.s ?? '').toUpperCase()
+          const price = Number(data.p)
+          if (!symbol || !Number.isFinite(price) || price <= 0) return
+          setPositionMarkPrices((current) => current[symbol] === price ? current : { ...current, [symbol]: price })
+        } catch {
+          // Ignore malformed market frames; the stream will continue delivering updates.
+        }
+      }
+      socket.onerror = () => socket?.close()
+      socket.onclose = () => {
+        if (!alive) return
+        reconnectTimer = setTimeout(connect, 3000)
+      }
+    }
+
+    connect()
+    return () => {
+      alive = false
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      socket?.close()
+    }
+  }, [activeSymbol, isActive, isAuthenticated, trackedMarkSymbolsKey])
+
+  useEffect(() => {
+    setPositionExcursions((current) => {
+      const next: Record<number, { mfe: number; mae: number }> = {}
+      let changed = Object.keys(current).length !== positions.length
+      for (const position of positions) {
+        const rowMarkPrice = getPositionMarkPrice(
+          position,
+          positionMarkPrices,
+          activeSymbol,
+          markPrice ?? currentPrice,
+        )
+        const unrealizedPnl = getLiveUnrealizedPnl(position, rowMarkPrice) ?? 0
+        const previous = current[position.id]
+        const extrema = {
+          mfe: Math.max(previous?.mfe ?? 0, position.live_mfe_usdc ?? 0, unrealizedPnl, 0),
+          mae: Math.max(previous?.mae ?? 0, position.live_mae_usdc ?? 0, -unrealizedPnl, 0),
+        }
+        next[position.id] = extrema
+        if (!previous || previous.mfe !== extrema.mfe || previous.mae !== extrema.mae) changed = true
+      }
+      return changed ? next : current
+    })
+  }, [activeSymbol, currentPrice, markPrice, positionMarkPrices, positions])
 
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
@@ -556,7 +636,17 @@ export function PositionsPanel({
             <tbody>
               {positions.length === 0
                 ? <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
-                : positions.map(p => (
+                : positions.map(p => {
+                  const rowMarkPrice = getPositionMarkPrice(
+                    p,
+                    positionMarkPrices,
+                    activeSymbol,
+                    markPrice ?? currentPrice,
+                  )
+                  const rowUnrealizedPnl = getLiveUnrealizedPnl(p, rowMarkPrice)
+                  const rowMfe = positionExcursions[p.id]?.mfe ?? Math.max(p.live_mfe_usdc ?? 0, rowUnrealizedPnl ?? 0, 0)
+                  const rowMae = positionExcursions[p.id]?.mae ?? Math.max(p.live_mae_usdc ?? 0, -(rowUnrealizedPnl ?? 0), 0)
+                  return (
                   <tr
                     key={p.id}
                     onClick={() => handlePositionSymbolSelect(p.symbol)}
@@ -566,26 +656,26 @@ export function PositionsPanel({
                     <td className="font-semibold">{p.symbol}</td>
                     <td className={p.side === 'LONG' ? 'text-buy' : 'text-sell'}>{p.side === 'LONG' ? t('pos.long') : t('pos.short')}</td>
                     <td className={p.status === 'OPEN' ? 'text-buy' : 'text-[#858585]'}>{p.status === 'OPEN' ? t('order.open') : t('order.close')}</td>
-                    <td className="font-mono">{formatPositionSize(p, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
+                    <td className="font-mono">{formatPositionSize(p, sizeUnit, rowMarkPrice)}</td>
                     <td className="font-mono">{p.entry_price != null ? p.entry_price.toFixed(2) : '-'}</td>
                     <td className="text-[#858585]">{formatPositionMode(p.position_mode, t)}</td>
                     <td className="font-mono text-orange-400">{p.liquidation_price != null ? p.liquidation_price.toFixed(2) : '-'}</td>
-                    <td className={`font-mono font-semibold ${(getLiveUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice) ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
-                      {formatUnrealizedPnl(p, activeSymbol, markPrice ?? currentPrice)}
+                    <td className={`font-mono font-semibold ${(rowUnrealizedPnl ?? 0) >= 0 ? 'text-buy' : 'text-sell'}`}>
+                      {formatUnrealizedPnl(p, rowMarkPrice)}
                     </td>
                     <td className="whitespace-nowrap" title={t('pos.liveExcursionHint')}>
                       <div className="flex items-center gap-1 font-mono text-[11px]">
-                        <span className="text-profit">+{(p.live_mfe_usdc ?? 0).toFixed(4)}</span>
+                        <span className="text-profit">+{rowMfe.toFixed(4)}</span>
                         <span className="text-[#5f6670]">/</span>
-                        <span className="text-loss">-{(p.live_mae_usdc ?? 0).toFixed(4)}</span>
+                        <span className="text-loss">-{rowMae.toFixed(4)}</span>
                       </div>
                       <div className="mt-0.5 font-mono text-[9px]">
                         <span className="text-buy">
-                          {formatExcursionR(p.live_mfe_usdc, p.initial_risk_usdc, '+')}
+                          {formatExcursionR(rowMfe, p.initial_risk_usdc, '+')}
                         </span>
                         <span className="mx-1 text-[#4d535c]">/</span>
                         <span className="text-sell">
-                          {formatExcursionR(p.live_mae_usdc, p.initial_risk_usdc, '-')}
+                          {formatExcursionR(rowMae, p.initial_risk_usdc, '-')}
                         </span>
                       </div>
                     </td>
@@ -638,7 +728,8 @@ export function PositionsPanel({
                       </button>
                     </td>
                   </tr>
-                ))
+                  )
+                })
               }
             </tbody>
           </table>
@@ -1584,21 +1675,27 @@ function splitTradingSymbol(symbol: string) {
   return { baseAsset: upperSymbol, quoteAsset: 'USDT' }
 }
 
-function getLiveReferencePrice(position: Position, activeSymbol: string, livePrice: number | null) {
-  if (position.symbol.toUpperCase() !== activeSymbol.toUpperCase()) return null
-  return livePrice
+function getPositionMarkPrice(
+  position: Position,
+  pricesBySymbol: Record<string, number>,
+  activeSymbol: string,
+  activeMarkPrice: number | null,
+) {
+  const symbol = position.symbol.toUpperCase()
+  if (symbol === activeSymbol.toUpperCase() && activeMarkPrice != null) return activeMarkPrice
+  const trackedPrice = pricesBySymbol[symbol]
+  return Number.isFinite(trackedPrice) && trackedPrice > 0 ? trackedPrice : null
 }
 
-function getLiveUnrealizedPnl(position: Position, activeSymbol: string, livePrice: number | null) {
-  const referencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
-  if (referencePrice == null || position.entry_price == null) return position.unrealized_pnl
-  if (position.side === 'LONG') return position.quantity * (referencePrice - position.entry_price)
-  if (position.side === 'SHORT') return position.quantity * (position.entry_price - referencePrice)
+function getLiveUnrealizedPnl(position: Position, markPrice: number | null) {
+  if (markPrice == null || position.entry_price == null) return position.unrealized_pnl
+  if (position.side === 'LONG') return position.quantity * (markPrice - position.entry_price)
+  if (position.side === 'SHORT') return position.quantity * (position.entry_price - markPrice)
   return position.unrealized_pnl
 }
 
-function formatUnrealizedPnl(position: Position, activeSymbol: string, livePrice: number | null) {
-  const pnl = getLiveUnrealizedPnl(position, activeSymbol, livePrice)
+function formatUnrealizedPnl(position: Position, markPrice: number | null) {
+  const pnl = getLiveUnrealizedPnl(position, markPrice)
   if (pnl == null) return '-'
   return `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`
 }
@@ -1629,16 +1726,15 @@ function captureRateTone(value?: number | null) {
   return 'text-loss'
 }
 
-function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', activeSymbol: string, livePrice: number | null) {
+function formatPositionSize(position: Position, sizeUnit: 'QUOTE' | 'BASE', markPrice: number | null) {
   const { baseAsset, quoteAsset } = splitTradingSymbol(position.symbol)
 
   if (sizeUnit === 'BASE') {
     return `${position.quantity.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} ${baseAsset}`
   }
 
-  const liveReferencePrice = getLiveReferencePrice(position, activeSymbol, livePrice)
-  const price: number = typeof liveReferencePrice === 'number' && Number.isFinite(liveReferencePrice)
-    ? liveReferencePrice
+  const price: number = typeof markPrice === 'number' && Number.isFinite(markPrice)
+    ? markPrice
     : (typeof position.entry_price === 'number' && Number.isFinite(position.entry_price) ? position.entry_price : 0)
   const quoteValue = position.quantity * price
   if (!quoteValue) return `— ${quoteAsset}`

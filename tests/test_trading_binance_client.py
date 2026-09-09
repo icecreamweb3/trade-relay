@@ -4060,6 +4060,111 @@ def test_positions_reconcile_stale_risk_after_legacy_increase(monkeypatch):
     assert risk_updates == [(21, pytest.approx(expected_risk))]
 
 
+def test_positions_hide_orphan_risk_when_no_stop_exists(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None, status=None: [{
+            "id": 22,
+            "symbol": "BTCUSDC",
+            "position_side": "SHORT",
+            "quantity": 0.02,
+            "avg_entry_price": 79557.8,
+            "unrealized_pnl": -1.61,
+            "leverage": 100,
+            "margin_type": "cross",
+            "planned_stop_price": None,
+            # Legacy bad value: opening commission without a defining stop.
+            "initial_risk_usdc": 0.796,
+        }],
+    )
+    monkeypatch.setattr(positions_router.db_module, "query_orders", lambda **kwargs: [])
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+
+    positions = positions_router._db_positions(user_id=5)
+
+    assert positions[0].planned_stop_price is None
+    assert positions[0].initial_risk_usdc is None
+
+
+def test_setting_first_stop_replaces_orphan_risk(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 23,
+        "symbol": "BTCUSDC",
+        "position_side": "SHORT",
+        "position_mode": "DUAL",
+        "quantity": 0.02,
+        "avg_entry_price": 79557.8,
+        "planned_stop_price": None,
+        "initial_risk_usdc": 0.796,
+    }
+    initialized = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(positions_router, "_fetch_current_trigger_price", lambda *args: 79600.0)
+    monkeypatch.setattr(positions_router, "place_tp_sl_orders", lambda **kwargs: [])
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "initialize_position_risk",
+        lambda position_id, stop, risk: initialized.append((position_id, stop, risk)) or True,
+    )
+    monkeypatch.setattr(positions_router, "_clear_positions_cache", lambda user_id: None)
+
+    result = positions_router.set_position_tpsl(
+        23,
+        positions_router.TpSlIn(sl_price=79740.0),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    expected_risk = (79740.0 - 79557.8) * 0.02
+    assert result["initial_risk_usdc"] == pytest.approx(expected_risk)
+    assert initialized == [(23, 79740.0, pytest.approx(expected_risk))]
+
+
+def test_initialize_position_risk_atomically_replaces_orphan_amount(monkeypatch):
+    from trade_relay import database as db_module
+
+    executed = []
+
+    class Cursor:
+        rowcount = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def execute(self, sql, params):
+            executed.append((sql, params))
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_module, "get_connection", Connection)
+
+    assert db_module.initialize_position_risk(23, 79740.0, 3.644) is True
+
+    sql, params = executed[0]
+    assert "WHEN planned_stop_price IS NULL OR planned_stop_price <= 0" in sql
+    assert sql.index("SET initial_risk_usdc") < sql.index("planned_stop_price = CASE")
+    assert params == (3.644, 3.644, 79740.0, 23)
+
+
 def test_positions_do_not_infer_risk_from_stop_already_moved_into_profit(monkeypatch):
     from backend.routers import positions as positions_router
 

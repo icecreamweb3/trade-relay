@@ -273,7 +273,18 @@ def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price:
     """Recover or reconcile a legacy open position's 1R."""
     planned_stop = float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None
     initial_risk = float(row["initial_risk_usdc"]) if row.get("initial_risk_usdc") is not None else None
-    if initial_risk is not None and math.isfinite(initial_risk) and initial_risk > 0:
+    # A risk amount without the stop that defines it is not a usable 1R.  Older
+    # rows can contain only the opening commission here; do not expose that as
+    # risk or let it prevent the first real stop from establishing the baseline.
+    has_valid_baseline = (
+        planned_stop is not None
+        and math.isfinite(planned_stop)
+        and planned_stop > 0
+        and initial_risk is not None
+        and math.isfinite(initial_risk)
+        and initial_risk > 0
+    )
+    if has_valid_baseline:
         entry_price = float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None
         quantity = abs(float(row.get("quantity") or 0))
         if (
@@ -308,7 +319,10 @@ def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price:
 
     entry_price = float(row["avg_entry_price"]) if row.get("avg_entry_price") is not None else None
     quantity = abs(float(row.get("quantity") or 0))
-    stop_price = planned_stop if planned_stop is not None else active_sl_price
+    has_valid_planned_stop = (
+        planned_stop is not None and math.isfinite(planned_stop) and planned_stop > 0
+    )
+    stop_price = planned_stop if has_valid_planned_stop else active_sl_price
     side = str(row.get("position_side") or "").upper()
     if (
         entry_price is None
@@ -320,17 +334,17 @@ def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price:
         or stop_price <= 0
         or quantity <= 0
     ):
-        return planned_stop, None
+        return planned_stop if has_valid_planned_stop else None, None
 
     # A moved stop already beyond breakeven cannot reveal the original downside risk.
     # Leave R unavailable instead of manufacturing a misleading baseline.
     is_loss_side_stop = (side == "LONG" and stop_price < entry_price) or (side == "SHORT" and stop_price > entry_price)
     if not is_loss_side_stop:
-        return planned_stop, None
+        return planned_stop if has_valid_planned_stop else None, None
 
     recovered_risk = abs(entry_price - stop_price) * quantity
     if not math.isfinite(recovered_risk) or recovered_risk <= 0:
-        return planned_stop, None
+        return planned_stop if has_valid_planned_stop else None, None
 
     try:
         db_module.initialize_position_risk(position_id, stop_price, recovered_risk)
@@ -340,7 +354,7 @@ def _restore_missing_position_risk(row: dict, position_id: int, active_sl_price:
             position_id,
             stop_price,
         )
-        return planned_stop, None
+        return planned_stop if has_valid_planned_stop else None, None
 
     _log.info(
         "[POSITION_SYNC] phase=risk_restored pos=%s stop=%s initial_risk_usdc=%s",
@@ -784,9 +798,20 @@ def set_position_tpsl(
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
+    stored_planned_stop = (
+        float(position_row["planned_stop_price"])
+        if position_row.get("planned_stop_price") is not None
+        else None
+    )
+    # Treat the two columns as one baseline.  A standalone amount (commonly an
+    # old opening-commission value) is invalid and must not block initialization
+    # from the first actual stop-loss.
     effective_initial_risk = (
         float(position_row["initial_risk_usdc"])
-        if position_row.get("initial_risk_usdc") is not None
+        if stored_planned_stop is not None
+        and math.isfinite(stored_planned_stop)
+        and stored_planned_stop > 0
+        and position_row.get("initial_risk_usdc") is not None
         else None
     )
     if effective_initial_risk is None and body.sl_price and body.sl_price > 0 and entry_price and quantity > 0:

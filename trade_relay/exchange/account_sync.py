@@ -17,6 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from trade_relay import config as cfg_module
 from trade_relay import database as db_module
 from trade_relay.exchange.binance_client import BinanceClient
+from trade_relay.exchange.position_mark_price_tracker import (
+    replace_user_positions,
+    retain_users as retain_mark_price_users,
+    stop_position_mark_price_tracking,
+)
 
 import logging
 _log = logging.getLogger(__name__)
@@ -62,6 +67,10 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
     testnet = cfg_module.is_testnet(username)
 
     if not api_key or not api_secret:
+        try:
+            replace_user_positions(user_id, [])
+        except Exception:
+            _log.exception("[POSITION_MARK] phase=clear_user_error user_id=%s", user_id)
         _log.warning("[ACCOUNT_SYNC] phase=missing_credentials user_id=%s username=%s symbol=%s", user_id, username, normalized)
         summary = AccountSummaryOut(
             symbol=normalized,
@@ -111,6 +120,15 @@ def _fetch_and_store(user_id: int, username: str, symbol: str | None) -> None:
                     pos.get("symbol"),
                     stored_side,
                 )
+
+        # Maintain shared 1-second mark-price streams for every distinct symbol
+        # with an open position. Streams are shared across users by symbol.
+        try:
+            replace_user_positions(user_id, all_positions)
+        except Exception:
+            # Real-time extrema tracking is additive; the 15-second account
+            # snapshot above remains the durable fallback if a stream fails.
+            _log.exception("[POSITION_MARK] phase=refresh_user_error user_id=%s", user_id)
 
         assets = account.get("assets", []) or []
         selected_asset = None
@@ -261,6 +279,11 @@ def _run_once() -> None:
     # 当前默认同步主 symbol（BTCUSDC 等），后续可扩展为每个用户最近使用的 symbol
     symbol = _ENV_SYMBOL
     _log.info("[ACCOUNT_SYNC] phase=run_once users=%s symbol=%s", len(users), symbol)
+    active_user_ids = {int(row["id"]) for row in users}
+    try:
+        retain_mark_price_users(active_user_ids)
+    except Exception:
+        _log.exception("[POSITION_MARK] phase=retain_users_error")
     for row in users:
         user_id = row["id"]
         username = row["username"]
@@ -285,3 +308,4 @@ def stop_account_sync() -> None:
     _stop_event.set()
     if _sync_thread:
         _sync_thread.join(timeout=5)
+    stop_position_mark_price_tracking()

@@ -4931,17 +4931,24 @@ def initialize_position_risk(
     """只写入本轮持仓首次确定的计划止损和 1R。
 
     计划止损始终保持首次值；后续加仓引起的 1R 重算由
-    ``update_position_initial_risk`` 显式完成。
+    ``update_position_initial_risk`` 显式完成。两个字段被视为同一个基准：
+    如果计划止损尚未写入，会同时写入止损并替换可能存在的孤立风险值。
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE positions
-                   SET planned_stop_price = COALESCE(planned_stop_price, %s),
-                       initial_risk_usdc = COALESCE(initial_risk_usdc, %s)
+                   SET initial_risk_usdc = CASE
+                           WHEN planned_stop_price IS NULL OR planned_stop_price <= 0 THEN %s
+                           ELSE COALESCE(initial_risk_usdc, %s)
+                       END,
+                       planned_stop_price = CASE
+                           WHEN planned_stop_price IS NULL OR planned_stop_price <= 0 THEN %s
+                           ELSE planned_stop_price
+                       END
                    WHERE id = %s""",
-                (planned_stop_price, initial_risk_usdc, position_id),
+                (initial_risk_usdc, initial_risk_usdc, planned_stop_price, position_id),
             )
             conn.commit()
             return cur.rowcount > 0
