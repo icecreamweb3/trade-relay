@@ -1289,24 +1289,28 @@ function TpSlModal({
   const tpPnl = Number.isFinite(tpVal) && tpVal > 0 ? calcPnl(tpVal) : null
   const slPnl = Number.isFinite(slVal) && slVal > 0 ? calcPnl(slVal) : null
 
-  function getTriggerValidationError(kind: 'tp' | 'sl', triggerPrice: number | null): string | null {
-    if (triggerPrice == null || triggerPrice <= 0 || referencePrice == null || referencePrice <= 0) return null
+  function getTriggerValidationError(
+    kind: 'tp' | 'sl',
+    triggerPrice: number | null,
+    currentReferencePrice = referencePrice,
+  ): string | null {
+    if (triggerPrice == null || triggerPrice <= 0 || currentReferencePrice == null || currentReferencePrice <= 0) return null
 
     if (position.side === 'LONG') {
-      if (kind === 'tp' && triggerPrice <= referencePrice) {
-        return t('pos.tpMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+      if (kind === 'tp' && triggerPrice <= currentReferencePrice) {
+        return t('pos.tpMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: currentReferencePrice.toFixed(2) })
       }
-      if (kind === 'sl' && triggerPrice >= referencePrice) {
-        return t('pos.slMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+      if (kind === 'sl' && triggerPrice >= currentReferencePrice) {
+        return t('pos.slMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: currentReferencePrice.toFixed(2) })
       }
       return null
     }
 
-    if (kind === 'tp' && triggerPrice >= referencePrice) {
-      return t('pos.tpMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+    if (kind === 'tp' && triggerPrice >= currentReferencePrice) {
+      return t('pos.tpMustBeBelowCurrent', { price: triggerPrice.toFixed(2), current: currentReferencePrice.toFixed(2) })
     }
-    if (kind === 'sl' && triggerPrice <= referencePrice) {
-      return t('pos.slMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: referencePrice.toFixed(2) })
+    if (kind === 'sl' && triggerPrice <= currentReferencePrice) {
+      return t('pos.slMustBeAboveCurrent', { price: triggerPrice.toFixed(2), current: currentReferencePrice.toFixed(2) })
     }
     return null
   }
@@ -1318,12 +1322,27 @@ function TpSlModal({
   const handleConfirm = async () => {
     const tp = Number.isFinite(tpVal) && tpVal > 0 ? tpVal : null
     const sl = Number.isFinite(slVal) && slVal > 0 ? slVal : null
-    if (tpError || slError) {
-      showToast('error', tpError || slError || 'Invalid trigger price')
-      return
-    }
     setSubmitting(true)
     try {
+      // Refresh before validating so the modal and the backend share the same
+      // short-lived cached mark price during submission.
+      let submitReferencePrice = referencePrice
+      try {
+        const latestMarkPrice = await api.getMarkPrice(position.symbol)
+        if (Number.isFinite(latestMarkPrice) && latestMarkPrice > 0) {
+          submitReferencePrice = latestMarkPrice
+          setFetchedMarkPrice(latestMarkPrice)
+        }
+      } catch {
+        // Backend will independently try live price and then its DB fallback.
+      }
+      const submitTpError = getTriggerValidationError('tp', tp, submitReferencePrice)
+      const submitSlError = getTriggerValidationError('sl', sl, submitReferencePrice)
+      if (submitTpError || submitSlError) {
+        showToast('error', submitTpError || submitSlError || 'Invalid trigger price')
+        return
+      }
+
       const result = await api.setPositionTpSl(position.id, tp, sl)
       const initialRisk = typeof result.initial_risk_usdc === 'number'
         ? result.initial_risk_usdc

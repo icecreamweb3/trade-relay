@@ -413,6 +413,20 @@ def _fetch_current_trigger_price(user_id: int | None, username: str, symbol: str
     if not normalized_symbol:
         return None
 
+    # TP/SL validation must use the same recent mark-price source as the modal.
+    # The persisted account summary is only a fallback because it can be stale.
+    try:
+        from backend.routers.account import _fetch_public_mark_price
+
+        return _fetch_public_mark_price(normalized_symbol, username)
+    except Exception as exc:
+        _log.warning(
+            "[POSITION_SYNC] phase=live_mark_price_lookup_failed username=%s symbol=%s error=%s fallback=db_snapshot",
+            username,
+            normalized_symbol,
+            exc,
+        )
+
     if user_id is not None:
         summary_row = db_module.get_account_summary_from_db(user_id, normalized_symbol) or {}
         rest_mark_price = summary_row.get("rest_mark_price")
@@ -423,29 +437,7 @@ def _fetch_current_trigger_price(user_id: int | None, username: str, symbol: str
                     return price
             except (TypeError, ValueError):
                 pass
-
-    testnet = cfg_module.is_testnet(username)
-    base_url = "https://testnet.binancefuture.com" if testnet else "https://fapi.binance.com"
-    try:
-        import requests as _requests
-
-        proxy_cfg = None
-        proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
-        if proxy_url:
-            proxy_cfg = {"http": proxy_url, "https": proxy_url}
-        resp = _requests.get(
-            f"{base_url}/fapi/v1/premiumIndex",
-            params={"symbol": normalized_symbol},
-            proxies=proxy_cfg,
-            timeout=5,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        price = float(data.get("markPrice") or data.get("price") or 0)
-        return price if price > 0 else None
-    except Exception as exc:
-        _log.warning("[POSITION_SYNC] phase=mark_price_lookup_failed username=%s symbol=%s error=%s", username, normalized_symbol, exc)
-        return None
+    return None
 
 
 def _active_order_rows_for_user(user_id: int | None, username: str) -> list[dict]:
