@@ -147,7 +147,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.autoBreakeven.hint': '开启后，当本轮 MFE 达到 1R，自动把多仓止损移至开仓价 +0.1%，空仓移至开仓价 -0.1%；保留已有止盈单。',
     'pos.autoBreakeven.noRisk': '缺少有效的初始风险值，无法启用',
     'pos.autoBreakeven.moving': '正在移动止损…',
+    'pos.autoBreakeven.movingShort': '移动中',
     'pos.autoBreakeven.protected': '止损已达到或优于 +0.1% 保护价',
+    'pos.autoBreakeven.protectedShort': '已保护',
     'pos.autoBreakeven.success': 'MFE 已达到 1R，止损已自动移动到 {price}',
     'pos.autoBreakeven.failed': '自动移动止损失败，将稍后重试',
     'pos.initialMaxRiskHint': '以首次设置的计划止损为基准，并随加仓后的总数量和开仓均价更新，作为本轮持仓的 1R',
@@ -422,6 +424,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.positionIdBackfill.success': 'Position ID 回填完成：扫描 {scanned} 条，修复 {repaired} 个周期，跳过 {skipped} 条，失败 {failed} 条',
     'log.positionIdBackfill.failed': 'Position ID 回填失败，请稍后重试',
     'common.close': '关闭',
+    'common.on': '开',
+    'common.off': '关',
 
     // Status
     'status.filled': '已成交',
@@ -741,7 +745,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     'pos.autoBreakeven.hint': 'When enabled and MFE reaches 1R, moves a long stop to entry +0.1% or a short stop to entry -0.1%, while preserving the take-profit order.',
     'pos.autoBreakeven.noRisk': 'A valid initial risk is required',
     'pos.autoBreakeven.moving': 'Moving stop…',
+    'pos.autoBreakeven.movingShort': 'Moving',
     'pos.autoBreakeven.protected': 'Stop is already at or beyond the 0.1% protection price',
+    'pos.autoBreakeven.protectedShort': 'Protected',
     'pos.autoBreakeven.success': 'MFE reached 1R; stop automatically moved to {price}',
     'pos.autoBreakeven.failed': 'Failed to move stop automatically; retrying later',
     'pos.initialMaxRiskHint': '1R based on the first planned stop, updated from the total quantity and average entry price after position increases',
@@ -1015,6 +1021,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     'log.positionIdBackfill.success': 'Position ID backfill complete: {scanned} scanned, {repaired} cycles repaired, {skipped} skipped, {failed} failed',
     'log.positionIdBackfill.failed': 'Position ID backfill failed, please try again',
     'common.close': 'Close',
+    'common.on': 'On',
+    'common.off': 'Off',
 
     'status.filled': 'FILLED',
     'status.pending': 'PENDING',

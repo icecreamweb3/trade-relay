@@ -722,7 +722,7 @@ export function PositionsPanel({
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
-              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th><th></th>
+              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
@@ -776,7 +776,7 @@ export function PositionsPanel({
                         : '—'}
                     </td>
                     <td className="text-[#858585]">{formatMarginType(p.margin_type, t)}</td>
-                    <td>
+                    <td className="min-w-[92px] text-center">
                       <div className="flex items-center gap-1.5 whitespace-nowrap">
                         <span
                           className="font-mono text-[10px] text-[#aaa] cursor-pointer hover:text-[#F0B90B] transition-colors"
@@ -814,20 +814,25 @@ export function PositionsPanel({
                         )
                         const moving = Boolean(autoBreakevenMoving[p.id])
                         const enabled = Boolean(autoBreakevenEnabled[p.id])
-                        return <button
-                          type="button"
-                          role="switch"
-                          aria-checked={enabled}
-                          disabled={moving || p.entry_price == null || p.initial_risk_usdc == null || p.initial_risk_usdc <= 0}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            toggleAutoBreakeven(p.id)
-                          }}
-                          className={`relative h-5 w-9 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#4a515d] bg-[#262b33]'}`}
-                          title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : t('pos.autoBreakeven.hint')}
-                        >
-                          <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
-                        </button>
+                        return <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={enabled}
+                            disabled={moving || p.entry_price == null || p.initial_risk_usdc == null || p.initial_risk_usdc <= 0}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              toggleAutoBreakeven(p.id)
+                            }}
+                            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#69717e] bg-[#303640]'}`}
+                            title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : t('pos.autoBreakeven.hint')}
+                          >
+                            <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
+                          </button>
+                          <span className={`text-[10px] ${protectedAtTarget ? 'text-[#0ecb81]' : enabled ? 'text-[#8ee8c2]' : 'text-[#8b94a5]'}`}>
+                            {moving ? t('pos.autoBreakeven.movingShort') : protectedAtTarget ? t('pos.autoBreakeven.protectedShort') : enabled ? t('common.on') : t('common.off')}
+                          </span>
+                        </div>
                       })()}
                     </td>
                     <td className="text-right">
