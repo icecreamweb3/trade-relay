@@ -21,6 +21,48 @@ const SETUP_OPTIONS = [
   'DOUBLE_TOP_BOTTOM_FLAG',
   'OTHER',
 ] as const
+type SetupProbability = '' | '20' | '40' | '50' | '60' | '75' | '80'
+type SetupVariant = { value: string; probability: Exclude<SetupProbability, ''> }
+
+export const SETUP_VARIANTS: Partial<Record<(typeof SETUP_OPTIONS)[number], readonly SetupVariant[]>> = {
+  SPIKE_AND_CHANNEL: [
+    { value: 'SPIKE_FIRST_SMALL_PULLBACK', probability: '60' },
+    { value: 'CHANNEL_TREND_PULLBACK', probability: '60' },
+    { value: 'CHANNEL_BREAK_AND_TEST', probability: '75' },
+  ],
+  WEDGE_REVERSAL_3_PUSH: [
+    { value: 'MINOR_REVERSAL', probability: '75' },
+    { value: 'MAJOR_REVERSAL', probability: '40' },
+  ],
+  TWENTY_GAP_BARS: [
+    { value: 'FIRST_EMA_TOUCH', probability: '75' },
+    { value: 'FIRST_OPPOSITE_GAP_BAR', probability: '60' },
+  ],
+  TRIANGLES: [{ value: 'FIRST_BREAKOUT', probability: '50' }],
+  EXPANDING_TRIANGLES: [
+    { value: 'MINOR_REVERSAL', probability: '60' },
+    { value: 'MAJOR_REVERSAL', probability: '40' },
+  ],
+  INSIDE_INSIDE: [{ value: 'FIRST_BREAKOUT', probability: '50' }],
+  INSIDE_OUTSIDE_INSIDE: [{ value: 'FIRST_BREAKOUT', probability: '50' }],
+  TWO_BAR_REVERSAL: [
+    { value: 'ORDINARY_REVERSAL', probability: '40' },
+    { value: 'STRONG_KEY_LEVEL', probability: '60' },
+  ],
+  BULL_BEAR_FLAG: [
+    { value: 'STRONG_TREND_CONTINUATION', probability: '60' },
+    { value: 'GENERAL_CONTEXT', probability: '40' },
+  ],
+  DOUBLE_TOP_BOTTOM_FLAG: [
+    { value: 'MEASURED_MOVE', probability: '40' },
+    { value: 'MINOR_TREND_LEG', probability: '60' },
+  ],
+}
+
+export function getSetupVariantProbability(setupName: string, setupVariant: string): SetupProbability {
+  return SETUP_VARIANTS[setupName as keyof typeof SETUP_VARIANTS]
+    ?.find((variant) => variant.value === setupVariant)?.probability ?? ''
+}
 const INTERVAL_MS: Record<string, number> = {
   '1m': 60_000,
   '5m': 300_000,
@@ -360,13 +402,14 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
 type ReviewDraft = {
   market_state: '' | 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL'
   setup_name: string
+  setup_variant: string
   entry_rationale: string
   signal_candle_trigger: string
   signal_candle_interval: '' | SignalCandleSelection['interval']
   signal_candle_open_time: string
   signal_candle_number: number | null
   opportunity_grade: '' | 'A' | 'B' | 'C'
-  estimated_win_probability: '' | '20' | '40' | '60' | '80'
+  estimated_win_probability: SetupProbability
   first_target_price: string
   is_planned_trade: '' | 'YES' | 'NO'
   first_entry_pnl_state: '' | 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE'
@@ -379,7 +422,7 @@ type ReviewDraft = {
 }
 
 const EMPTY_REVIEW: ReviewDraft = {
-  market_state: '', setup_name: '', entry_rationale: '', signal_candle_trigger: '',
+  market_state: '', setup_name: '', setup_variant: '', entry_rationale: '', signal_candle_trigger: '',
   signal_candle_interval: '', signal_candle_open_time: '', signal_candle_number: null,
   opportunity_grade: '', estimated_win_probability: '', first_target_price: '', is_planned_trade: '', first_entry_pnl_state: '',
   planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
@@ -468,6 +511,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       setDraft({
         market_state: review.market_state ?? '',
         setup_name: review.setup_name ?? '',
+        setup_variant: review.setup_variant ?? '',
         entry_rationale: review.entry_rationale ?? '',
         signal_candle_trigger: review.signal_candle_trigger ?? '',
         signal_candle_interval: review.signal_candle_interval ?? '',
@@ -508,6 +552,24 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     setDraft((current) => ({ ...current, [field]: value }))
     setStatus('idle')
   }
+  const updateSetup = (setupName: string) => {
+    const firstVariant = SETUP_VARIANTS[setupName as keyof typeof SETUP_VARIANTS]?.[0]
+    setDraft((current) => ({
+      ...current,
+      setup_name: setupName,
+      setup_variant: firstVariant?.value ?? '',
+      estimated_win_probability: firstVariant?.probability ?? '',
+    }))
+    setStatus('idle')
+  }
+  const updateSetupVariant = (setupVariant: string) => {
+    setDraft((current) => ({
+      ...current,
+      setup_variant: setupVariant,
+      estimated_win_probability: getSetupVariantProbability(current.setup_name, setupVariant),
+    }))
+    setStatus('idle')
+  }
   const textOrNull = (value: string) => value.trim() || null
   const priceOrNull = (value: string) => value.trim() ? Number(value) : null
   const opportunityScore = useMemo(() => calculateReviewOpportunityScore(
@@ -525,13 +587,14 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     const body: ApiPositionReviewInput = {
       market_state: draft.market_state || null,
       setup_name: textOrNull(draft.setup_name),
+      setup_variant: textOrNull(draft.setup_variant),
       entry_rationale: textOrNull(draft.entry_rationale),
       signal_candle_trigger: textOrNull(draft.signal_candle_trigger),
       signal_candle_interval: draft.signal_candle_interval || null,
       signal_candle_open_time: draft.signal_candle_open_time || null,
       signal_candle_number: draft.signal_candle_number,
       opportunity_grade: opportunityScore.grade,
-      estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 60 | 80,
+      estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 50 | 60 | 75 | 80,
       first_target_price: priceOrNull(draft.first_target_price),
       planned_reward_risk: opportunityScore.rewardRisk,
       expected_value_r: opportunityScore.expectedValue,
@@ -579,9 +642,10 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       </div>
       <div className="grid grid-cols-4 gap-x-3 gap-y-2">
         {label('review.marketState', 'review.tip.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
-        {label('review.setupName', 'review.tip.setupName', <select value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_name && !SETUP_OPTIONS.some((value) => value === draft.setup_name) && <option value={draft.setup_name}>{draft.setup_name}</option>}{SETUP_OPTIONS.map((value, index) => <option key={value} value={value}>{index + 1}. {t(`review.setup.${value}`)}</option>)}</select>)}
+        {label('review.setupName', 'review.tip.setupName', <select value={draft.setup_name} onChange={(e) => updateSetup(e.target.value)} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_name && !SETUP_OPTIONS.some((value) => value === draft.setup_name) && <option value={draft.setup_name}>{draft.setup_name}</option>}{SETUP_OPTIONS.map((value, index) => <option key={value} value={value}>{index + 1}. {t(`review.setup.${value}`)}</option>)}</select>)}
+        {label('review.setupVariant', 'review.tip.setupVariant', <select value={draft.setup_variant} onChange={(e) => updateSetupVariant(e.target.value)} disabled={!SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.length} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_variant && !SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.some((variant) => variant.value === draft.setup_variant) && <option value={draft.setup_variant}>{draft.setup_variant}</option>}{SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.map((variant) => <option key={variant.value} value={variant.value}>{t(`review.setupVariant.${variant.value}`)} · {variant.probability}%</option>)}</select>)}
         {label('review.grade', 'review.tip.grade', <div className={`${inputClass} flex items-center ${opportunityScore.grade === 'A' ? 'text-[#0ecb81]' : opportunityScore.grade === 'B' ? 'text-[#69a4ff]' : opportunityScore.grade === 'C' ? 'text-[#f0b90b]' : opportunityScore.status === 'unqualified' ? 'text-[#f6465d]' : 'text-[#8f99a8]'}`}>{formatOpportunityScore(opportunityScore, t)}</div>)}
-        {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="60">60%</option><option value="80">80%</option></select>)}
+        {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="50">50%</option><option value="60">60%</option><option value="75">75%</option><option value="80">80%</option></select>)}
         {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
         {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}

@@ -96,6 +96,7 @@ class PositionRecordOut(BaseModel):
     excursion_status: Optional[str] = None
     review_market_state: Optional[str] = None
     review_setup_name: Optional[str] = None
+    review_setup_variant: Optional[str] = None
     review_entry_rationale: Optional[str] = None
     review_signal_candle_trigger: Optional[str] = None
     review_signal_candle_interval: Optional[str] = None
@@ -120,13 +121,14 @@ class PositionRecordOut(BaseModel):
 class PositionReviewIn(BaseModel):
     market_state: Optional[Literal["TREND", "RANGE", "CLIMAX_REVERSAL"]] = None
     setup_name: Optional[str] = Field(None, max_length=255)
+    setup_variant: Optional[str] = Field(None, max_length=64)
     entry_rationale: Optional[str] = Field(None, max_length=5000)
     signal_candle_trigger: Optional[str] = Field(None, max_length=5000)
     signal_candle_interval: Optional[Literal["1m", "5m", "15m", "1h", "4h", "1d"]] = None
     signal_candle_open_time: Optional[datetime] = None
     signal_candle_number: Optional[int] = Field(None, ge=1, le=1000)
     opportunity_grade: Optional[Literal["A", "B", "C"]] = None
-    estimated_win_probability: Optional[Literal[20, 40, 60, 80]] = None
+    estimated_win_probability: Optional[Literal[20, 40, 50, 60, 75, 80]] = None
     first_target_price: Optional[float] = Field(None, gt=0)
     planned_reward_risk: Optional[float] = None
     expected_value_r: Optional[float] = None
@@ -1083,6 +1085,7 @@ def get_position_records(
             excursion_status=str(row["excursion_status"]) if row.get("excursion_status") is not None else None,
             review_market_state=row.get("review_market_state"),
             review_setup_name=row.get("review_setup_name"),
+            review_setup_variant=row.get("review_setup_variant"),
             review_entry_rationale=row.get("review_entry_rationale"),
             review_signal_candle_trigger=row.get("review_signal_candle_trigger"),
             review_signal_candle_interval=row.get("review_signal_candle_interval"),
@@ -1124,6 +1127,7 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         user_id=int(row["user_id"]),
         market_state=row.get("market_state"),
         setup_name=row.get("setup_name"),
+        setup_variant=row.get("setup_variant"),
         entry_rationale=row.get("entry_rationale"),
         signal_candle_trigger=row.get("signal_candle_trigger"),
         signal_candle_interval=row.get("signal_candle_interval"),

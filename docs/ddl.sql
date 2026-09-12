@@ -120,13 +120,14 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
     market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
+    setup_variant          VARCHAR(64)  DEFAULT NULL COMMENT 'Setup 情景分支',
     entry_rationale        TEXT         COMMENT '入场依据',
     signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
     signal_candle_interval VARCHAR(8)   DEFAULT NULL COMMENT '信号 K 周期',
     signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）',
     signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
-    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
+    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于 Setup 情景联动的评估胜率',
     first_target_price       DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价',
     planned_reward_risk      DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比',
     expected_value_r         DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）',
@@ -149,12 +150,15 @@ CREATE TABLE IF NOT EXISTS position_reviews (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 ALTER TABLE position_reviews
+    ADD COLUMN IF NOT EXISTS setup_variant VARCHAR(64) DEFAULT NULL COMMENT 'Setup 情景分支' AFTER setup_name;
+
+ALTER TABLE position_reviews
     ADD COLUMN IF NOT EXISTS signal_candle_interval VARCHAR(8) DEFAULT NULL COMMENT '信号 K 周期' AFTER signal_candle_trigger,
     ADD COLUMN IF NOT EXISTS signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）' AFTER signal_candle_interval,
     ADD COLUMN IF NOT EXISTS signal_candle_number INT DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号' AFTER signal_candle_open_time;
 
 ALTER TABLE position_reviews
-    ADD COLUMN IF NOT EXISTS estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade;
+    ADD COLUMN IF NOT EXISTS estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于 Setup 情景联动的评估胜率' AFTER opportunity_grade;
 
 ALTER TABLE position_reviews
     ADD COLUMN IF NOT EXISTS first_target_price DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价' AFTER estimated_win_probability,

@@ -648,6 +648,7 @@ function buildExportRow(
     [t('pos.closeOrdersId')]: formatOrderIds(row.close_orders_id),
     [t('review.export.marketState')]: formatReviewMarketState(row.review_market_state, t),
     [t('review.export.setupName')]: formatReviewSetupName(row.review_setup_name, t),
+    [t('review.export.setupVariant')]: row.review_setup_variant ? t(`review.setupVariant.${row.review_setup_variant}`) : '',
     [t('review.export.entryRationale')]: row.review_entry_rationale ?? '',
     [t('review.export.signalTrigger')]: formatSignalCandleAndTrigger(row, t),
     [t('review.export.grade')]: row.review_opportunity_grade ?? '',

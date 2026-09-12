@@ -248,13 +248,14 @@ export interface ApiPositionRecord {
   excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
   review_market_state?: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
   review_setup_name?: string | null
+  review_setup_variant?: string | null
   review_entry_rationale?: string | null
   review_signal_candle_trigger?: string | null
   review_signal_candle_interval?: '1m' | '5m' | '15m' | '1h' | '4h' | '1d' | null
   review_signal_candle_open_time?: string | null
   review_signal_candle_number?: number | null
   review_opportunity_grade?: 'A' | 'B' | 'C' | null
-  review_estimated_win_probability?: 20 | 40 | 60 | 80 | null
+  review_estimated_win_probability?: 20 | 40 | 50 | 60 | 75 | 80 | null
   review_first_target_price?: number | null
   review_planned_reward_risk?: number | null
   review_expected_value_r?: number | null
@@ -275,13 +276,14 @@ export interface ApiPositionReview {
   user_id: number
   market_state: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
   setup_name: string | null
+  setup_variant: string | null
   entry_rationale: string | null
   signal_candle_trigger: string | null
   signal_candle_interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d' | null
   signal_candle_open_time: string | null
   signal_candle_number: number | null
   opportunity_grade: 'A' | 'B' | 'C' | null
-  estimated_win_probability: 20 | 40 | 60 | 80 | null
+  estimated_win_probability: 20 | 40 | 50 | 60 | 75 | 80 | null
   first_target_price: number | null
   planned_reward_risk: number | null
   expected_value_r: number | null

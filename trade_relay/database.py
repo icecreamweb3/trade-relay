@@ -1696,13 +1696,14 @@ def init_db() -> None:
                     user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
                     market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
                     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
+                    setup_variant          VARCHAR(64)  DEFAULT NULL COMMENT 'Setup 情景分支',
                     entry_rationale        TEXT         COMMENT '入场依据',
                     signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
                     signal_candle_interval VARCHAR(8)   DEFAULT NULL COMMENT '信号 K 周期',
                     signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）',
                     signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
                     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
-                    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
+                    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于 Setup 情景联动的评估胜率',
                     first_target_price       DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价',
                     planned_reward_risk      DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比',
                     expected_value_r         DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）',
@@ -1726,10 +1727,11 @@ def init_db() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
             for _col, _ddl in [
+                ("setup_variant", "ALTER TABLE position_reviews ADD COLUMN setup_variant VARCHAR(64) DEFAULT NULL COMMENT 'Setup 情景分支' AFTER setup_name"),
                 ("signal_candle_interval", "ALTER TABLE position_reviews ADD COLUMN signal_candle_interval VARCHAR(8) DEFAULT NULL COMMENT '信号 K 周期' AFTER signal_candle_trigger"),
                 ("signal_candle_open_time", "ALTER TABLE position_reviews ADD COLUMN signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）' AFTER signal_candle_interval"),
                 ("signal_candle_number", "ALTER TABLE position_reviews ADD COLUMN signal_candle_number INT DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号' AFTER signal_candle_open_time"),
-                ("estimated_win_probability", "ALTER TABLE position_reviews ADD COLUMN estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade"),
+                ("estimated_win_probability", "ALTER TABLE position_reviews ADD COLUMN estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于 Setup 情景联动的评估胜率' AFTER opportunity_grade"),
                 ("first_target_price", "ALTER TABLE position_reviews ADD COLUMN first_target_price DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价' AFTER estimated_win_probability"),
                 ("planned_reward_risk", "ALTER TABLE position_reviews ADD COLUMN planned_reward_risk DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比' AFTER first_target_price"),
                 ("expected_value_r", "ALTER TABLE position_reviews ADD COLUMN expected_value_r DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）' AFTER planned_reward_risk"),
@@ -4850,7 +4852,7 @@ def get_position_review_scoring_context(position_id: int, user_id: int) -> Optio
 def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict:
     """Create or replace the editable review attached to one position cycle."""
     fields = (
-        "market_state", "setup_name", "entry_rationale", "signal_candle_trigger",
+        "market_state", "setup_name", "setup_variant", "entry_rationale", "signal_candle_trigger",
         "signal_candle_interval", "signal_candle_open_time", "signal_candle_number",
         "opportunity_grade", "estimated_win_probability", "first_target_price",
         "planned_reward_risk", "expected_value_r", "opportunity_score",
@@ -4971,6 +4973,7 @@ def query_position_records(
                     f.metric_calculated_at AS excursion_calculated_at,
                     pr.market_state AS review_market_state,
                     pr.setup_name AS review_setup_name,
+                    pr.setup_variant AS review_setup_variant,
                     pr.entry_rationale AS review_entry_rationale,
                     pr.signal_candle_trigger AS review_signal_candle_trigger,
                     pr.signal_candle_interval AS review_signal_candle_interval,
