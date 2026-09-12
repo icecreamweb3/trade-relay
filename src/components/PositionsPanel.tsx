@@ -12,6 +12,8 @@ import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreference
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 const BINANCE_MARK_PRICE_STREAM_URL = 'wss://fstream.binance.com/market/stream?streams='
+const AUTO_BREAKEVEN_OFFSET = 0.001
+const AUTO_BREAKEVEN_RETRY_MS = 10_000
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
@@ -23,6 +25,30 @@ interface Position {
   planned_stop_price?: number | null; initial_risk_usdc?: number | null
   live_mfe_usdc?: number; live_mae_usdc?: number
   live_mfe_at?: string | null; live_mae_at?: string | null
+}
+
+export function calculateAutoBreakevenStop(position: Pick<Position, 'side' | 'entry_price'>): number | null {
+  const entryPrice = position.entry_price
+  if (entryPrice == null || !Number.isFinite(entryPrice) || entryPrice <= 0) return null
+  if (position.side === 'LONG') return entryPrice * (1 + AUTO_BREAKEVEN_OFFSET)
+  if (position.side === 'SHORT') return entryPrice * (1 - AUTO_BREAKEVEN_OFFSET)
+  return null
+}
+
+function autoBreakevenStorageKey(username: string): string {
+  return `trade-relay:auto-breakeven:${username}`
+}
+
+function readAutoBreakevenSettings(username: string): Record<number, boolean> {
+  if (!username) return {}
+  try {
+    const parsed = JSON.parse(localStorage.getItem(autoBreakevenStorageKey(username)) || '{}') as Record<string, unknown>
+    return Object.fromEntries(Object.entries(parsed)
+      .filter(([id, enabled]) => enabled === true && Number.isFinite(Number(id)))
+      .map(([id]) => [Number(id), true]))
+  } catch {
+    return {}
+  }
 }
 
 function filterOpenPositions(rows: Position[]): Position[] {
@@ -105,6 +131,8 @@ export function PositionsPanel({
   const [positionHistory, setPositionHistory] = useState<PositionHistory[]>([])
   const [positionMarkPrices, setPositionMarkPrices] = useState<Record<string, number>>({})
   const [positionExcursions, setPositionExcursions] = useState<Record<number, { mfe: number; mae: number }>>({})
+  const [autoBreakevenEnabled, setAutoBreakevenEnabled] = useState<Record<number, boolean>>({})
+  const [autoBreakevenMoving, setAutoBreakevenMoving] = useState<Record<number, boolean>>({})
   const [loading, setLoading] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<number | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
@@ -118,6 +146,20 @@ export function PositionsPanel({
   const [marketCloseConfirm, setMarketCloseConfirm] = useState<MarketCloseConfirm | null>(null)
   const [amendDraft, setAmendDraft] = useState<AmendOrderDraft | null>(null)
   const loadRef = useRef<() => Promise<void>>(async () => {})
+  const autoBreakevenInFlightRef = useRef(new Set<number>())
+  const autoBreakevenRetryAfterRef = useRef(new Map<number, number>())
+
+  useEffect(() => {
+    setAutoBreakevenEnabled(readAutoBreakevenSettings(currentUser?.username ?? ''))
+    autoBreakevenInFlightRef.current.clear()
+    autoBreakevenRetryAfterRef.current.clear()
+  }, [currentUser?.username])
+
+  useEffect(() => {
+    const username = currentUser?.username
+    if (!username) return
+    localStorage.setItem(autoBreakevenStorageKey(username), JSON.stringify(autoBreakevenEnabled))
+  }, [autoBreakevenEnabled, currentUser?.username])
   const _positionsFirstLoadDone = useRef(false)
 
   const loadPositions = useCallback(async () => {
@@ -288,6 +330,55 @@ export function PositionsPanel({
       return changed ? next : current
     })
   }, [activeSymbol, currentPrice, markPrice, positionMarkPrices, positions])
+
+  useEffect(() => {
+    if (!isActive || !isAuthenticated) return
+    for (const position of positions) {
+      if (!autoBreakevenEnabled[position.id] || position.status !== 'OPEN') continue
+      const initialRisk = position.initial_risk_usdc
+      const mfe = positionExcursions[position.id]?.mfe ?? position.live_mfe_usdc ?? 0
+      const targetStop = calculateAutoBreakevenStop(position)
+      if (initialRisk == null || !Number.isFinite(initialRisk) || initialRisk <= 0 || mfe <= initialRisk || targetStop == null) continue
+
+      const existingStop = position.sl_price
+      const alreadyProtected = existingStop != null && (
+        (position.side === 'LONG' && existingStop >= targetStop)
+        || (position.side === 'SHORT' && existingStop <= targetStop)
+      )
+      if (alreadyProtected || autoBreakevenInFlightRef.current.has(position.id)) continue
+      if ((autoBreakevenRetryAfterRef.current.get(position.id) ?? 0) > Date.now()) continue
+
+      const rowMarkPrice = getPositionMarkPrice(position, positionMarkPrices, activeSymbol, markPrice ?? currentPrice)
+      const canPlaceWithoutImmediateTrigger = rowMarkPrice != null && (
+        (position.side === 'LONG' && targetStop < rowMarkPrice)
+        || (position.side === 'SHORT' && targetStop > rowMarkPrice)
+      )
+      if (!canPlaceWithoutImmediateTrigger) continue
+
+      autoBreakevenInFlightRef.current.add(position.id)
+      setAutoBreakevenMoving((current) => ({ ...current, [position.id]: true }))
+      void api.setPositionTpSl(position.id, position.tp_price ?? null, targetStop)
+        .then((result) => {
+          const savedStop = typeof result.sl_price === 'number' ? result.sl_price : targetStop
+          setPositions((current) => current.map((item) => item.id === position.id ? { ...item, sl_price: savedStop } : item))
+          autoBreakevenRetryAfterRef.current.delete(position.id)
+          showToast('success', t('pos.autoBreakeven.success', { price: savedStop.toFixed(2) }))
+        })
+        .catch((error: unknown) => {
+          autoBreakevenRetryAfterRef.current.set(position.id, Date.now() + AUTO_BREAKEVEN_RETRY_MS)
+          showToast('error', getRequestErrorMessage(error, t('pos.autoBreakeven.failed')))
+        })
+        .finally(() => {
+          autoBreakevenInFlightRef.current.delete(position.id)
+          setAutoBreakevenMoving((current) => ({ ...current, [position.id]: false }))
+        })
+    }
+  }, [activeSymbol, autoBreakevenEnabled, currentPrice, isActive, isAuthenticated, markPrice, positionExcursions, positionMarkPrices, positions, showToast, t])
+
+  const toggleAutoBreakeven = useCallback((positionId: number) => {
+    setAutoBreakevenEnabled((current) => ({ ...current, [positionId]: !current[positionId] }))
+    autoBreakevenRetryAfterRef.current.delete(positionId)
+  }, [])
 
   useEffect(() => {
     if (!isActive || !isAuthenticated) return
@@ -631,11 +722,11 @@ export function PositionsPanel({
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
-              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th></th>
+              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th><th></th>
             </tr></thead>
             <tbody>
               {positions.length === 0
-                ? <tr><td colSpan={13} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
+                ? <tr><td colSpan={14} className="text-center text-[#858585] py-6">{t('pos.empty')}</td></tr>
                 : positions.map(p => {
                   const rowMarkPrice = getPositionMarkPrice(
                     p,
@@ -713,6 +804,31 @@ export function PositionsPanel({
                           </svg>
                         </button>
                       </div>
+                    </td>
+                    <td>
+                      {(() => {
+                        const targetStop = calculateAutoBreakevenStop(p)
+                        const protectedAtTarget = targetStop != null && p.sl_price != null && (
+                          (p.side === 'LONG' && p.sl_price >= targetStop)
+                          || (p.side === 'SHORT' && p.sl_price <= targetStop)
+                        )
+                        const moving = Boolean(autoBreakevenMoving[p.id])
+                        const enabled = Boolean(autoBreakevenEnabled[p.id])
+                        return <button
+                          type="button"
+                          role="switch"
+                          aria-checked={enabled}
+                          disabled={moving || p.entry_price == null || p.initial_risk_usdc == null || p.initial_risk_usdc <= 0}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            toggleAutoBreakeven(p.id)
+                          }}
+                          className={`relative h-5 w-9 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#4a515d] bg-[#262b33]'}`}
+                          title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : t('pos.autoBreakeven.hint')}
+                        >
+                          <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
+                        </button>
+                      })()}
                     </td>
                     <td className="text-right">
                       <button
