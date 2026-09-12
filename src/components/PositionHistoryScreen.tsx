@@ -653,7 +653,7 @@ function buildExportRow(
     [t('review.export.grade')]: row.review_opportunity_grade ?? '',
     [t('review.export.plannedTrade')]: formatReviewBoolean(row.review_is_planned_trade, t),
     [t('review.export.firstEntryPnl')]: formatReviewPnlState(row.review_first_entry_pnl_state, t),
-    [t('review.export.plannedStop')]: row.review_planned_stop_price ?? null,
+    [t('review.export.plannedStop')]: row.planned_stop_price ?? null,
     [t('review.export.actualStop')]: row.review_actual_stop_fill_price ?? null,
     [t('review.export.firstTarget')]: row.review_first_target ?? '',
     [t('review.export.structuralTarget')]: row.review_structural_target ?? '',

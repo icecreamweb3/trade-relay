@@ -4914,7 +4914,8 @@ def query_position_records(
                     f.close_avg_price AS close_price, f.realized_pnl,
                     f.commission, f.commission_asset, f.net_pnl,
                     f.open_time, f.close_time, f.open_orders_id, f.close_orders_id,
-                    f.planned_stop_price, f.initial_risk_usdc,
+                    COALESCE(p.planned_stop_price, f.planned_stop_price) AS planned_stop_price,
+                    f.initial_risk_usdc,
                     f.mfe_usdc, f.mae_usdc, f.mfe_at, f.mae_at,
                     f.mfe_r, f.mae_r, f.net_pnl_r,
                     f.profit_capture_rate, f.exit_efficiency,
@@ -4937,6 +4938,7 @@ def query_position_records(
                     pr.discipline_trigger AS review_discipline_trigger,
                     f.created_at, f.updated_at
                FROM position_history_final f
+               LEFT JOIN positions p ON p.id = f.position_id
                LEFT JOIN position_reviews pr
                  ON pr.position_id = f.position_id AND pr.user_id = f.user_id
               WHERE 1 = 1"""

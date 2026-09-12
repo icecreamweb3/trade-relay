@@ -19,6 +19,7 @@ export interface PositionFillMarker {
 
 export interface PositionWindow {
   positionId?: number
+  plannedStopPrice?: number | null
   symbol: string
   username: string
   positionSide: 'LONG' | 'SHORT' | 'UNKNOWN'
@@ -31,6 +32,7 @@ export interface PositionWindow {
 
 export interface PositionRecordLike {
   position_id?: number | null
+  planned_stop_price?: number | null
   username: string
   symbol: string
   side: string
@@ -110,6 +112,7 @@ export function buildPositionRecordWindow(
   const endTime = storedEnd ?? Math.max(...exits.map((marker) => marker.timestamp))
   return {
     positionId: record.position_id ?? undefined,
+    plannedStopPrice: record.planned_stop_price ?? null,
     symbol: record.symbol,
     username: record.username,
     positionSide: wantedSide === 'LONG' ? 'LONG' : wantedSide === 'SHORT' ? 'SHORT' : 'UNKNOWN',

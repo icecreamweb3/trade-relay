@@ -3492,6 +3492,8 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "f.open_orders_id" in sql
     assert "f.close_orders_id" in sql
     assert "f.metric_status AS excursion_status" in sql
+    assert "COALESCE(p.planned_stop_price, f.planned_stop_price) AS planned_stop_price" in sql
+    assert "LEFT JOIN positions p ON p.id = f.position_id" in sql
     assert "pr.market_state AS review_market_state" in sql
     assert "pr.final_exit_reason AS review_final_exit_reason" in sql
     assert "LEFT JOIN position_reviews pr" in sql

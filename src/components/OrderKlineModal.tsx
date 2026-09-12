@@ -324,7 +324,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionId != null && <PositionReviewForm positionId={position.positionId} t={t} />}
+        {position.positionId != null && <PositionReviewForm positionId={position.positionId} plannedStopPrice={position.plannedStopPrice} t={t} />}
       </section>,
     document.body,
   )
@@ -353,8 +353,9 @@ const EMPTY_REVIEW: ReviewDraft = {
   final_exit_reason: '', discipline_trigger: '',
 }
 
-function PositionReviewForm({ positionId, t }: {
+function PositionReviewForm({ positionId, plannedStopPrice, t }: {
   positionId: number
+  plannedStopPrice?: number | null
   t: (key: string, vars?: Record<string, string | number>) => string
 }) {
   const [draft, setDraft] = useState<ReviewDraft>(EMPTY_REVIEW)
@@ -364,7 +365,8 @@ function PositionReviewForm({ positionId, t }: {
 
   useEffect(() => {
     let active = true
-    setDraft({ ...EMPTY_REVIEW })
+    const authoritativePlannedStop = plannedStopPrice?.toString() ?? ''
+    setDraft({ ...EMPTY_REVIEW, planned_stop_price: authoritativePlannedStop })
     setLoading(true)
     setStatus('idle')
     api.getPositionReview(positionId).then((review) => {
@@ -377,7 +379,7 @@ function PositionReviewForm({ positionId, t }: {
         opportunity_grade: review.opportunity_grade ?? '',
         is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
         first_entry_pnl_state: review.first_entry_pnl_state ?? '',
-        planned_stop_price: review.planned_stop_price?.toString() ?? '',
+        planned_stop_price: authoritativePlannedStop,
         actual_stop_fill_price: review.actual_stop_fill_price?.toString() ?? '',
         first_target: review.first_target ?? '',
         structural_target: review.structural_target ?? '',
@@ -390,7 +392,7 @@ function PositionReviewForm({ positionId, t }: {
       if (active) setLoading(false)
     })
     return () => { active = false }
-  }, [positionId])
+  }, [plannedStopPrice, positionId])
 
   const update = <K extends keyof ReviewDraft>(field: K, value: ReviewDraft[K]) => {
     setDraft((current) => ({ ...current, [field]: value }))
@@ -436,7 +438,7 @@ function PositionReviewForm({ positionId, t }: {
 
   const inputClass = 'h-8 w-full rounded border border-[#343b46] bg-[#151a21] px-2 text-xs text-[#dce2ea] outline-none focus:border-[#2f7cf6] disabled:opacity-50'
   const areaClass = `${inputClass} min-h-[52px] resize-y py-1.5`
-  const label = (key: string, control: React.ReactNode) => <label className="min-w-0"><span className="mb-1 block text-[11px] text-[#8f99a8]">{t(key)}</span>{control}</label>
+  const label = (key: string, tipKey: string, control: React.ReactNode) => <label className="min-w-0"><span className="mb-1 flex items-center gap-1 text-[11px] text-[#8f99a8]">{t(key)}<span tabIndex={0} role="note" aria-label={t(tipKey)} title={t(tipKey)} className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-[#657083] text-[9px] font-semibold leading-none text-[#9da7b6] outline-none hover:border-[#2f7cf6] hover:text-[#69a4ff] focus:border-[#2f7cf6] focus:text-[#69a4ff]">?</span></span>{control}</label>
 
   return (
     <section className="max-h-[285px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
@@ -450,19 +452,19 @@ function PositionReviewForm({ positionId, t }: {
         </div>
       </div>
       <div className="grid grid-cols-4 gap-x-3 gap-y-2">
-        {label('review.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
-        {label('review.setupName', <input value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass} maxLength={255} />)}
-        {label('review.grade', <select value={draft.opportunity_grade} onChange={(e) => update('opportunity_grade', e.target.value as ReviewDraft['opportunity_grade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select>)}
-        {label('review.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
-        {label('review.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
-        {label('review.signalTrigger', <textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />)}
-        {label('review.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
-        {label('review.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
-        {label('review.plannedStop', <input type="number" min="0" step="any" value={draft.planned_stop_price} onChange={(e) => update('planned_stop_price', e.target.value)} className={inputClass} />)}
-        {label('review.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
-        {label('review.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
-        {label('review.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
-        <div className="col-span-4">{label('review.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />)}</div>
+        {label('review.marketState', 'review.tip.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
+        {label('review.setupName', 'review.tip.setupName', <input value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass} maxLength={255} />)}
+        {label('review.grade', 'review.tip.grade', <select value={draft.opportunity_grade} onChange={(e) => update('opportunity_grade', e.target.value as ReviewDraft['opportunity_grade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select>)}
+        {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
+        {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
+        {label('review.signalTrigger', 'review.tip.signalTrigger', <textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />)}
+        {label('review.firstEntryPnl', 'review.tip.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
+        {label('review.discipline', 'review.tip.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
+        {label('review.plannedStop', 'review.tip.plannedStop', <input type="number" value={draft.planned_stop_price} readOnly title={t('review.plannedStopSource')} className={`${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`} />)}
+        {label('review.actualStop', 'review.tip.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
+        {label('review.firstTarget', 'review.tip.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
+        {label('review.structuralTarget', 'review.tip.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
+        <div className="col-span-4">{label('review.exitReason', 'review.tip.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />)}</div>
       </div>
     </section>
   )
