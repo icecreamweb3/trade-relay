@@ -93,6 +93,19 @@ class PositionRecordOut(BaseModel):
     profit_capture_rate: Optional[float] = None
     profit_giveback_usdc: Optional[float] = None
     excursion_status: Optional[str] = None
+    review_market_state: Optional[str] = None
+    review_setup_name: Optional[str] = None
+    review_entry_rationale: Optional[str] = None
+    review_signal_candle_trigger: Optional[str] = None
+    review_opportunity_grade: Optional[str] = None
+    review_is_planned_trade: Optional[bool] = None
+    review_first_entry_pnl_state: Optional[str] = None
+    review_planned_stop_price: Optional[float] = None
+    review_actual_stop_fill_price: Optional[float] = None
+    review_first_target: Optional[str] = None
+    review_structural_target: Optional[str] = None
+    review_final_exit_reason: Optional[str] = None
+    review_discipline_trigger: Optional[str] = None
 
 
 class PositionReviewIn(BaseModel):
@@ -1050,6 +1063,19 @@ def get_position_records(
             profit_capture_rate=float(row["profit_capture_rate"]) if row.get("profit_capture_rate") is not None else None,
             profit_giveback_usdc=float(row["profit_giveback_usdc"]) if row.get("profit_giveback_usdc") is not None else None,
             excursion_status=str(row["excursion_status"]) if row.get("excursion_status") is not None else None,
+            review_market_state=row.get("review_market_state"),
+            review_setup_name=row.get("review_setup_name"),
+            review_entry_rationale=row.get("review_entry_rationale"),
+            review_signal_candle_trigger=row.get("review_signal_candle_trigger"),
+            review_opportunity_grade=row.get("review_opportunity_grade"),
+            review_is_planned_trade=bool(row["review_is_planned_trade"]) if row.get("review_is_planned_trade") is not None else None,
+            review_first_entry_pnl_state=row.get("review_first_entry_pnl_state"),
+            review_planned_stop_price=float(row["review_planned_stop_price"]) if row.get("review_planned_stop_price") is not None else None,
+            review_actual_stop_fill_price=float(row["review_actual_stop_fill_price"]) if row.get("review_actual_stop_fill_price") is not None else None,
+            review_first_target=row.get("review_first_target"),
+            review_structural_target=row.get("review_structural_target"),
+            review_final_exit_reason=row.get("review_final_exit_reason"),
+            review_discipline_trigger=row.get("review_discipline_trigger"),
         )
         for row in rows
     ]

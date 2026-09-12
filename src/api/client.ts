@@ -246,6 +246,19 @@ export interface ApiPositionRecord {
   profit_capture_rate?: number | null
   profit_giveback_usdc?: number | null
   excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
+  review_market_state?: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
+  review_setup_name?: string | null
+  review_entry_rationale?: string | null
+  review_signal_candle_trigger?: string | null
+  review_opportunity_grade?: 'A' | 'B' | 'C' | null
+  review_is_planned_trade?: boolean | null
+  review_first_entry_pnl_state?: 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE' | null
+  review_planned_stop_price?: number | null
+  review_actual_stop_fill_price?: number | null
+  review_first_target?: string | null
+  review_structural_target?: string | null
+  review_final_exit_reason?: string | null
+  review_discipline_trigger?: 'NONE' | 'COOLDOWN' | 'STOP_TRADING' | 'BOTH' | null
 }
 
 export interface ApiPositionReview {

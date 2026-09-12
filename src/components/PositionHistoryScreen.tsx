@@ -646,7 +646,47 @@ function buildExportRow(
     [t('pos.historyExport.status')]: row.excursion_status ?? '',
     [t('pos.openOrdersId')]: formatOrderIds(row.open_orders_id),
     [t('pos.closeOrdersId')]: formatOrderIds(row.close_orders_id),
+    [t('review.export.marketState')]: formatReviewMarketState(row.review_market_state, t),
+    [t('review.export.setupName')]: row.review_setup_name ?? '',
+    [t('review.export.entryRationale')]: row.review_entry_rationale ?? '',
+    [t('review.export.signalTrigger')]: row.review_signal_candle_trigger ?? '',
+    [t('review.export.grade')]: row.review_opportunity_grade ?? '',
+    [t('review.export.plannedTrade')]: formatReviewBoolean(row.review_is_planned_trade, t),
+    [t('review.export.firstEntryPnl')]: formatReviewPnlState(row.review_first_entry_pnl_state, t),
+    [t('review.export.plannedStop')]: row.review_planned_stop_price ?? null,
+    [t('review.export.actualStop')]: row.review_actual_stop_fill_price ?? null,
+    [t('review.export.firstTarget')]: row.review_first_target ?? '',
+    [t('review.export.structuralTarget')]: row.review_structural_target ?? '',
+    [t('review.export.exitReason')]: row.review_final_exit_reason ?? '',
+    [t('review.export.discipline')]: formatReviewDiscipline(row.review_discipline_trigger, t),
   }
+}
+
+function formatReviewMarketState(value: ApiPositionRecord['review_market_state'], t: (key: string) => string) {
+  if (value === 'TREND') return t('review.market.trend')
+  if (value === 'RANGE') return t('review.market.range')
+  if (value === 'CLIMAX_REVERSAL') return t('review.market.climaxReversal')
+  return ''
+}
+
+function formatReviewBoolean(value: boolean | null | undefined, t: (key: string) => string) {
+  return value == null ? '' : t(value ? 'review.yes' : 'review.no')
+}
+
+function formatReviewPnlState(value: ApiPositionRecord['review_first_entry_pnl_state'], t: (key: string) => string) {
+  if (value === 'PROFIT') return t('review.pnl.profit')
+  if (value === 'LOSS') return t('review.pnl.loss')
+  if (value === 'BREAKEVEN') return t('review.pnl.breakeven')
+  if (value === 'NOT_APPLICABLE') return t('review.notApplicable')
+  return ''
+}
+
+function formatReviewDiscipline(value: ApiPositionRecord['review_discipline_trigger'], t: (key: string) => string) {
+  if (value === 'NONE') return t('review.discipline.none')
+  if (value === 'COOLDOWN') return t('review.discipline.cooldown')
+  if (value === 'STOP_TRADING') return t('review.discipline.stop')
+  if (value === 'BOTH') return t('review.discipline.both')
+  return ''
 }
 
 function formatTimestamp(value?: string | null) {

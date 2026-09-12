@@ -4922,8 +4922,23 @@ def query_position_records(
                     f.metric_status AS excursion_status,
                     f.metric_source AS excursion_source,
                     f.metric_calculated_at AS excursion_calculated_at,
+                    pr.market_state AS review_market_state,
+                    pr.setup_name AS review_setup_name,
+                    pr.entry_rationale AS review_entry_rationale,
+                    pr.signal_candle_trigger AS review_signal_candle_trigger,
+                    pr.opportunity_grade AS review_opportunity_grade,
+                    pr.is_planned_trade AS review_is_planned_trade,
+                    pr.first_entry_pnl_state AS review_first_entry_pnl_state,
+                    pr.planned_stop_price AS review_planned_stop_price,
+                    pr.actual_stop_fill_price AS review_actual_stop_fill_price,
+                    pr.first_target AS review_first_target,
+                    pr.structural_target AS review_structural_target,
+                    pr.final_exit_reason AS review_final_exit_reason,
+                    pr.discipline_trigger AS review_discipline_trigger,
                     f.created_at, f.updated_at
                FROM position_history_final f
+               LEFT JOIN position_reviews pr
+                 ON pr.position_id = f.position_id AND pr.user_id = f.user_id
               WHERE 1 = 1"""
     params: list = []
     if user_id is not None:

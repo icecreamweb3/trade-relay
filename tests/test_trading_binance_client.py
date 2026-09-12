@@ -3492,6 +3492,10 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "f.open_orders_id" in sql
     assert "f.close_orders_id" in sql
     assert "f.metric_status AS excursion_status" in sql
+    assert "pr.market_state AS review_market_state" in sql
+    assert "pr.final_exit_reason AS review_final_exit_reason" in sql
+    assert "LEFT JOIN position_reviews pr" in sql
+    assert "pr.position_id = f.position_id AND pr.user_id = f.user_id" in sql
     assert "f.user_id = %s" in sql
     assert "UPPER(f.symbol) LIKE %s" in sql
     assert "UPPER(f.side) = %s" in sql
