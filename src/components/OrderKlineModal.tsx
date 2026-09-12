@@ -18,6 +18,49 @@ const INTERVAL_MS: Record<string, number> = {
 
 const KLINE_CACHE_TTL = 5 * 60_000
 const klineCache = new Map<string, { expiresAt: number; data: ApiKline[] }>()
+const BEIJING_OFFSET_MS = 8 * 60 * 60_000
+const US_OPENING_RANGE_START_MINUTE = 21 * 60 + 30
+const US_OPENING_RANGE_DURATION_MS = 30 * 60_000
+const BEIJING_EVENING_SESSION_END_MINUTE = 6 * 60
+
+interface OpeningRange {
+  start: number
+  end: number
+  high: number
+  low: number
+}
+
+/** Most recent Beijing-time [21:30, 22:00) window at the position entry. */
+export function buildBeijingUsOpeningRangeWindow(referenceTime: number): { start: number; end: number } {
+  const beijingDate = new Date(referenceTime + BEIJING_OFFSET_MS)
+  const beijingDayStartAsUtc = Date.UTC(
+    beijingDate.getUTCFullYear(),
+    beijingDate.getUTCMonth(),
+    beijingDate.getUTCDate(),
+  )
+  let start = beijingDayStartAsUtc - BEIJING_OFFSET_MS + US_OPENING_RANGE_START_MINUTE * 60_000
+  if (referenceTime < start) start -= 24 * 60 * 60_000
+  return { start, end: start + US_OPENING_RANGE_DURATION_MS }
+}
+
+/** Whether a position overlaps the latest 21:30–06:00 Beijing evening session. */
+export function shouldShowOpeningRangeByDefault(startTime: number, endTime = startTime): boolean {
+  const openingRangeWindow = buildBeijingUsOpeningRangeWindow(endTime)
+  const eveningSessionEnd = openingRangeWindow.start
+    + (24 * 60 - US_OPENING_RANGE_START_MINUTE + BEIJING_EVENING_SESSION_END_MINUTE) * 60_000
+  return endTime >= openingRangeWindow.start && startTime < eveningSessionEnd
+}
+
+export function calculateOpeningRange(klines: ApiKline[], start: number, end: number): OpeningRange | null {
+  const rangeBars = klines.filter((bar) => bar.open_time >= start && bar.open_time < end)
+  if (rangeBars.length === 0) return null
+  return {
+    start,
+    end,
+    high: Math.max(...rangeBars.map((bar) => bar.high)),
+    low: Math.min(...rangeBars.map((bar) => bar.low)),
+  }
+}
 
 export function OrderKlineLoadingModal({ symbol, onClose }: { symbol: string; onClose: () => void }) {
   const locale = useUiPreferencesStore((state) => state.locale)
@@ -46,11 +89,32 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
   const [error, setError] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState(8)
   const [showBarNumbers, setShowBarNumbers] = useState(false)
+  const [showOpeningRange, setShowOpeningRange] = useState(
+    () => shouldShowOpeningRangeByDefault(position.startTime, position.endTime),
+  )
+  const [showOpeningRangeUpperExtensions, setShowOpeningRangeUpperExtensions] = useState(false)
+  const [showOpeningRangeLowerExtensions, setShowOpeningRangeLowerExtensions] = useState(false)
+  const [openingRangeKlines, setOpeningRangeKlines] = useState<ApiKline[]>([])
   const floating = useFloatingPanel()
 
   const bounds = useMemo(() => {
     return buildThousandBarWindow(position, INTERVAL_MS[interval])
   }, [interval, position])
+
+  const openingRangeWindow = useMemo(
+    () => buildBeijingUsOpeningRangeWindow(position.endTime),
+    [position.endTime],
+  )
+  const openingRange = useMemo(
+    () => calculateOpeningRange(openingRangeKlines, openingRangeWindow.start, openingRangeWindow.end),
+    [openingRangeKlines, openingRangeWindow.end, openingRangeWindow.start],
+  )
+
+  useEffect(() => {
+    setShowOpeningRange(shouldShowOpeningRangeByDefault(position.startTime, position.endTime))
+    setShowOpeningRangeUpperExtensions(false)
+    setShowOpeningRangeLowerExtensions(false)
+  }, [position.endTime, position.startTime])
 
   useEffect(() => {
     let active = true
@@ -93,6 +157,39 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
       window.clearInterval(progressTimer)
     }
   }, [bounds.end, bounds.start, interval, position.symbol, position.username])
+
+  useEffect(() => {
+    let active = true
+    if (!showOpeningRange) {
+      setOpeningRangeKlines([])
+      return () => { active = false }
+    }
+    const requestEnd = openingRangeWindow.end - 1
+    const cacheKey = `${position.username}|${position.symbol}|opening-range-1m|${openingRangeWindow.start}|${requestEnd}`
+    const cached = klineCache.get(cacheKey)
+    if (cached && cached.expiresAt > Date.now()) {
+      setOpeningRangeKlines(cached.data)
+      return () => { active = false }
+    }
+
+    setOpeningRangeKlines([])
+    api.getHistoricalKlines({
+      symbol: position.symbol,
+      interval: '1m',
+      start_time: openingRangeWindow.start,
+      end_time: requestEnd,
+      username: position.username || undefined,
+    }).then((data) => {
+      if (!active) return
+      klineCache.set(cacheKey, { expiresAt: Date.now() + KLINE_CACHE_TTL, data })
+      setOpeningRangeKlines(data)
+    }).catch(() => {
+      // The main position chart remains usable if this optional reference range
+      // cannot be loaded (for example, for a newly listed instrument).
+      if (active) setOpeningRangeKlines([])
+    })
+    return () => { active = false }
+  }, [openingRangeWindow.end, openingRangeWindow.start, position.symbol, position.username, showOpeningRange])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -138,33 +235,75 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
           <button type="button" onClick={onClose} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
         </header>
 
-        <div className="flex items-center justify-between border-b border-[#252b33] px-4 py-2">
-          <div className="flex gap-1">
-            {INTERVALS.map((item) => {
-              return (
-                <button key={item} type="button" onClick={() => setInterval(item)}
-                  className={`rounded px-3 py-1 text-xs transition-colors ${interval === item ? 'bg-[#2f7cf6] text-white' : 'text-[#9aa3b2] hover:bg-[#252b33] hover:text-[#dce2ea]'}`}>
-                  {item}
-                </button>
-              )
-            })}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#252b33] px-4 py-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex shrink-0 gap-1">
+              {INTERVALS.map((item) => {
+                return (
+                  <button key={item} type="button" onClick={() => setInterval(item)}
+                    className={`rounded px-3 py-1 text-xs transition-colors ${interval === item ? 'bg-[#2f7cf6] text-white' : 'text-[#9aa3b2] hover:bg-[#252b33] hover:text-[#dce2ea]'}`}>
+                    {item}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex shrink-0 items-center gap-3 whitespace-nowrap text-xs">
+              <span className="text-[#1687ff]">↑ {t('side.buy')}</span>
+              <span className="text-[#f6465d]">↓ {t('side.sell')}</span>
+              <span className="text-[#d95b8b]">EMA 20</span>
+            </div>
           </div>
-          <div className="flex items-center gap-4 text-xs">
-            <label className="flex cursor-pointer select-none items-center gap-2 text-[#aab2bf]">
+          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-xs">
+            <label className="flex shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap text-[#aab2bf]">
               <button
                 type="button"
                 role="switch"
                 aria-checked={showBarNumbers}
                 onClick={() => setShowBarNumbers((visible) => !visible)}
-                className={`relative h-4 w-8 rounded-full transition-colors ${showBarNumbers ? 'bg-[#2f7cf6]' : 'bg-[#39414d]'}`}
+                className={`relative h-4 w-8 shrink-0 rounded-full transition-colors ${showBarNumbers ? 'bg-[#2f7cf6]' : 'bg-[#39414d]'}`}
               >
-                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showBarNumbers ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                <span className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showBarNumbers ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
               </button>
               <span>{t('log.chart.showBarNumbers')}</span>
             </label>
-            <span className="text-[#1687ff]">↑ {t('side.buy')}</span>
-            <span className="text-[#f6465d]">↓ {t('side.sell')}</span>
-            <span className="text-[#d95b8b]">EMA 20</span>
+            <label className="flex shrink-0 cursor-pointer select-none items-center gap-3 whitespace-nowrap text-[#f59e0b]">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showOpeningRange}
+                onClick={() => setShowOpeningRange((visible) => !visible)}
+                className={`relative h-4 w-8 shrink-0 rounded-full transition-colors ${showOpeningRange ? 'bg-[#d97706]' : 'bg-[#39414d]'}`}
+              >
+                <span className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showOpeningRange ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+              </button>
+              <span>{t('log.chart.usOpeningRange')}</span>
+            </label>
+            <label className={`flex shrink-0 select-none items-center gap-2 whitespace-nowrap text-[#ef8c9c] ${showOpeningRange ? 'cursor-pointer' : 'cursor-not-allowed opacity-45'}`}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showOpeningRangeUpperExtensions}
+                disabled={!showOpeningRange}
+                onClick={() => setShowOpeningRangeUpperExtensions((visible) => !visible)}
+                className={`relative h-4 w-8 shrink-0 rounded-full transition-colors ${showOpeningRangeUpperExtensions ? 'bg-[#d94a64]' : 'bg-[#39414d]'}`}
+              >
+                <span className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showOpeningRangeUpperExtensions ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+              </button>
+              <span>{t('log.chart.usOpeningRangeUpper')}</span>
+            </label>
+            <label className={`flex shrink-0 select-none items-center gap-2 whitespace-nowrap text-[#62a8e5] ${showOpeningRange ? 'cursor-pointer' : 'cursor-not-allowed opacity-45'}`}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={showOpeningRangeLowerExtensions}
+                disabled={!showOpeningRange}
+                onClick={() => setShowOpeningRangeLowerExtensions((visible) => !visible)}
+                className={`relative h-4 w-8 shrink-0 rounded-full transition-colors ${showOpeningRangeLowerExtensions ? 'bg-[#2477b8]' : 'bg-[#39414d]'}`}
+              >
+                <span className={`absolute left-0 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${showOpeningRangeLowerExtensions ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+              </button>
+              <span>{t('log.chart.usOpeningRangeLower')}</span>
+            </label>
           </div>
         </div>
 
@@ -178,6 +317,9 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
             endTime={position.endTime}
             locale={locale}
             showBarNumbers={showBarNumbers}
+            openingRange={showOpeningRange ? openingRange : null}
+            showOpeningRangeUpperExtensions={showOpeningRangeUpperExtensions}
+            showOpeningRangeLowerExtensions={showOpeningRangeLowerExtensions}
           />}
         </div>
 
@@ -395,6 +537,9 @@ function CandlestickChart({
   endTime,
   locale,
   showBarNumbers,
+  openingRange,
+  showOpeningRangeUpperExtensions,
+  showOpeningRangeLowerExtensions,
 }: {
   klines: ApiKline[]
   markers: PositionFillMarker[]
@@ -402,6 +547,9 @@ function CandlestickChart({
   endTime: number
   locale: string
   showBarNumbers: boolean
+  openingRange: OpeningRange | null
+  showOpeningRangeUpperExtensions: boolean
+  showOpeningRangeLowerExtensions: boolean
 }) {
   const [visibleRange, setVisibleRange] = useState(() => ({ start: 0, end: klines.length }))
   const dragRef = useRef<{ clientX: number; start: number; end: number } | null>(null)
@@ -435,7 +583,19 @@ function CandlestickChart({
   const minTime = visibleKlines[0].open_time
   const maxTime = Math.max(visibleKlines[visibleKlines.length - 1].close_time, minTime + 1)
   const visibleMarkers = markers.filter((marker) => marker.timestamp >= minTime && marker.timestamp <= maxTime)
-  const allPrices = visibleKlines.flatMap((bar) => [bar.low, bar.high]).concat(visibleMarkers.map((marker) => marker.price))
+  const openingRangeApplies = openingRange != null && maxTime >= openingRange.start
+  const openingRangeHeight = openingRange ? openingRange.high - openingRange.low : 0
+  const upperExtensionPrices = openingRangeApplies && openingRange && showOpeningRangeUpperExtensions
+    ? [openingRange.high + openingRangeHeight, openingRange.high + openingRangeHeight * 2]
+    : []
+  const lowerExtensionPrices = openingRangeApplies && openingRange && showOpeningRangeLowerExtensions
+    ? [openingRange.low - openingRangeHeight, openingRange.low - openingRangeHeight * 2]
+    : []
+  const referencePrices = openingRangeApplies && openingRange
+    ? [openingRange.low, openingRange.high, ...upperExtensionPrices, ...lowerExtensionPrices]
+    : []
+  const allPrices = visibleKlines.flatMap((bar) => [bar.low, bar.high])
+    .concat(visibleMarkers.map((marker) => marker.price), referencePrices)
   const rawMin = Math.min(...allPrices)
   const rawMax = Math.max(...allPrices)
   const pricePadding = Math.max((rawMax - rawMin) * 0.09, rawMax * 0.0005)
@@ -498,6 +658,46 @@ function CandlestickChart({
         onPointerCancel={() => { dragRef.current = null }}
       >
       <rect x={clampedX(startTime)} y={margin.top} width={Math.max(1, clampedX(endTime) - clampedX(startTime))} height={priceHeight} fill="#2f7cf6" opacity="0.045" />
+      {openingRangeApplies && openingRange && <g pointerEvents="none">
+        <rect
+          x={clampedX(openingRange.start)}
+          y={y(openingRange.high)}
+          width={Math.max(1, clampedX(openingRange.end) - clampedX(openingRange.start))}
+          height={Math.max(1, y(openingRange.low) - y(openingRange.high))}
+          fill="#f59e0b"
+          opacity="0.16"
+        />
+        <rect
+          x={clampedX(openingRange.end)}
+          y={y(openingRange.high)}
+          width={Math.max(0, width - margin.right - clampedX(openingRange.end))}
+          height={Math.max(1, y(openingRange.low) - y(openingRange.high))}
+          fill="#f59e0b"
+          opacity="0.045"
+        />
+        <line x1={clampedX(openingRange.start)} x2={width - margin.right} y1={y(openingRange.high)} y2={y(openingRange.high)} stroke="#f59e0b" strokeWidth="1.25" strokeDasharray="6 4" opacity="0.9" />
+        <line x1={clampedX(openingRange.start)} x2={width - margin.right} y1={y(openingRange.low)} y2={y(openingRange.low)} stroke="#f59e0b" strokeWidth="1.25" strokeDasharray="6 4" opacity="0.9" />
+        <line x1={clampedX(openingRange.start)} x2={clampedX(openingRange.start)} y1={y(openingRange.high)} y2={y(openingRange.low)} stroke="#f59e0b" strokeWidth="1" opacity="0.65" />
+        <line x1={clampedX(openingRange.end)} x2={clampedX(openingRange.end)} y1={y(openingRange.high)} y2={y(openingRange.low)} stroke="#f59e0b" strokeWidth="1" opacity="0.65" />
+        <text x={width - margin.right - 6} y={y(openingRange.high) - 5} textAnchor="end" fill="#fbbf24" fontSize="10.5" fontWeight="600">ORH {formatPrice(openingRange.high)}</text>
+        <text x={width - margin.right - 6} y={y(openingRange.low) + 13} textAnchor="end" fill="#fbbf24" fontSize="10.5" fontWeight="600">ORL {formatPrice(openingRange.low)}</text>
+      </g>}
+      {openingRangeApplies && openingRange && showOpeningRangeUpperExtensions && <OpeningRangeExtensions
+        direction="upper"
+        origin={openingRange.high}
+        rangeHeight={openingRangeHeight}
+        startX={clampedX(openingRange.end)}
+        endX={width - margin.right}
+        y={y}
+      />}
+      {openingRangeApplies && openingRange && showOpeningRangeLowerExtensions && <OpeningRangeExtensions
+        direction="lower"
+        origin={openingRange.low}
+        rangeHeight={openingRangeHeight}
+        startX={clampedX(openingRange.end)}
+        endX={width - margin.right}
+        y={y}
+      />}
       {priceTicks.map((price) => <g key={price}>
         <line x1={margin.left} x2={width - margin.right} y1={y(price)} y2={y(price)} stroke="#252b33" strokeWidth="1" />
         <text x={width - margin.right + 10} y={y(price) + 4} fill="#758091" fontSize="12">{formatPrice(price)}</text>
@@ -564,6 +764,44 @@ function CandlestickChart({
       </svg>
     </div>
   )
+}
+
+function OpeningRangeExtensions({
+  direction,
+  origin,
+  rangeHeight,
+  startX,
+  endX,
+  y,
+}: {
+  direction: 'upper' | 'lower'
+  origin: number
+  rangeHeight: number
+  startX: number
+  endX: number
+  y: (price: number) => number
+}) {
+  if (!(rangeHeight > 0) || endX <= startX) return null
+  const multiplier = direction === 'upper' ? 1 : -1
+  const first = origin + rangeHeight * multiplier
+  const second = origin + rangeHeight * multiplier * 2
+  const color = direction === 'upper' ? '#ef6b7f' : '#4b9bd8'
+  const fill = direction === 'upper' ? '#d94a64' : '#2477b8'
+  const bandTop = direction === 'upper' ? y(first) : y(origin)
+  const secondBandTop = direction === 'upper' ? y(second) : y(first)
+
+  return <g pointerEvents="none">
+    <rect x={startX} y={bandTop} width={endX - startX} height={Math.abs(y(first) - y(origin))} fill={fill} opacity="0.045" />
+    <rect x={startX} y={secondBandTop} width={endX - startX} height={Math.abs(y(second) - y(first))} fill={fill} opacity="0.025" />
+    <line x1={startX} x2={endX} y1={y(first)} y2={y(first)} stroke={color} strokeWidth="1.1" strokeDasharray="4 4" opacity="0.85" />
+    <line x1={startX} x2={endX} y1={y(second)} y2={y(second)} stroke={color} strokeWidth="1.1" strokeDasharray="4 4" opacity="0.85" />
+    <text x={endX - 6} y={y(first) - 5} textAnchor="end" fill={color} fontSize="10.5" fontWeight="600">
+      OR {direction === 'upper' ? '+' : '-'}1× {formatPrice(first)}
+    </text>
+    <text x={endX - 6} y={y(second) - 5} textAnchor="end" fill={color} fontSize="10.5" fontWeight="600">
+      OR {direction === 'upper' ? '+' : '-'}2× {formatPrice(second)}
+    </text>
+  </g>
 }
 
 function computeEma(values: number[], period: number): Array<number | null> {
