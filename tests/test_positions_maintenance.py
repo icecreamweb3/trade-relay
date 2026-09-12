@@ -139,6 +139,7 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
     body = positions_router.PositionReviewIn(
         setup_name="  trend pullback  ",
         opportunity_grade="A",
+        estimated_win_probability=80,
         is_planned_trade=True,
     )
 
@@ -151,3 +152,4 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
     assert result.user_id == 8
     assert calls[0][0:2] == (41, 8)
     assert calls[0][2]["setup_name"] == "trend pullback"
+    assert calls[0][2]["estimated_win_probability"] == 80

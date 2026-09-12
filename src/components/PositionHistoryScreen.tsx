@@ -649,8 +649,9 @@ function buildExportRow(
     [t('review.export.marketState')]: formatReviewMarketState(row.review_market_state, t),
     [t('review.export.setupName')]: row.review_setup_name ?? '',
     [t('review.export.entryRationale')]: row.review_entry_rationale ?? '',
-    [t('review.export.signalTrigger')]: row.review_signal_candle_trigger ?? '',
+    [t('review.export.signalTrigger')]: formatSignalCandleAndTrigger(row, t),
     [t('review.export.grade')]: row.review_opportunity_grade ?? '',
+    [t('review.export.estimatedWinProbability')]: row.review_estimated_win_probability != null ? `${row.review_estimated_win_probability}%` : '',
     [t('review.export.plannedTrade')]: formatReviewBoolean(row.review_is_planned_trade, t),
     [t('review.export.firstEntryPnl')]: formatReviewPnlState(row.review_first_entry_pnl_state, t),
     [t('review.export.plannedStop')]: row.planned_stop_price ?? null,
@@ -667,6 +668,17 @@ function formatReviewMarketState(value: ApiPositionRecord['review_market_state']
   if (value === 'RANGE') return t('review.market.range')
   if (value === 'CLIMAX_REVERSAL') return t('review.market.climaxReversal')
   return ''
+}
+
+function formatSignalCandleAndTrigger(row: ApiPositionRecord, t: (key: string) => string) {
+  const reference = [
+    row.review_signal_candle_interval,
+    row.review_signal_candle_number != null ? `#${row.review_signal_candle_number}` : '',
+    row.review_signal_candle_open_time ? formatTimestamp(row.review_signal_candle_open_time) : '',
+  ].filter(Boolean).join(' | ')
+  const trigger = row.review_signal_candle_trigger?.trim() ?? ''
+  if (reference && trigger) return `${reference} | ${trigger}`
+  return reference || trigger
 }
 
 function formatReviewBoolean(value: boolean | null | undefined, t: (key: string) => string) {

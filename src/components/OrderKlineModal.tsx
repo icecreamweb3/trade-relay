@@ -30,6 +30,12 @@ interface OpeningRange {
   low: number
 }
 
+interface SignalCandleSelection {
+  interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d'
+  openTime: number
+  number: number
+}
+
 /** Most recent Beijing-time [21:30, 22:00) window at the position entry. */
 export function buildBeijingUsOpeningRangeWindow(referenceTime: number): { start: number; end: number } {
   const beijingDate = new Date(referenceTime + BEIJING_OFFSET_MS)
@@ -95,6 +101,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
   const [showOpeningRangeUpperExtensions, setShowOpeningRangeUpperExtensions] = useState(false)
   const [showOpeningRangeLowerExtensions, setShowOpeningRangeLowerExtensions] = useState(false)
   const [openingRangeKlines, setOpeningRangeKlines] = useState<ApiKline[]>([])
+  const [signalCandle, setSignalCandle] = useState<SignalCandleSelection | null>(null)
   const floating = useFloatingPanel()
 
   const bounds = useMemo(() => {
@@ -320,11 +327,17 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
             openingRange={showOpeningRange ? openingRange : null}
             showOpeningRangeUpperExtensions={showOpeningRangeUpperExtensions}
             showOpeningRangeLowerExtensions={showOpeningRangeLowerExtensions}
+            candleInterval={interval as SignalCandleSelection['interval']}
+            selectedSignalCandle={signalCandle}
+            onSelectSignalCandle={(bar, number) => {
+              setSignalCandle({ interval: interval as SignalCandleSelection['interval'], openTime: bar.open_time, number })
+              setShowBarNumbers(true)
+            }}
           />}
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionId != null && <PositionReviewForm positionId={position.positionId} plannedStopPrice={position.plannedStopPrice} t={t} />}
+        {position.positionId != null && <PositionReviewForm positionId={position.positionId} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} t={t} />}
       </section>,
     document.body,
   )
@@ -335,7 +348,11 @@ type ReviewDraft = {
   setup_name: string
   entry_rationale: string
   signal_candle_trigger: string
+  signal_candle_interval: '' | SignalCandleSelection['interval']
+  signal_candle_open_time: string
+  signal_candle_number: number | null
   opportunity_grade: '' | 'A' | 'B' | 'C'
+  estimated_win_probability: '' | '20' | '40' | '60' | '80'
   is_planned_trade: '' | 'YES' | 'NO'
   first_entry_pnl_state: '' | 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE'
   planned_stop_price: string
@@ -348,14 +365,17 @@ type ReviewDraft = {
 
 const EMPTY_REVIEW: ReviewDraft = {
   market_state: '', setup_name: '', entry_rationale: '', signal_candle_trigger: '',
-  opportunity_grade: '', is_planned_trade: '', first_entry_pnl_state: '',
+  signal_candle_interval: '', signal_candle_open_time: '', signal_candle_number: null,
+  opportunity_grade: '', estimated_win_probability: '', is_planned_trade: '', first_entry_pnl_state: '',
   planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
   final_exit_reason: '', discipline_trigger: '',
 }
 
-function PositionReviewForm({ positionId, plannedStopPrice, t }: {
+function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSignalCandleLoaded, t }: {
   positionId: number
   plannedStopPrice?: number | null
+  signalCandle: SignalCandleSelection | null
+  onSignalCandleLoaded: (selection: SignalCandleSelection | null) => void
   t: (key: string, vars?: Record<string, string | number>) => string
 }) {
   const [draft, setDraft] = useState<ReviewDraft>(EMPTY_REVIEW)
@@ -366,17 +386,30 @@ function PositionReviewForm({ positionId, plannedStopPrice, t }: {
   useEffect(() => {
     let active = true
     const authoritativePlannedStop = plannedStopPrice?.toString() ?? ''
+    onSignalCandleLoaded(null)
     setDraft({ ...EMPTY_REVIEW, planned_stop_price: authoritativePlannedStop })
     setLoading(true)
     setStatus('idle')
     api.getPositionReview(positionId).then((review) => {
       if (!active || !review) return
+      const savedSignalCandle = review.signal_candle_interval && review.signal_candle_open_time && review.signal_candle_number
+        ? {
+            interval: review.signal_candle_interval,
+            openTime: new Date(review.signal_candle_open_time).getTime(),
+            number: review.signal_candle_number,
+          }
+        : null
+      onSignalCandleLoaded(savedSignalCandle)
       setDraft({
         market_state: review.market_state ?? '',
         setup_name: review.setup_name ?? '',
         entry_rationale: review.entry_rationale ?? '',
         signal_candle_trigger: review.signal_candle_trigger ?? '',
+        signal_candle_interval: review.signal_candle_interval ?? '',
+        signal_candle_open_time: review.signal_candle_open_time ?? '',
+        signal_candle_number: review.signal_candle_number ?? null,
         opportunity_grade: review.opportunity_grade ?? '',
+        estimated_win_probability: review.estimated_win_probability?.toString() as ReviewDraft['estimated_win_probability'] ?? '',
         is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
         first_entry_pnl_state: review.first_entry_pnl_state ?? '',
         planned_stop_price: authoritativePlannedStop,
@@ -394,6 +427,17 @@ function PositionReviewForm({ positionId, plannedStopPrice, t }: {
     return () => { active = false }
   }, [plannedStopPrice, positionId])
 
+  useEffect(() => {
+    if (!signalCandle) return
+    setDraft((current) => ({
+      ...current,
+      signal_candle_interval: signalCandle.interval,
+      signal_candle_open_time: new Date(signalCandle.openTime).toISOString(),
+      signal_candle_number: signalCandle.number,
+    }))
+    setStatus('idle')
+  }, [signalCandle])
+
   const update = <K extends keyof ReviewDraft>(field: K, value: ReviewDraft[K]) => {
     setDraft((current) => ({ ...current, [field]: value }))
     setStatus('idle')
@@ -410,7 +454,11 @@ function PositionReviewForm({ positionId, plannedStopPrice, t }: {
       setup_name: textOrNull(draft.setup_name),
       entry_rationale: textOrNull(draft.entry_rationale),
       signal_candle_trigger: textOrNull(draft.signal_candle_trigger),
+      signal_candle_interval: draft.signal_candle_interval || null,
+      signal_candle_open_time: draft.signal_candle_open_time || null,
+      signal_candle_number: draft.signal_candle_number,
       opportunity_grade: draft.opportunity_grade || null,
+      estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 60 | 80,
       is_planned_trade: draft.is_planned_trade === '' ? null : draft.is_planned_trade === 'YES',
       first_entry_pnl_state: draft.first_entry_pnl_state || null,
       planned_stop_price: priceOrNull(draft.planned_stop_price),
@@ -455,9 +503,10 @@ function PositionReviewForm({ positionId, plannedStopPrice, t }: {
         {label('review.marketState', 'review.tip.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
         {label('review.setupName', 'review.tip.setupName', <input value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass} maxLength={255} />)}
         {label('review.grade', 'review.tip.grade', <select value={draft.opportunity_grade} onChange={(e) => update('opportunity_grade', e.target.value as ReviewDraft['opportunity_grade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select>)}
+        {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="60">60%</option><option value="80">80%</option></select>)}
         {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
-        {label('review.signalTrigger', 'review.tip.signalTrigger', <textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />)}
+        {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatDateTime(new Date(draft.signal_candle_open_time).getTime())}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}
         {label('review.firstEntryPnl', 'review.tip.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
         {label('review.discipline', 'review.tip.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
         {label('review.plannedStop', 'review.tip.plannedStop', <input type="number" value={draft.planned_stop_price} readOnly title={t('review.plannedStopSource')} className={`${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`} />)}
@@ -681,6 +730,9 @@ function CandlestickChart({
   openingRange,
   showOpeningRangeUpperExtensions,
   showOpeningRangeLowerExtensions,
+  candleInterval,
+  selectedSignalCandle,
+  onSelectSignalCandle,
 }: {
   klines: ApiKline[]
   markers: PositionFillMarker[]
@@ -691,9 +743,12 @@ function CandlestickChart({
   openingRange: OpeningRange | null
   showOpeningRangeUpperExtensions: boolean
   showOpeningRangeLowerExtensions: boolean
+  candleInterval: SignalCandleSelection['interval']
+  selectedSignalCandle: SignalCandleSelection | null
+  onSelectSignalCandle: (bar: ApiKline, number: number) => void
 }) {
   const [visibleRange, setVisibleRange] = useState(() => ({ start: 0, end: klines.length }))
-  const dragRef = useRef<{ clientX: number; start: number; end: number } | null>(null)
+  const dragRef = useRef<{ clientX: number; start: number; end: number; moved: boolean } | null>(null)
 
   useEffect(() => {
     setVisibleRange({ start: 0, end: klines.length })
@@ -784,18 +839,38 @@ function CandlestickChart({
         }}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId)
-          dragRef.current = { clientX: event.clientX, start: rangeStart, end: rangeEnd }
+          dragRef.current = { clientX: event.clientX, start: rangeStart, end: rangeEnd, moved: false }
         }}
         onPointerMove={(event) => {
           const drag = dragRef.current
           if (!drag) return
+          if (Math.abs(event.clientX - drag.clientX) > 3) drag.moved = true
           const rect = event.currentTarget.getBoundingClientRect()
           const count = drag.end - drag.start
           const shift = Math.round(((drag.clientX - event.clientX) / Math.max(1, rect.width)) * count)
           const nextStart = Math.max(0, Math.min(drag.start + shift, klines.length - count))
           setVisibleRange({ start: nextStart, end: nextStart + count })
         }}
-        onPointerUp={() => { dragRef.current = null }}
+        onPointerUp={(event) => {
+          const drag = dragRef.current
+          dragRef.current = null
+          if (!drag || drag.moved) return
+          const rect = event.currentTarget.getBoundingClientRect()
+          const svgX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * width
+          if (svgX < margin.left || svgX > width - margin.right) return
+          const targetTime = minTime + ((svgX - margin.left) / plotWidth) * (maxTime - minTime)
+          let nearestIndex = 0
+          let nearestDistance = Number.POSITIVE_INFINITY
+          visibleKlines.forEach((bar, index) => {
+            const center = bar.open_time + (bar.close_time - bar.open_time) / 2
+            const distance = Math.abs(center - targetTime)
+            if (distance < nearestDistance) {
+              nearestIndex = index
+              nearestDistance = distance
+            }
+          })
+          onSelectSignalCandle(visibleKlines[nearestIndex], rangeStart + nearestIndex + 1)
+        }}
         onPointerCancel={() => { dragRef.current = null }}
       >
       <rect x={clampedX(startTime)} y={margin.top} width={Math.max(1, clampedX(endTime) - clampedX(startTime))} height={priceHeight} fill="#2f7cf6" opacity="0.045" />
@@ -847,6 +922,12 @@ function CandlestickChart({
         <line x1={x(time)} x2={x(time)} y1={margin.top} y2={height - margin.bottom} stroke="#20262e" strokeWidth="1" />
         <text x={x(time)} y={height - 18} textAnchor="middle" fill="#758091" fontSize="12">{formatAxisTime(time, locale)}</text>
       </g>)}
+
+      {selectedSignalCandle?.interval === candleInterval && visibleKlines.some((bar) => bar.open_time === selectedSignalCandle.openTime) && (() => {
+        const selectedBar = visibleKlines.find((bar) => bar.open_time === selectedSignalCandle.openTime)!
+        const selectedX = x(selectedBar.open_time + (selectedBar.close_time - selectedBar.open_time) / 2)
+        return <rect x={selectedX - Math.max(3, candleWidth / 2 + 2)} y={margin.top} width={Math.max(6, candleWidth + 4)} height={priceHeight} fill="#2f7cf6" opacity="0.18" pointerEvents="none" />
+      })()}
 
       {visibleKlines.map((bar) => {
         const rising = bar.close >= bar.open

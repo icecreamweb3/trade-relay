@@ -1698,7 +1698,11 @@ def init_db() -> None:
                     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
                     entry_rationale        TEXT         COMMENT '入场依据',
                     signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
+                    signal_candle_interval VARCHAR(8)   DEFAULT NULL COMMENT '信号 K 周期',
+                    signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）',
+                    signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
                     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
+                    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
                     is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
                     first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
                     planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
@@ -1717,6 +1721,16 @@ def init_db() -> None:
                     CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
+            for _col, _ddl in [
+                ("signal_candle_interval", "ALTER TABLE position_reviews ADD COLUMN signal_candle_interval VARCHAR(8) DEFAULT NULL COMMENT '信号 K 周期' AFTER signal_candle_trigger"),
+                ("signal_candle_open_time", "ALTER TABLE position_reviews ADD COLUMN signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）' AFTER signal_candle_interval"),
+                ("signal_candle_number", "ALTER TABLE position_reviews ADD COLUMN signal_candle_number INT DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号' AFTER signal_candle_open_time"),
+                ("estimated_win_probability", "ALTER TABLE position_reviews ADD COLUMN estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade"),
+            ]:
+                try:
+                    cur.execute(_ddl)
+                except pymysql.err.OperationalError:
+                    pass
 
             # ── operation_logs（操作日志）─────────────────────────────────
             cur.execute("""
@@ -4808,7 +4822,8 @@ def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict
     """Create or replace the editable review attached to one position cycle."""
     fields = (
         "market_state", "setup_name", "entry_rationale", "signal_candle_trigger",
-        "opportunity_grade", "is_planned_trade", "first_entry_pnl_state",
+        "signal_candle_interval", "signal_candle_open_time", "signal_candle_number",
+        "opportunity_grade", "estimated_win_probability", "is_planned_trade", "first_entry_pnl_state",
         "planned_stop_price", "actual_stop_fill_price", "first_target",
         "structural_target", "final_exit_reason", "discipline_trigger",
     )
@@ -4927,7 +4942,11 @@ def query_position_records(
                     pr.setup_name AS review_setup_name,
                     pr.entry_rationale AS review_entry_rationale,
                     pr.signal_candle_trigger AS review_signal_candle_trigger,
+                    pr.signal_candle_interval AS review_signal_candle_interval,
+                    pr.signal_candle_open_time AS review_signal_candle_open_time,
+                    pr.signal_candle_number AS review_signal_candle_number,
                     pr.opportunity_grade AS review_opportunity_grade,
+                    pr.estimated_win_probability AS review_estimated_win_probability,
                     pr.is_planned_trade AS review_is_planned_trade,
                     pr.first_entry_pnl_state AS review_first_entry_pnl_state,
                     pr.planned_stop_price AS review_planned_stop_price,

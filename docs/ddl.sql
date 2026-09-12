@@ -122,7 +122,11 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
     entry_rationale        TEXT         COMMENT '入场依据',
     signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
+    signal_candle_interval VARCHAR(8)   DEFAULT NULL COMMENT '信号 K 周期',
+    signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）',
+    signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
+    estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
     is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
     first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
     planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
@@ -139,6 +143,14 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     CONSTRAINT fk_position_reviews_position FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE,
     CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ALTER TABLE position_reviews
+    ADD COLUMN IF NOT EXISTS signal_candle_interval VARCHAR(8) DEFAULT NULL COMMENT '信号 K 周期' AFTER signal_candle_trigger,
+    ADD COLUMN IF NOT EXISTS signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）' AFTER signal_candle_interval,
+    ADD COLUMN IF NOT EXISTS signal_candle_number INT DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号' AFTER signal_candle_open_time;
+
+ALTER TABLE position_reviews
+    ADD COLUMN IF NOT EXISTS estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade;
 
 CREATE TABLE operation_logs (
     id         BIGINT      NOT NULL PRIMARY KEY AUTO_INCREMENT,

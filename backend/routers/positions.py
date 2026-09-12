@@ -6,6 +6,7 @@ import math
 import sys, os
 import threading
 import time
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
@@ -97,7 +98,11 @@ class PositionRecordOut(BaseModel):
     review_setup_name: Optional[str] = None
     review_entry_rationale: Optional[str] = None
     review_signal_candle_trigger: Optional[str] = None
+    review_signal_candle_interval: Optional[str] = None
+    review_signal_candle_open_time: Optional[str] = None
+    review_signal_candle_number: Optional[int] = None
     review_opportunity_grade: Optional[str] = None
+    review_estimated_win_probability: Optional[int] = None
     review_is_planned_trade: Optional[bool] = None
     review_first_entry_pnl_state: Optional[str] = None
     review_planned_stop_price: Optional[float] = None
@@ -113,7 +118,11 @@ class PositionReviewIn(BaseModel):
     setup_name: Optional[str] = Field(None, max_length=255)
     entry_rationale: Optional[str] = Field(None, max_length=5000)
     signal_candle_trigger: Optional[str] = Field(None, max_length=5000)
+    signal_candle_interval: Optional[Literal["1m", "5m", "15m", "1h", "4h", "1d"]] = None
+    signal_candle_open_time: Optional[datetime] = None
+    signal_candle_number: Optional[int] = Field(None, ge=1, le=1000)
     opportunity_grade: Optional[Literal["A", "B", "C"]] = None
+    estimated_win_probability: Optional[Literal[20, 40, 60, 80]] = None
     is_planned_trade: Optional[bool] = None
     first_entry_pnl_state: Optional[Literal["PROFIT", "LOSS", "BREAKEVEN", "NOT_APPLICABLE"]] = None
     planned_stop_price: Optional[float] = Field(None, gt=0)
@@ -1067,7 +1076,11 @@ def get_position_records(
             review_setup_name=row.get("review_setup_name"),
             review_entry_rationale=row.get("review_entry_rationale"),
             review_signal_candle_trigger=row.get("review_signal_candle_trigger"),
+            review_signal_candle_interval=row.get("review_signal_candle_interval"),
+            review_signal_candle_open_time=serialize_utc_timestamp(row.get("review_signal_candle_open_time")),
+            review_signal_candle_number=int(row["review_signal_candle_number"]) if row.get("review_signal_candle_number") is not None else None,
             review_opportunity_grade=row.get("review_opportunity_grade"),
+            review_estimated_win_probability=int(row["review_estimated_win_probability"]) if row.get("review_estimated_win_probability") is not None else None,
             review_is_planned_trade=bool(row["review_is_planned_trade"]) if row.get("review_is_planned_trade") is not None else None,
             review_first_entry_pnl_state=row.get("review_first_entry_pnl_state"),
             review_planned_stop_price=float(row["review_planned_stop_price"]) if row.get("review_planned_stop_price") is not None else None,
@@ -1100,7 +1113,11 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         setup_name=row.get("setup_name"),
         entry_rationale=row.get("entry_rationale"),
         signal_candle_trigger=row.get("signal_candle_trigger"),
+        signal_candle_interval=row.get("signal_candle_interval"),
+        signal_candle_open_time=row.get("signal_candle_open_time"),
+        signal_candle_number=int(row["signal_candle_number"]) if row.get("signal_candle_number") is not None else None,
         opportunity_grade=row.get("opportunity_grade"),
+        estimated_win_probability=int(row["estimated_win_probability"]) if row.get("estimated_win_probability") is not None else None,
         is_planned_trade=bool(row["is_planned_trade"]) if row.get("is_planned_trade") is not None else None,
         first_entry_pnl_state=row.get("first_entry_pnl_state"),
         planned_stop_price=float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None,
