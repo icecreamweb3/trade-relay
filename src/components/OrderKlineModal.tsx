@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { GripHorizontal, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
-import { api, type ApiKline } from '../api/client'
+import { api, type ApiKline, type ApiPositionReviewInput } from '../api/client'
 import { useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import type { PositionFillMarker, PositionWindow } from '../utils/orderChart'
@@ -324,8 +324,147 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
+        {position.positionId != null && <PositionReviewForm positionId={position.positionId} t={t} />}
       </section>,
     document.body,
+  )
+}
+
+type ReviewDraft = {
+  market_state: '' | 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL'
+  setup_name: string
+  entry_rationale: string
+  signal_candle_trigger: string
+  opportunity_grade: '' | 'A' | 'B' | 'C'
+  is_planned_trade: '' | 'YES' | 'NO'
+  first_entry_pnl_state: '' | 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE'
+  planned_stop_price: string
+  actual_stop_fill_price: string
+  first_target: string
+  structural_target: string
+  final_exit_reason: string
+  discipline_trigger: '' | 'NONE' | 'COOLDOWN' | 'STOP_TRADING' | 'BOTH'
+}
+
+const EMPTY_REVIEW: ReviewDraft = {
+  market_state: '', setup_name: '', entry_rationale: '', signal_candle_trigger: '',
+  opportunity_grade: '', is_planned_trade: '', first_entry_pnl_state: '',
+  planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
+  final_exit_reason: '', discipline_trigger: '',
+}
+
+function PositionReviewForm({ positionId, t }: {
+  positionId: number
+  t: (key: string, vars?: Record<string, string | number>) => string
+}) {
+  const [draft, setDraft] = useState<ReviewDraft>(EMPTY_REVIEW)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  useEffect(() => {
+    let active = true
+    setDraft({ ...EMPTY_REVIEW })
+    setLoading(true)
+    setStatus('idle')
+    api.getPositionReview(positionId).then((review) => {
+      if (!active || !review) return
+      setDraft({
+        market_state: review.market_state ?? '',
+        setup_name: review.setup_name ?? '',
+        entry_rationale: review.entry_rationale ?? '',
+        signal_candle_trigger: review.signal_candle_trigger ?? '',
+        opportunity_grade: review.opportunity_grade ?? '',
+        is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
+        first_entry_pnl_state: review.first_entry_pnl_state ?? '',
+        planned_stop_price: review.planned_stop_price?.toString() ?? '',
+        actual_stop_fill_price: review.actual_stop_fill_price?.toString() ?? '',
+        first_target: review.first_target ?? '',
+        structural_target: review.structural_target ?? '',
+        final_exit_reason: review.final_exit_reason ?? '',
+        discipline_trigger: review.discipline_trigger ?? '',
+      })
+    }).catch(() => {
+      if (active) setStatus('error')
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => { active = false }
+  }, [positionId])
+
+  const update = <K extends keyof ReviewDraft>(field: K, value: ReviewDraft[K]) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+    setStatus('idle')
+  }
+  const textOrNull = (value: string) => value.trim() || null
+  const priceOrNull = (value: string) => value.trim() ? Number(value) : null
+
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    setStatus('idle')
+    const body: ApiPositionReviewInput = {
+      market_state: draft.market_state || null,
+      setup_name: textOrNull(draft.setup_name),
+      entry_rationale: textOrNull(draft.entry_rationale),
+      signal_candle_trigger: textOrNull(draft.signal_candle_trigger),
+      opportunity_grade: draft.opportunity_grade || null,
+      is_planned_trade: draft.is_planned_trade === '' ? null : draft.is_planned_trade === 'YES',
+      first_entry_pnl_state: draft.first_entry_pnl_state || null,
+      planned_stop_price: priceOrNull(draft.planned_stop_price),
+      actual_stop_fill_price: priceOrNull(draft.actual_stop_fill_price),
+      first_target: textOrNull(draft.first_target),
+      structural_target: textOrNull(draft.structural_target),
+      final_exit_reason: textOrNull(draft.final_exit_reason),
+      discipline_trigger: draft.discipline_trigger || null,
+    }
+    if ((body.planned_stop_price != null && (!Number.isFinite(body.planned_stop_price) || body.planned_stop_price <= 0))
+      || (body.actual_stop_fill_price != null && (!Number.isFinite(body.actual_stop_fill_price) || body.actual_stop_fill_price <= 0))) {
+      setStatus('error')
+      setSaving(false)
+      return
+    }
+    try {
+      await api.savePositionReview(positionId, body)
+      setStatus('saved')
+    } catch {
+      setStatus('error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputClass = 'h-8 w-full rounded border border-[#343b46] bg-[#151a21] px-2 text-xs text-[#dce2ea] outline-none focus:border-[#2f7cf6] disabled:opacity-50'
+  const areaClass = `${inputClass} min-h-[52px] resize-y py-1.5`
+  const label = (key: string, control: React.ReactNode) => <label className="min-w-0"><span className="mb-1 block text-[11px] text-[#8f99a8]">{t(key)}</span>{control}</label>
+
+  return (
+    <section className="max-h-[285px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold text-[#dce2ea]">{t('review.title')}</h3><span className="text-[10px] text-[#697382]">Position #{positionId}</span></div>
+        <div className="flex items-center gap-2">
+          {loading && <span className="text-[11px] text-[#8f99a8]">{t('review.loading')}</span>}
+          {status === 'saved' && <span className="text-[11px] text-[#0ecb81]">{t('review.saved')}</span>}
+          {status === 'error' && <span className="text-[11px] text-[#f6465d]">{t('review.failed')}</span>}
+          <button type="button" onClick={() => void save()} disabled={loading || saving} className="rounded bg-[#2f7cf6] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#438af7] disabled:opacity-50">{saving ? t('review.saving') : t('review.save')}</button>
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-x-3 gap-y-2">
+        {label('review.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
+        {label('review.setupName', <input value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass} maxLength={255} />)}
+        {label('review.grade', <select value={draft.opportunity_grade} onChange={(e) => update('opportunity_grade', e.target.value as ReviewDraft['opportunity_grade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select>)}
+        {label('review.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
+        {label('review.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
+        {label('review.signalTrigger', <textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />)}
+        {label('review.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
+        {label('review.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
+        {label('review.plannedStop', <input type="number" min="0" step="any" value={draft.planned_stop_price} onChange={(e) => update('planned_stop_price', e.target.value)} className={inputClass} />)}
+        {label('review.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
+        {label('review.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
+        {label('review.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
+        <div className="col-span-4">{label('review.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />)}</div>
+      </div>
+    </section>
   )
 }
 

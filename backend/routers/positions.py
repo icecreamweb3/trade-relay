@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from trade_relay import database as db_module
 from trade_relay import config as cfg_module
@@ -66,6 +66,7 @@ class PositionHistoryOut(BaseModel):
 
 class PositionRecordOut(BaseModel):
     id: int
+    position_id: Optional[int] = None
     username: str
     symbol: str
     side: str
@@ -92,6 +93,30 @@ class PositionRecordOut(BaseModel):
     profit_capture_rate: Optional[float] = None
     profit_giveback_usdc: Optional[float] = None
     excursion_status: Optional[str] = None
+
+
+class PositionReviewIn(BaseModel):
+    market_state: Optional[Literal["TREND", "RANGE", "CLIMAX_REVERSAL"]] = None
+    setup_name: Optional[str] = Field(None, max_length=255)
+    entry_rationale: Optional[str] = Field(None, max_length=5000)
+    signal_candle_trigger: Optional[str] = Field(None, max_length=5000)
+    opportunity_grade: Optional[Literal["A", "B", "C"]] = None
+    is_planned_trade: Optional[bool] = None
+    first_entry_pnl_state: Optional[Literal["PROFIT", "LOSS", "BREAKEVEN", "NOT_APPLICABLE"]] = None
+    planned_stop_price: Optional[float] = Field(None, gt=0)
+    actual_stop_fill_price: Optional[float] = Field(None, gt=0)
+    first_target: Optional[str] = Field(None, max_length=255)
+    structural_target: Optional[str] = Field(None, max_length=255)
+    final_exit_reason: Optional[str] = Field(None, max_length=5000)
+    discipline_trigger: Optional[Literal["NONE", "COOLDOWN", "STOP_TRADING", "BOTH"]] = None
+
+
+class PositionReviewOut(PositionReviewIn):
+    id: int
+    position_id: int
+    user_id: int
+    created_at: str
+    updated_at: str
 
 # Per-user TTL cache: (user_id, status) (None = admin) → (timestamp, result)
 _positions_cache: dict[tuple[int | None, str], tuple[float, list]] = {}
@@ -998,6 +1023,7 @@ def get_position_records(
     return [
         PositionRecordOut(
             id=int(row["id"]),
+            position_id=int(row["position_id"]) if row.get("position_id") is not None else None,
             username=str(row.get("username") or ""),
             symbol=str(row.get("symbol") or ""),
             side=str(row.get("side") or ""),
@@ -1027,6 +1053,61 @@ def get_position_records(
         )
         for row in rows
     ]
+
+
+def _review_owner(position_id: int, user: dict) -> int:
+    position = db_module.get_position_by_id(position_id)
+    if position is None:
+        raise HTTPException(status_code=404, detail="Position not found")
+    owner_id = int(position["user_id"])
+    if user.get("role") != "admin" and owner_id != int(user["sub"]):
+        raise HTTPException(status_code=403, detail="Cannot access another user's position review")
+    return owner_id
+
+
+def _position_review_out(row: dict) -> PositionReviewOut:
+    return PositionReviewOut(
+        id=int(row["id"]),
+        position_id=int(row["position_id"]),
+        user_id=int(row["user_id"]),
+        market_state=row.get("market_state"),
+        setup_name=row.get("setup_name"),
+        entry_rationale=row.get("entry_rationale"),
+        signal_candle_trigger=row.get("signal_candle_trigger"),
+        opportunity_grade=row.get("opportunity_grade"),
+        is_planned_trade=bool(row["is_planned_trade"]) if row.get("is_planned_trade") is not None else None,
+        first_entry_pnl_state=row.get("first_entry_pnl_state"),
+        planned_stop_price=float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None,
+        actual_stop_fill_price=float(row["actual_stop_fill_price"]) if row.get("actual_stop_fill_price") is not None else None,
+        first_target=row.get("first_target"),
+        structural_target=row.get("structural_target"),
+        final_exit_reason=row.get("final_exit_reason"),
+        discipline_trigger=row.get("discipline_trigger"),
+        created_at=serialize_utc_timestamp_required(row.get("created_at")),
+        updated_at=serialize_utc_timestamp_required(row.get("updated_at")),
+    )
+
+
+@router.get("/{position_id}/review", response_model=Optional[PositionReviewOut])
+def get_position_review(position_id: int, user: dict = Depends(get_current_user)):
+    owner_id = _review_owner(position_id, user)
+    row = db_module.get_position_review(position_id, owner_id)
+    return _position_review_out(row) if row is not None else None
+
+
+@router.put("/{position_id}/review", response_model=PositionReviewOut)
+def save_position_review(
+    position_id: int,
+    body: PositionReviewIn,
+    user: dict = Depends(get_current_user),
+):
+    owner_id = _review_owner(position_id, user)
+    values = body.model_dump()
+    for field, value in values.items():
+        if isinstance(value, str):
+            values[field] = value.strip() or None
+    row = db_module.upsert_position_review(position_id, owner_id, values)
+    return _position_review_out(row)
 
 
 @router.post("/history", response_model=PositionHistoryOut)

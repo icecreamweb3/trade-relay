@@ -219,6 +219,7 @@ export interface ApiPositionHistory {
 
 export interface ApiPositionRecord {
   id: number
+  position_id: number | null
   username: string
   symbol: string
   side: string
@@ -246,6 +247,29 @@ export interface ApiPositionRecord {
   profit_giveback_usdc?: number | null
   excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
 }
+
+export interface ApiPositionReview {
+  id: number
+  position_id: number
+  user_id: number
+  market_state: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
+  setup_name: string | null
+  entry_rationale: string | null
+  signal_candle_trigger: string | null
+  opportunity_grade: 'A' | 'B' | 'C' | null
+  is_planned_trade: boolean | null
+  first_entry_pnl_state: 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE' | null
+  planned_stop_price: number | null
+  actual_stop_fill_price: number | null
+  first_target: string | null
+  structural_target: string | null
+  final_exit_reason: string | null
+  discipline_trigger: 'NONE' | 'COOLDOWN' | 'STOP_TRADING' | 'BOTH' | null
+  created_at: string
+  updated_at: string
+}
+
+export type ApiPositionReviewInput = Omit<ApiPositionReview, 'id' | 'position_id' | 'user_id' | 'created_at' | 'updated_at'>
 
 export interface ApiPositionOrderLinkBackfillResult {
   repaired: number
@@ -604,6 +628,14 @@ export const api = {
     end_time?: string
   }): Promise<ApiPositionRecord[]> {
     return request<ApiPositionRecord[]>('GET', '/api/positions/records', { params })
+  },
+
+  async getPositionReview(positionId: number): Promise<ApiPositionReview | null> {
+    return request<ApiPositionReview | null>('GET', `/api/positions/${positionId}/review`)
+  },
+
+  async savePositionReview(positionId: number, body: ApiPositionReviewInput): Promise<ApiPositionReview> {
+    return request<ApiPositionReview>('PUT', `/api/positions/${positionId}/review`, { body })
   },
 
   async getRecentFills(): Promise<ApiTrade[]> {

@@ -113,6 +113,33 @@ CREATE TABLE positions (
     CONSTRAINT fk_positions_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 逐笔交易复盘：每个用户的每个持仓周期最多一条，可重复保存更新。
+CREATE TABLE IF NOT EXISTS position_reviews (
+    id                     BIGINT       NOT NULL AUTO_INCREMENT,
+    position_id            BIGINT       NOT NULL COMMENT '关联 positions.id',
+    user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
+    market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
+    setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
+    entry_rationale        TEXT         COMMENT '入场依据',
+    signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
+    opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
+    is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
+    first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
+    planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
+    actual_stop_fill_price DECIMAL(30,10) DEFAULT NULL COMMENT '实际止损成交价',
+    first_target           VARCHAR(255) DEFAULT NULL COMMENT '第一目标',
+    structural_target      VARCHAR(255) DEFAULT NULL COMMENT '结构目标',
+    final_exit_reason      TEXT         COMMENT '最终退出理由',
+    discipline_trigger     VARCHAR(16)  DEFAULT NULL COMMENT '冷静期/停手机制触发状态',
+    created_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_position_review (position_id, user_id),
+    KEY idx_position_reviews_user (user_id, updated_at),
+    CONSTRAINT fk_position_reviews_position FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE,
+    CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE operation_logs (
     id         BIGINT      NOT NULL PRIMARY KEY AUTO_INCREMENT,
     user_id    BIGINT      DEFAULT NULL,

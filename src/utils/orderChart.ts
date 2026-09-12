@@ -18,6 +18,7 @@ export interface PositionFillMarker {
 }
 
 export interface PositionWindow {
+  positionId?: number
   symbol: string
   username: string
   positionSide: 'LONG' | 'SHORT' | 'UNKNOWN'
@@ -29,6 +30,7 @@ export interface PositionWindow {
 }
 
 export interface PositionRecordLike {
+  position_id?: number | null
   username: string
   symbol: string
   side: string
@@ -107,6 +109,7 @@ export function buildPositionRecordWindow(
   const startTime = storedStart ?? Math.min(...entries.map((marker) => marker.timestamp))
   const endTime = storedEnd ?? Math.max(...exits.map((marker) => marker.timestamp))
   return {
+    positionId: record.position_id ?? undefined,
     symbol: record.symbol,
     username: record.username,
     positionSide: wantedSide === 'LONG' ? 'LONG' : wantedSide === 'SHORT' ? 'SHORT' : 'UNKNOWN',

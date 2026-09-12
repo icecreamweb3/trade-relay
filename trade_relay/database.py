@@ -1688,6 +1688,36 @@ def init_db() -> None:
             _migrate_positions_table(cur)
             _get_table_columns.cache_clear()
 
+            # ── position_reviews（逐笔复盘）──────────────────
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS position_reviews (
+                    id                     BIGINT       NOT NULL AUTO_INCREMENT,
+                    position_id            BIGINT       NOT NULL COMMENT '关联 positions.id',
+                    user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
+                    market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
+                    setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
+                    entry_rationale        TEXT         COMMENT '入场依据',
+                    signal_candle_trigger  TEXT         COMMENT '信号 K 和入场触发方式',
+                    opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
+                    is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
+                    first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
+                    planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
+                    actual_stop_fill_price DECIMAL(30,10) DEFAULT NULL COMMENT '实际止损成交价',
+                    first_target           VARCHAR(255) DEFAULT NULL COMMENT '第一目标',
+                    structural_target      VARCHAR(255) DEFAULT NULL COMMENT '结构目标',
+                    final_exit_reason      TEXT         COMMENT '最终退出理由',
+                    discipline_trigger     VARCHAR(16)  DEFAULT NULL COMMENT '冷静期/停手机制触发状态',
+                    created_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+                    updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                                             ON UPDATE CURRENT_TIMESTAMP(3),
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_position_review (position_id, user_id),
+                    KEY idx_position_reviews_user (user_id, updated_at),
+                    CONSTRAINT fk_position_reviews_position FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE,
+                    CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+
             # ── operation_logs（操作日志）─────────────────────────────────
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS operation_logs (
@@ -4746,6 +4776,67 @@ def get_position(
             sql += " ORDER BY id DESC LIMIT 1"
             cur.execute(sql, params)
             return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position_by_id(position_id: int) -> Optional[dict]:
+    """Return a durable position cycle by primary key, including its owner."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM positions WHERE id = %s LIMIT 1", (int(position_id),))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position_review(position_id: int, user_id: int) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM position_reviews WHERE position_id = %s AND user_id = %s LIMIT 1",
+                (int(position_id), int(user_id)),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict:
+    """Create or replace the editable review attached to one position cycle."""
+    fields = (
+        "market_state", "setup_name", "entry_rationale", "signal_candle_trigger",
+        "opportunity_grade", "is_planned_trade", "first_entry_pnl_state",
+        "planned_stop_price", "actual_stop_fill_price", "first_target",
+        "structural_target", "final_exit_reason", "discipline_trigger",
+    )
+    payload = {field: values.get(field) for field in fields}
+    _log_db_write(
+        "upsert", "position_reviews",
+        {"position_id": position_id, "user_id": user_id, **payload},
+    )
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            columns = ", ".join(fields)
+            placeholders = ", ".join(["%s"] * len(fields))
+            updates = ", ".join(f"{field} = VALUES({field})" for field in fields)
+            cur.execute(
+                f"""INSERT INTO position_reviews (position_id, user_id, {columns})
+                    VALUES (%s, %s, {placeholders})
+                    ON DUPLICATE KEY UPDATE {updates}, updated_at = CURRENT_TIMESTAMP(3)""",
+                (int(position_id), int(user_id), *(payload[field] for field in fields)),
+            )
+            conn.commit()
+        result = get_position_review(position_id, user_id)
+        if result is None:
+            raise RuntimeError("Position review upsert did not produce a row")
+        _log_db_write_result(
+            "upsert", "position_reviews", position_id=position_id, user_id=user_id, success=True,
+        )
+        return result
     finally:
         conn.close()
 
