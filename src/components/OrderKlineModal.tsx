@@ -7,6 +7,19 @@ import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import type { PositionFillMarker, PositionWindow } from '../utils/orderChart'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
+const SETUP_OPTIONS = [
+  'SPIKE_AND_CHANNEL',
+  'WEDGE_REVERSAL_3_PUSH',
+  'TWENTY_GAP_BARS',
+  'TRIANGLES',
+  'EXPANDING_TRIANGLES',
+  'INSIDE_INSIDE',
+  'INSIDE_OUTSIDE_INSIDE',
+  'TWO_BAR_REVERSAL',
+  'BULL_BEAR_FLAG',
+  'DOUBLE_TOP_BOTTOM_FLAG',
+  'OTHER',
+] as const
 const INTERVAL_MS: Record<string, number> = {
   '1m': 60_000,
   '5m': 300_000,
@@ -337,7 +350,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionId != null && <PositionReviewForm positionId={position.positionId} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} t={t} />}
+        {position.positionId != null && <PositionReviewForm positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} t={t} />}
       </section>,
     document.body,
   )
@@ -353,6 +366,7 @@ type ReviewDraft = {
   signal_candle_number: number | null
   opportunity_grade: '' | 'A' | 'B' | 'C'
   estimated_win_probability: '' | '20' | '40' | '60' | '80'
+  first_target_price: string
   is_planned_trade: '' | 'YES' | 'NO'
   first_entry_pnl_state: '' | 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE'
   planned_stop_price: string
@@ -366,13 +380,62 @@ type ReviewDraft = {
 const EMPTY_REVIEW: ReviewDraft = {
   market_state: '', setup_name: '', entry_rationale: '', signal_candle_trigger: '',
   signal_candle_interval: '', signal_candle_open_time: '', signal_candle_number: null,
-  opportunity_grade: '', estimated_win_probability: '', is_planned_trade: '', first_entry_pnl_state: '',
+  opportunity_grade: '', estimated_win_probability: '', first_target_price: '', is_planned_trade: '', first_entry_pnl_state: '',
   planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
   final_exit_reason: '', discipline_trigger: '',
 }
 
-function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSignalCandleLoaded, t }: {
+interface OpportunityScoreResult {
+  status: 'incomplete' | 'invalid' | 'qualified' | 'unqualified'
+  rewardRisk: number | null
+  expectedValue: number | null
+  score: number | null
+  grade: 'A' | 'B' | 'C' | null
+}
+
+function calculateReviewOpportunityScore(
+  entryPrice: number | null | undefined,
+  stopPrice: number | null,
+  targetPrice: number | null,
+  probabilityPercent: number | null,
+  side: PositionWindow['positionSide'],
+): OpportunityScoreResult {
+  const empty = (status: 'incomplete' | 'invalid'): OpportunityScoreResult => ({
+    status, rewardRisk: null, expectedValue: null, score: null, grade: null,
+  })
+  if (entryPrice == null || stopPrice == null || targetPrice == null || probabilityPercent == null) return empty('incomplete')
+  if (![entryPrice, stopPrice, targetPrice].every((value) => Number.isFinite(value) && value > 0)) return empty('invalid')
+  if (side === 'LONG' && !(stopPrice < entryPrice && entryPrice < targetPrice)) return empty('invalid')
+  if (side === 'SHORT' && !(targetPrice < entryPrice && entryPrice < stopPrice)) return empty('invalid')
+  if (side !== 'LONG' && side !== 'SHORT') return empty('invalid')
+  const risk = Math.abs(entryPrice - stopPrice)
+  if (risk <= 0) return empty('invalid')
+  const rewardRisk = Math.abs(targetPrice - entryPrice) / risk
+  const probability = probabilityPercent / 100
+  const expectedValue = probability * rewardRisk - (1 - probability)
+  const score = Math.max(0, Math.min(100, 50 + 25 * expectedValue))
+  const grade = expectedValue >= 1 ? 'A' : expectedValue >= 0.4 ? 'B' : expectedValue > 0 ? 'C' : null
+  return {
+    status: grade ? 'qualified' : 'unqualified',
+    rewardRisk,
+    expectedValue,
+    score,
+    grade,
+  }
+}
+
+function formatOpportunityScore(result: OpportunityScoreResult, t: (key: string) => string): string {
+  if (result.status === 'incomplete') return t('review.score.incomplete')
+  if (result.status === 'invalid') return t('review.score.invalid')
+  const grade = result.grade ?? t('review.score.unqualified')
+  const expectedValue = result.expectedValue ?? 0
+  return `${grade} · ${(result.score ?? 0).toFixed(0)}/100 · RR ${(result.rewardRisk ?? 0).toFixed(2)} · EV ${expectedValue >= 0 ? '+' : ''}${expectedValue.toFixed(2)}R`
+}
+
+function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, t }: {
   positionId: number
+  entryPrice?: number | null
+  positionSide: PositionWindow['positionSide']
   plannedStopPrice?: number | null
   signalCandle: SignalCandleSelection | null
   onSignalCandleLoaded: (selection: SignalCandleSelection | null) => void
@@ -410,6 +473,7 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
         signal_candle_number: review.signal_candle_number ?? null,
         opportunity_grade: review.opportunity_grade ?? '',
         estimated_win_probability: review.estimated_win_probability?.toString() as ReviewDraft['estimated_win_probability'] ?? '',
+        first_target_price: review.first_target_price?.toString() ?? '',
         is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
         first_entry_pnl_state: review.first_entry_pnl_state ?? '',
         planned_stop_price: authoritativePlannedStop,
@@ -444,6 +508,13 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
   }
   const textOrNull = (value: string) => value.trim() || null
   const priceOrNull = (value: string) => value.trim() ? Number(value) : null
+  const opportunityScore = useMemo(() => calculateReviewOpportunityScore(
+    entryPrice,
+    priceOrNull(draft.planned_stop_price),
+    priceOrNull(draft.first_target_price),
+    draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability),
+    positionSide,
+  ), [draft.estimated_win_probability, draft.first_target_price, draft.planned_stop_price, entryPrice, positionSide])
 
   const save = async () => {
     if (saving) return
@@ -457,8 +528,12 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
       signal_candle_interval: draft.signal_candle_interval || null,
       signal_candle_open_time: draft.signal_candle_open_time || null,
       signal_candle_number: draft.signal_candle_number,
-      opportunity_grade: draft.opportunity_grade || null,
+      opportunity_grade: opportunityScore.grade,
       estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 60 | 80,
+      first_target_price: priceOrNull(draft.first_target_price),
+      planned_reward_risk: opportunityScore.rewardRisk,
+      expected_value_r: opportunityScore.expectedValue,
+      opportunity_score: opportunityScore.score,
       is_planned_trade: draft.is_planned_trade === '' ? null : draft.is_planned_trade === 'YES',
       first_entry_pnl_state: draft.first_entry_pnl_state || null,
       planned_stop_price: priceOrNull(draft.planned_stop_price),
@@ -469,7 +544,8 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
       discipline_trigger: draft.discipline_trigger || null,
     }
     if ((body.planned_stop_price != null && (!Number.isFinite(body.planned_stop_price) || body.planned_stop_price <= 0))
-      || (body.actual_stop_fill_price != null && (!Number.isFinite(body.actual_stop_fill_price) || body.actual_stop_fill_price <= 0))) {
+      || (body.actual_stop_fill_price != null && (!Number.isFinite(body.actual_stop_fill_price) || body.actual_stop_fill_price <= 0))
+      || (body.first_target_price != null && (!Number.isFinite(body.first_target_price) || body.first_target_price <= 0))) {
       setStatus('error')
       setSaving(false)
       return
@@ -501,8 +577,8 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
       </div>
       <div className="grid grid-cols-4 gap-x-3 gap-y-2">
         {label('review.marketState', 'review.tip.marketState', <select value={draft.market_state} onChange={(e) => update('market_state', e.target.value as ReviewDraft['market_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="TREND">{t('review.market.trend')}</option><option value="RANGE">{t('review.market.range')}</option><option value="CLIMAX_REVERSAL">{t('review.market.climaxReversal')}</option></select>)}
-        {label('review.setupName', 'review.tip.setupName', <input value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass} maxLength={255} />)}
-        {label('review.grade', 'review.tip.grade', <select value={draft.opportunity_grade} onChange={(e) => update('opportunity_grade', e.target.value as ReviewDraft['opportunity_grade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select>)}
+        {label('review.setupName', 'review.tip.setupName', <select value={draft.setup_name} onChange={(e) => update('setup_name', e.target.value)} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_name && !SETUP_OPTIONS.some((value) => value === draft.setup_name) && <option value={draft.setup_name}>{draft.setup_name}</option>}{SETUP_OPTIONS.map((value, index) => <option key={value} value={value}>{index + 1}. {t(`review.setup.${value}`)}</option>)}</select>)}
+        {label('review.grade', 'review.tip.grade', <div className={`${inputClass} flex items-center ${opportunityScore.grade === 'A' ? 'text-[#0ecb81]' : opportunityScore.grade === 'B' ? 'text-[#69a4ff]' : opportunityScore.grade === 'C' ? 'text-[#f0b90b]' : opportunityScore.status === 'unqualified' ? 'text-[#f6465d]' : 'text-[#8f99a8]'}`}>{formatOpportunityScore(opportunityScore, t)}</div>)}
         {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="60">60%</option><option value="80">80%</option></select>)}
         {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
@@ -511,6 +587,7 @@ function PositionReviewForm({ positionId, plannedStopPrice, signalCandle, onSign
         {label('review.discipline', 'review.tip.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
         {label('review.plannedStop', 'review.tip.plannedStop', <input type="number" value={draft.planned_stop_price} readOnly title={t('review.plannedStopSource')} className={`${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`} />)}
         {label('review.actualStop', 'review.tip.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
+        {label('review.firstTargetPrice', 'review.tip.firstTargetPrice', <input type="number" min="0" step="any" value={draft.first_target_price} onChange={(e) => update('first_target_price', e.target.value)} className={inputClass} />)}
         {label('review.firstTarget', 'review.tip.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
         {label('review.structuralTarget', 'review.tip.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
         <div className="col-span-4">{label('review.exitReason', 'review.tip.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />)}</div>

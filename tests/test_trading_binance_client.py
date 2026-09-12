@@ -3496,6 +3496,8 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "LEFT JOIN positions p ON p.id = f.position_id" in sql
     assert "pr.market_state AS review_market_state" in sql
     assert "pr.estimated_win_probability AS review_estimated_win_probability" in sql
+    assert "pr.planned_reward_risk AS review_planned_reward_risk" in sql
+    assert "pr.opportunity_score AS review_opportunity_score" in sql
     assert "pr.signal_candle_open_time AS review_signal_candle_open_time" in sql
     assert "pr.signal_candle_number AS review_signal_candle_number" in sql
     assert "pr.final_exit_reason AS review_final_exit_reason" in sql

@@ -127,6 +127,10 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
     estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
+    first_target_price       DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价',
+    planned_reward_risk      DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比',
+    expected_value_r         DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）',
+    opportunity_score        DECIMAL(6,2)   DEFAULT NULL COMMENT '自动量化分数 0-100',
     is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
     first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
     planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
@@ -151,6 +155,12 @@ ALTER TABLE position_reviews
 
 ALTER TABLE position_reviews
     ADD COLUMN IF NOT EXISTS estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade;
+
+ALTER TABLE position_reviews
+    ADD COLUMN IF NOT EXISTS first_target_price DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价' AFTER estimated_win_probability,
+    ADD COLUMN IF NOT EXISTS planned_reward_risk DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比' AFTER first_target_price,
+    ADD COLUMN IF NOT EXISTS expected_value_r DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）' AFTER planned_reward_risk,
+    ADD COLUMN IF NOT EXISTS opportunity_score DECIMAL(6,2) DEFAULT NULL COMMENT '自动量化分数 0-100' AFTER expected_value_r;
 
 CREATE TABLE operation_logs (
     id         BIGINT      NOT NULL PRIMARY KEY AUTO_INCREMENT,

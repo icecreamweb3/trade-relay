@@ -647,11 +647,15 @@ function buildExportRow(
     [t('pos.openOrdersId')]: formatOrderIds(row.open_orders_id),
     [t('pos.closeOrdersId')]: formatOrderIds(row.close_orders_id),
     [t('review.export.marketState')]: formatReviewMarketState(row.review_market_state, t),
-    [t('review.export.setupName')]: row.review_setup_name ?? '',
+    [t('review.export.setupName')]: formatReviewSetupName(row.review_setup_name, t),
     [t('review.export.entryRationale')]: row.review_entry_rationale ?? '',
     [t('review.export.signalTrigger')]: formatSignalCandleAndTrigger(row, t),
     [t('review.export.grade')]: row.review_opportunity_grade ?? '',
     [t('review.export.estimatedWinProbability')]: row.review_estimated_win_probability != null ? `${row.review_estimated_win_probability}%` : '',
+    [t('review.export.firstTargetPrice')]: row.review_first_target_price ?? null,
+    [t('review.export.rewardRisk')]: row.review_planned_reward_risk ?? null,
+    [t('review.export.expectedValue')]: row.review_expected_value_r ?? null,
+    [t('review.export.score')]: row.review_opportunity_score ?? null,
     [t('review.export.plannedTrade')]: formatReviewBoolean(row.review_is_planned_trade, t),
     [t('review.export.firstEntryPnl')]: formatReviewPnlState(row.review_first_entry_pnl_state, t),
     [t('review.export.plannedStop')]: row.planned_stop_price ?? null,
@@ -668,6 +672,16 @@ function formatReviewMarketState(value: ApiPositionRecord['review_market_state']
   if (value === 'RANGE') return t('review.market.range')
   if (value === 'CLIMAX_REVERSAL') return t('review.market.climaxReversal')
   return ''
+}
+
+function formatReviewSetupName(value: string | null | undefined, t: (key: string) => string) {
+  if (!value) return ''
+  const knownValues = new Set([
+    'SPIKE_AND_CHANNEL', 'WEDGE_REVERSAL_3_PUSH', 'TWENTY_GAP_BARS', 'TRIANGLES',
+    'EXPANDING_TRIANGLES', 'INSIDE_INSIDE', 'INSIDE_OUTSIDE_INSIDE', 'TWO_BAR_REVERSAL',
+    'BULL_BEAR_FLAG', 'DOUBLE_TOP_BOTTOM_FLAG', 'OTHER',
+  ])
+  return knownValues.has(value) ? t(`review.setup.${value}`) : value
 }
 
 function formatSignalCandleAndTrigger(row: ApiPositionRecord, t: (key: string) => string) {

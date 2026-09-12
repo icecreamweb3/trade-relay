@@ -136,6 +136,15 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
         }
 
     monkeypatch.setattr(positions_router.db_module, "upsert_position_review", upsert)
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_review_scoring_context",
+        lambda position_id, user_id: {
+            "entry_price": 100,
+            "planned_stop_price": 95,
+            "side": "LONG",
+        },
+    )
     body = positions_router.PositionReviewIn(
         setup_name="  trend pullback  ",
         opportunity_grade="A",
@@ -153,3 +162,28 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
     assert calls[0][0:2] == (41, 8)
     assert calls[0][2]["setup_name"] == "trend pullback"
     assert calls[0][2]["estimated_win_probability"] == 80
+
+
+@pytest.mark.parametrize(
+    ("probability", "expected_value", "score", "grade"),
+    [
+        (20, -0.4, 40, None),
+        (40, 0.2, 55, "C"),
+        (60, 0.8, 70, "B"),
+        (80, 1.4, 85, "A"),
+    ],
+)
+def test_opportunity_score_uses_traders_equation(probability, expected_value, score, grade):
+    result = positions_router._calculate_opportunity_score(100, 95, 110, probability, "LONG")
+
+    assert result["planned_reward_risk"] == 2
+    assert result["expected_value_r"] == pytest.approx(expected_value)
+    assert result["opportunity_score"] == score
+    assert result["opportunity_grade"] == grade
+
+
+def test_opportunity_score_rejects_target_on_wrong_side():
+    result = positions_router._calculate_opportunity_score(100, 95, 90, 80, "LONG")
+
+    assert result["opportunity_score"] is None
+    assert result["opportunity_grade"] is None

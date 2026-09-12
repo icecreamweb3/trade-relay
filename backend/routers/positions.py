@@ -103,6 +103,10 @@ class PositionRecordOut(BaseModel):
     review_signal_candle_number: Optional[int] = None
     review_opportunity_grade: Optional[str] = None
     review_estimated_win_probability: Optional[int] = None
+    review_first_target_price: Optional[float] = None
+    review_planned_reward_risk: Optional[float] = None
+    review_expected_value_r: Optional[float] = None
+    review_opportunity_score: Optional[float] = None
     review_is_planned_trade: Optional[bool] = None
     review_first_entry_pnl_state: Optional[str] = None
     review_planned_stop_price: Optional[float] = None
@@ -123,6 +127,10 @@ class PositionReviewIn(BaseModel):
     signal_candle_number: Optional[int] = Field(None, ge=1, le=1000)
     opportunity_grade: Optional[Literal["A", "B", "C"]] = None
     estimated_win_probability: Optional[Literal[20, 40, 60, 80]] = None
+    first_target_price: Optional[float] = Field(None, gt=0)
+    planned_reward_risk: Optional[float] = None
+    expected_value_r: Optional[float] = None
+    opportunity_score: Optional[float] = None
     is_planned_trade: Optional[bool] = None
     first_entry_pnl_state: Optional[Literal["PROFIT", "LOSS", "BREAKEVEN", "NOT_APPLICABLE"]] = None
     planned_stop_price: Optional[float] = Field(None, gt=0)
@@ -1081,6 +1089,10 @@ def get_position_records(
             review_signal_candle_number=int(row["review_signal_candle_number"]) if row.get("review_signal_candle_number") is not None else None,
             review_opportunity_grade=row.get("review_opportunity_grade"),
             review_estimated_win_probability=int(row["review_estimated_win_probability"]) if row.get("review_estimated_win_probability") is not None else None,
+            review_first_target_price=float(row["review_first_target_price"]) if row.get("review_first_target_price") is not None else None,
+            review_planned_reward_risk=float(row["review_planned_reward_risk"]) if row.get("review_planned_reward_risk") is not None else None,
+            review_expected_value_r=float(row["review_expected_value_r"]) if row.get("review_expected_value_r") is not None else None,
+            review_opportunity_score=float(row["review_opportunity_score"]) if row.get("review_opportunity_score") is not None else None,
             review_is_planned_trade=bool(row["review_is_planned_trade"]) if row.get("review_is_planned_trade") is not None else None,
             review_first_entry_pnl_state=row.get("review_first_entry_pnl_state"),
             review_planned_stop_price=float(row["review_planned_stop_price"]) if row.get("review_planned_stop_price") is not None else None,
@@ -1118,6 +1130,10 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         signal_candle_number=int(row["signal_candle_number"]) if row.get("signal_candle_number") is not None else None,
         opportunity_grade=row.get("opportunity_grade"),
         estimated_win_probability=int(row["estimated_win_probability"]) if row.get("estimated_win_probability") is not None else None,
+        first_target_price=float(row["first_target_price"]) if row.get("first_target_price") is not None else None,
+        planned_reward_risk=float(row["planned_reward_risk"]) if row.get("planned_reward_risk") is not None else None,
+        expected_value_r=float(row["expected_value_r"]) if row.get("expected_value_r") is not None else None,
+        opportunity_score=float(row["opportunity_score"]) if row.get("opportunity_score") is not None else None,
         is_planned_trade=bool(row["is_planned_trade"]) if row.get("is_planned_trade") is not None else None,
         first_entry_pnl_state=row.get("first_entry_pnl_state"),
         planned_stop_price=float(row["planned_stop_price"]) if row.get("planned_stop_price") is not None else None,
@@ -1138,6 +1154,49 @@ def get_position_review(position_id: int, user: dict = Depends(get_current_user)
     return _position_review_out(row) if row is not None else None
 
 
+def _calculate_opportunity_score(
+    entry_price: Optional[float],
+    planned_stop_price: Optional[float],
+    first_target_price: Optional[float],
+    probability_percent: Optional[int],
+    side: str,
+) -> dict[str, Optional[float | str]]:
+    empty = {
+        "planned_reward_risk": None,
+        "expected_value_r": None,
+        "opportunity_score": None,
+        "opportunity_grade": None,
+    }
+    if None in {entry_price, planned_stop_price, first_target_price, probability_percent}:
+        return empty
+    entry = float(entry_price)
+    stop = float(planned_stop_price)
+    target = float(first_target_price)
+    if not all(math.isfinite(value) and value > 0 for value in (entry, stop, target)):
+        return empty
+    normalized_side = str(side or "").upper()
+    if normalized_side == "LONG" and not (stop < entry < target):
+        return empty
+    if normalized_side == "SHORT" and not (target < entry < stop):
+        return empty
+    if normalized_side not in {"LONG", "SHORT"}:
+        return empty
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return empty
+    reward_risk = abs(target - entry) / risk
+    probability = int(probability_percent) / 100
+    expected_value = probability * reward_risk - (1 - probability)
+    score = max(0.0, min(100.0, 50 + 25 * expected_value))
+    grade = "A" if expected_value >= 1 else "B" if expected_value >= 0.4 else "C" if expected_value > 0 else None
+    return {
+        "planned_reward_risk": round(reward_risk, 10),
+        "expected_value_r": round(expected_value, 10),
+        "opportunity_score": round(score, 2),
+        "opportunity_grade": grade,
+    }
+
+
 @router.put("/{position_id}/review", response_model=PositionReviewOut)
 def save_position_review(
     position_id: int,
@@ -1149,6 +1208,16 @@ def save_position_review(
     for field, value in values.items():
         if isinstance(value, str):
             values[field] = value.strip() or None
+    context = db_module.get_position_review_scoring_context(position_id, owner_id) or {}
+    authoritative_stop = context.get("planned_stop_price")
+    values["planned_stop_price"] = float(authoritative_stop) if authoritative_stop is not None else None
+    values.update(_calculate_opportunity_score(
+        float(context["entry_price"]) if context.get("entry_price") is not None else None,
+        values["planned_stop_price"],
+        values.get("first_target_price"),
+        values.get("estimated_win_probability"),
+        str(context.get("side") or ""),
+    ))
     row = db_module.upsert_position_review(position_id, owner_id, values)
     return _position_review_out(row)
 

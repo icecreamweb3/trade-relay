@@ -1703,6 +1703,10 @@ def init_db() -> None:
                     signal_candle_number   INT          DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号',
                     opportunity_grade      CHAR(1)      DEFAULT NULL COMMENT 'A/B/C 级机会',
                     estimated_win_probability TINYINT   DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80',
+                    first_target_price       DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价',
+                    planned_reward_risk      DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比',
+                    expected_value_r         DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）',
+                    opportunity_score        DECIMAL(6,2)   DEFAULT NULL COMMENT '自动量化分数 0-100',
                     is_planned_trade       TINYINT(1)   DEFAULT NULL COMMENT '是否计划内交易',
                     first_entry_pnl_state  VARCHAR(16)  DEFAULT NULL COMMENT '第二次入场时首仓盈亏状态',
                     planned_stop_price     DECIMAL(30,10) DEFAULT NULL COMMENT '计划止损价',
@@ -1726,6 +1730,10 @@ def init_db() -> None:
                 ("signal_candle_open_time", "ALTER TABLE position_reviews ADD COLUMN signal_candle_open_time DATETIME(3) DEFAULT NULL COMMENT '信号 K 开盘时间（UTC）' AFTER signal_candle_interval"),
                 ("signal_candle_number", "ALTER TABLE position_reviews ADD COLUMN signal_candle_number INT DEFAULT NULL COMMENT '信号 K 在当前1000根窗口中的标号' AFTER signal_candle_open_time"),
                 ("estimated_win_probability", "ALTER TABLE position_reviews ADD COLUMN estimated_win_probability TINYINT DEFAULT NULL COMMENT '基于结构与信号的主观评估胜率 20/40/60/80' AFTER opportunity_grade"),
+                ("first_target_price", "ALTER TABLE position_reviews ADD COLUMN first_target_price DECIMAL(30,10) DEFAULT NULL COMMENT '用于自动评分的第一目标价' AFTER estimated_win_probability"),
+                ("planned_reward_risk", "ALTER TABLE position_reviews ADD COLUMN planned_reward_risk DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比' AFTER first_target_price"),
+                ("expected_value_r", "ALTER TABLE position_reviews ADD COLUMN expected_value_r DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）' AFTER planned_reward_risk"),
+                ("opportunity_score", "ALTER TABLE position_reviews ADD COLUMN opportunity_score DECIMAL(6,2) DEFAULT NULL COMMENT '自动量化分数 0-100' AFTER expected_value_r"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -4818,12 +4826,35 @@ def get_position_review(position_id: int, user_id: int) -> Optional[dict]:
         conn.close()
 
 
+def get_position_review_scoring_context(position_id: int, user_id: int) -> Optional[dict]:
+    """Return authoritative entry, side and initial stop values used by review scoring."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT p.id AS position_id, p.user_id,
+                          COALESCE(f.entry_avg_price, p.avg_entry_price) AS entry_price,
+                          COALESCE(NULLIF(UPPER(f.side), ''), UPPER(p.position_side)) AS side,
+                          COALESCE(p.planned_stop_price, f.planned_stop_price) AS planned_stop_price
+                     FROM positions p
+                     LEFT JOIN position_history_final f ON f.position_id = p.id
+                    WHERE p.id = %s AND p.user_id = %s
+                    LIMIT 1""",
+                (int(position_id), int(user_id)),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict:
     """Create or replace the editable review attached to one position cycle."""
     fields = (
         "market_state", "setup_name", "entry_rationale", "signal_candle_trigger",
         "signal_candle_interval", "signal_candle_open_time", "signal_candle_number",
-        "opportunity_grade", "estimated_win_probability", "is_planned_trade", "first_entry_pnl_state",
+        "opportunity_grade", "estimated_win_probability", "first_target_price",
+        "planned_reward_risk", "expected_value_r", "opportunity_score",
+        "is_planned_trade", "first_entry_pnl_state",
         "planned_stop_price", "actual_stop_fill_price", "first_target",
         "structural_target", "final_exit_reason", "discipline_trigger",
     )
@@ -4947,6 +4978,10 @@ def query_position_records(
                     pr.signal_candle_number AS review_signal_candle_number,
                     pr.opportunity_grade AS review_opportunity_grade,
                     pr.estimated_win_probability AS review_estimated_win_probability,
+                    pr.first_target_price AS review_first_target_price,
+                    pr.planned_reward_risk AS review_planned_reward_risk,
+                    pr.expected_value_r AS review_expected_value_r,
+                    pr.opportunity_score AS review_opportunity_score,
                     pr.is_planned_trade AS review_is_planned_trade,
                     pr.first_entry_pnl_state AS review_first_entry_pnl_state,
                     pr.planned_stop_price AS review_planned_stop_price,

@@ -255,6 +255,10 @@ export interface ApiPositionRecord {
   review_signal_candle_number?: number | null
   review_opportunity_grade?: 'A' | 'B' | 'C' | null
   review_estimated_win_probability?: 20 | 40 | 60 | 80 | null
+  review_first_target_price?: number | null
+  review_planned_reward_risk?: number | null
+  review_expected_value_r?: number | null
+  review_opportunity_score?: number | null
   review_is_planned_trade?: boolean | null
   review_first_entry_pnl_state?: 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE' | null
   review_planned_stop_price?: number | null
@@ -278,6 +282,10 @@ export interface ApiPositionReview {
   signal_candle_number: number | null
   opportunity_grade: 'A' | 'B' | 'C' | null
   estimated_win_probability: 20 | 40 | 60 | 80 | null
+  first_target_price: number | null
+  planned_reward_risk: number | null
+  expected_value_r: number | null
+  opportunity_score: number | null
   is_planned_trade: boolean | null
   first_entry_pnl_state: 'PROFIT' | 'LOSS' | 'BREAKEVEN' | 'NOT_APPLICABLE' | null
   planned_stop_price: number | null
