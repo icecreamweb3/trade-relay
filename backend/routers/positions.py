@@ -142,6 +142,7 @@ class PositionReviewIn(BaseModel):
 
 
 class PositionReviewOut(PositionReviewIn):
+    signal_candle_open_time: Optional[str] = None
     id: int
     position_id: int
     user_id: int
@@ -1126,7 +1127,7 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         entry_rationale=row.get("entry_rationale"),
         signal_candle_trigger=row.get("signal_candle_trigger"),
         signal_candle_interval=row.get("signal_candle_interval"),
-        signal_candle_open_time=row.get("signal_candle_open_time"),
+        signal_candle_open_time=serialize_utc_timestamp(row.get("signal_candle_open_time")),
         signal_candle_number=int(row["signal_candle_number"]) if row.get("signal_candle_number") is not None else None,
         opportunity_grade=row.get("opportunity_grade"),
         estimated_win_probability=int(row["estimated_win_probability"]) if row.get("estimated_win_probability") is not None else None,

@@ -4,6 +4,7 @@ import { GripHorizontal, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { api, type ApiKline, type ApiPositionReviewInput } from '../api/client'
 import { useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { parseUtcTimestamp } from '../utils/datetime'
 import type { PositionFillMarker, PositionWindow } from '../utils/orderChart'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
@@ -455,10 +456,11 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     setStatus('idle')
     api.getPositionReview(positionId).then((review) => {
       if (!active || !review) return
-      const savedSignalCandle = review.signal_candle_interval && review.signal_candle_open_time && review.signal_candle_number
+      const savedSignalCandleOpenTime = parseUtcTimestamp(review.signal_candle_open_time)
+      const savedSignalCandle = review.signal_candle_interval && savedSignalCandleOpenTime && review.signal_candle_number
         ? {
             interval: review.signal_candle_interval,
-            openTime: new Date(review.signal_candle_open_time).getTime(),
+            openTime: savedSignalCandleOpenTime.getTime(),
             number: review.signal_candle_number,
           }
         : null
@@ -582,7 +584,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
         {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="60">60%</option><option value="80">80%</option></select>)}
         {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
-        {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatDateTime(new Date(draft.signal_candle_open_time).getTime())}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}
+        {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}
         {label('review.firstEntryPnl', 'review.tip.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
         {label('review.discipline', 'review.tip.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
         {label('review.plannedStop', 'review.tip.plannedStop', <input type="number" value={draft.planned_stop_price} readOnly title={t('review.plannedStopSource')} className={`${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`} />)}
@@ -1159,6 +1161,11 @@ function formatDateTime(timestamp: number): string {
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function formatStoredUtcDateTime(value: string): string {
+  const parsed = parseUtcTimestamp(value)
+  return parsed ? formatDateTime(parsed.getTime()) : value
 }
 
 function formatAxisTime(timestamp: number, locale: string): string {

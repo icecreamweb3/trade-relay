@@ -83,6 +83,9 @@ def test_position_review_is_loaded_for_position_owner(monkeypatch):
             "user_id": user_id,
             "market_state": "TREND",
             "setup_name": "pullback",
+            "signal_candle_interval": "5m",
+            "signal_candle_open_time": datetime(2026, 9, 11, 8, 50),
+            "signal_candle_number": 699,
             "is_planned_trade": 1,
             "created_at": datetime(2026, 9, 12, 8, 0),
             "updated_at": datetime(2026, 9, 12, 8, 1),
@@ -98,6 +101,7 @@ def test_position_review_is_loaded_for_position_owner(monkeypatch):
     assert result.user_id == 5
     assert result.market_state == "TREND"
     assert result.is_planned_trade is True
+    assert result.signal_candle_open_time == "2026-09-11T08:50:00Z"
 
 
 def test_position_review_cannot_be_accessed_by_another_user(monkeypatch):
