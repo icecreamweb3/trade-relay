@@ -891,10 +891,12 @@ function CandlestickChart({
   onSelectSignalCandle: (bar: ApiKline, number: number) => void
 }) {
   const [visibleRange, setVisibleRange] = useState(() => ({ start: 0, end: klines.length }))
+  const [hoveredBarOpenTime, setHoveredBarOpenTime] = useState<number | null>(null)
   const dragRef = useRef<{ clientX: number; start: number; end: number; moved: boolean } | null>(null)
 
   useEffect(() => {
     setVisibleRange({ start: 0, end: klines.length })
+    setHoveredBarOpenTime(null)
   }, [klines])
 
   const rangeStart = Math.max(0, Math.min(visibleRange.start, Math.max(0, klines.length - 1)))
@@ -947,6 +949,23 @@ function CandlestickChart({
   const clampedX = (time: number) => Math.max(margin.left, Math.min(width - margin.right, x(time)))
   const y = (price: number) => margin.top + ((maxPrice - price) / (maxPrice - minPrice)) * priceHeight
   const volumeY = (volume: number) => height - margin.bottom - (volume / maxVolume) * volumeHeight
+  const findNearestVisibleBar = (svgX: number) => {
+    const targetTime = minTime + ((svgX - margin.left) / plotWidth) * (maxTime - minTime)
+    let nearestBar = visibleKlines[0]
+    let nearestDistance = Number.POSITIVE_INFINITY
+    visibleKlines.forEach((bar) => {
+      const center = bar.open_time + (bar.close_time - bar.open_time) / 2
+      const distance = Math.abs(center - targetTime)
+      if (distance < nearestDistance) {
+        nearestBar = bar
+        nearestDistance = distance
+      }
+    })
+    return nearestBar
+  }
+  const hoveredBar = hoveredBarOpenTime == null
+    ? null
+    : visibleKlines.find((bar) => bar.open_time === hoveredBarOpenTime) ?? null
   const ema = computeEma(klines.map((bar) => bar.close), 20).slice(rangeStart, rangeEnd)
   const emaPoints = ema.map((value, index) => value == null ? null : `${x(visibleKlines[index].open_time)},${y(value)}`).filter(Boolean).join(' ')
   const timeTicks = buildAlignedTimeTicks(minTime, maxTime, visibleKlines)
@@ -968,6 +987,20 @@ function CandlestickChart({
         <button type="button" onClick={resetZoom} title="Reset" className="rounded p-1 hover:bg-[#2b333e] hover:text-white"><RotateCcw size={14} /></button>
         <span className="border-l border-[#3b424d] px-1.5 text-[10px] text-[#818b9a]">{visibleCount}/{klines.length}</span>
       </div>
+      {hoveredBar && <div
+        className="pointer-events-none absolute left-[220px] right-3 top-3 z-10 flex h-[30px] items-center gap-3 overflow-hidden whitespace-nowrap text-xs font-medium"
+        aria-live="polite"
+      >
+        {([
+          ['O', hoveredBar.open],
+          ['H', hoveredBar.high],
+          ['L', hoveredBar.low],
+          ['C', hoveredBar.close],
+        ] as const).map(([label, value]) => <span key={label} className="flex gap-1">
+          <span className="text-[#818b9a]">{label}</span>
+          <span className={hoveredBar.close >= hoveredBar.open ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>{formatPrice(value)}</span>
+        </span>)}
+      </div>}
       <svg
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="none"
@@ -985,10 +1018,18 @@ function CandlestickChart({
           dragRef.current = { clientX: event.clientX, start: rangeStart, end: rangeEnd, moved: false }
         }}
         onPointerMove={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect()
+          const svgX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * width
+          const svgY = ((event.clientY - rect.top) / Math.max(1, rect.height)) * height
+          if (svgX >= margin.left && svgX <= width - margin.right && svgY >= margin.top && svgY <= priceBottom) {
+            setHoveredBarOpenTime(findNearestVisibleBar(svgX).open_time)
+          } else {
+            setHoveredBarOpenTime(null)
+          }
+
           const drag = dragRef.current
           if (!drag) return
           if (Math.abs(event.clientX - drag.clientX) > 3) drag.moved = true
-          const rect = event.currentTarget.getBoundingClientRect()
           const count = drag.end - drag.start
           const shift = Math.round(((drag.clientX - event.clientX) / Math.max(1, rect.width)) * count)
           const nextStart = Math.max(0, Math.min(drag.start + shift, klines.length - count))
@@ -1001,20 +1042,14 @@ function CandlestickChart({
           const rect = event.currentTarget.getBoundingClientRect()
           const svgX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * width
           if (svgX < margin.left || svgX > width - margin.right) return
-          const targetTime = minTime + ((svgX - margin.left) / plotWidth) * (maxTime - minTime)
-          let nearestIndex = 0
-          let nearestDistance = Number.POSITIVE_INFINITY
-          visibleKlines.forEach((bar, index) => {
-            const center = bar.open_time + (bar.close_time - bar.open_time) / 2
-            const distance = Math.abs(center - targetTime)
-            if (distance < nearestDistance) {
-              nearestIndex = index
-              nearestDistance = distance
-            }
-          })
-          onSelectSignalCandle(visibleKlines[nearestIndex], rangeStart + nearestIndex + 1)
+          const nearestBar = findNearestVisibleBar(svgX)
+          const nearestIndex = visibleKlines.indexOf(nearestBar)
+          onSelectSignalCandle(nearestBar, rangeStart + nearestIndex + 1)
         }}
         onPointerCancel={() => { dragRef.current = null }}
+        onPointerLeave={() => {
+          if (!dragRef.current) setHoveredBarOpenTime(null)
+        }}
       >
       <rect x={clampedX(startTime)} y={margin.top} width={Math.max(1, clampedX(endTime) - clampedX(startTime))} height={priceHeight} fill="#2f7cf6" opacity="0.045" />
       {openingRangeApplies && openingRange && <g pointerEvents="none">
