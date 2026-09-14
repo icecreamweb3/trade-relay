@@ -6,6 +6,7 @@ import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { getUtc8PresetRange, utc8InputToUtcDatabase, type TimeRangePreset } from '../utils/timeRange'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -60,6 +61,7 @@ export function OrderLogScreen() {
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState<OrderFilters>(INITIAL_FILTERS)
+  const [timePreset, setTimePreset] = useState<TimeRangePreset>('')
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const [symbolOptions, setSymbolOptions] = useState<string[]>([])
   const [reconciling, setReconciling] = useState(false)
@@ -121,41 +123,19 @@ export function OrderLogScreen() {
     load(filters)
   }
 
-  const handleThisWeek = () => {
-    const now = new Date()
-    // 以周日为一周的起点
-    const sunday = new Date(now)
-    sunday.setDate(now.getDate() - now.getDay())
-    sunday.setHours(0, 0, 0, 0)
-    const saturday = new Date(sunday)
-    saturday.setDate(sunday.getDate() + 6)
-    saturday.setHours(23, 59, 59, 0)
-    const rangeEnd = saturday.getTime() > now.getTime() ? now : saturday
+  const handleTimePreset = (preset: TimeRangePreset) => {
+    setTimePreset(preset)
+    if (!preset) return
+    const range = getUtc8PresetRange(preset)
     setFilters((current) => ({
       ...current,
-      startTime: toLocalDateTimeInputValue(sunday),
-      endTime: toLocalDateTimeInputValue(rangeEnd),
-    }))
-  }
-
-  const handleLastWeek = () => {
-    const now = new Date()
-    const thisSunday = new Date(now)
-    thisSunday.setDate(now.getDate() - now.getDay())
-    thisSunday.setHours(0, 0, 0, 0)
-    const lastSunday = new Date(thisSunday)
-    lastSunday.setDate(thisSunday.getDate() - 7)
-    const lastSaturday = new Date(thisSunday)
-    lastSaturday.setMilliseconds(-1)
-    setFilters((current) => ({
-      ...current,
-      startTime: toLocalDateTimeInputValue(lastSunday),
-      endTime: toLocalDateTimeInputValue(lastSaturday),
+      ...range,
     }))
   }
 
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
+    setTimePreset('')
     load(INITIAL_FILTERS)
   }
 
@@ -329,13 +309,19 @@ export function OrderLogScreen() {
         <FilterField label={t('log.filter.startTime')} className="w-[220px]">
           <DateTimeFilterInput
             value={filters.startTime}
-            onChange={(value) => setFilters((current) => ({ ...current, startTime: value }))}
+            onChange={(value) => {
+              setTimePreset('')
+              setFilters((current) => ({ ...current, startTime: value }))
+            }}
           />
         </FilterField>
         <FilterField label={t('log.filter.endTime')} className="w-[220px]">
           <DateTimeFilterInput
             value={filters.endTime}
-            onChange={(value) => setFilters((current) => ({ ...current, endTime: value }))}
+            onChange={(value) => {
+              setTimePreset('')
+              setFilters((current) => ({ ...current, endTime: value }))
+            }}
           />
         </FilterField>
         <FilterField label={t('log.filter.status')} className="w-[200px]">
@@ -370,12 +356,19 @@ export function OrderLogScreen() {
           <button type="submit" className="h-9 rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
             {t('log.filter.search')}
           </button>
-          <button type="button" onClick={handleThisWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
-            {t('log.filter.thisWeek')}
-          </button>
-          <button type="button" onClick={handleLastWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
-            {t('log.filter.lastWeek')}
-          </button>
+          <select
+            value={timePreset}
+            onChange={(event) => handleTimePreset(event.target.value as TimeRangePreset)}
+            aria-label={t('log.filter.quickRange')}
+            title={t('log.filter.quickRange')}
+            className={`${INPUT_CLS} w-[100px]`}
+          >
+            <option value=""></option>
+            <option value="THIS_WEEK">{t('log.filter.thisWeek')}</option>
+            <option value="LAST_WEEK">{t('log.filter.lastWeek')}</option>
+            <option value="TODAY">{t('log.filter.today')}</option>
+            <option value="YESTERDAY">{t('log.filter.yesterday')}</option>
+          </select>
           <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
           </button>
@@ -758,22 +751,7 @@ function formatSignedNumber(value?: number | null, decimals = 4) {
   return `${value > 0 ? '+' : ''}${value.toFixed(decimals)}`
 }
 
-function toBackendDateTime(value: string) {
-  if (!value) return undefined
-  // datetime-local 的值是浏览器本地时间（UTC+8），数据库 created_at 存 UTC 且后端直接按字符串比较，
-  // 发送前先转成 UTC，保证筛选范围与界面显示（同样按本地时区渲染）一致
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return undefined
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
-    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
-}
-
-function toLocalDateTimeInputValue(date: Date) {
-  const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
+const toBackendDateTime = utc8InputToUtcDatabase
 
 function formatLogTimestamp(value?: string) {
   if (!value) return '-'

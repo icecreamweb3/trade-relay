@@ -9,6 +9,7 @@ import { formatUtcTimestampToLocalString } from '../utils/datetime'
 import { buildPositionRecordWindow, type PositionWindow } from '../utils/orderChart'
 import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
 import { computePositionAnalysis, type TradeAnalysis } from '../utils/tradeAnalysis'
+import { getUtc8PresetRange, utc8InputToUtcDatabase, type TimeRangePreset } from '../utils/timeRange'
 import { TradeAnalysisModal } from './TradeAnalysisModal'
 
 interface PositionHistoryFilters {
@@ -61,6 +62,7 @@ export function PositionHistoryScreen() {
   const showToast = useToastStore((state) => state.showToast)
   const [rows, setRows] = useState<ApiPositionRecord[]>([])
   const [filters, setFilters] = useState<PositionHistoryFilters>(INITIAL_FILTERS)
+  const [timePreset, setTimePreset] = useState<TimeRangePreset>('')
   const [userOptions, setUserOptions] = useState<UserOption[]>([])
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
@@ -112,39 +114,19 @@ export function PositionHistoryScreen() {
     void load(filters)
   }
 
-  const handleThisWeek = () => {
-    const now = new Date()
-    const sunday = new Date(now)
-    sunday.setDate(now.getDate() - now.getDay())
-    sunday.setHours(0, 0, 0, 0)
-    const saturday = new Date(sunday)
-    saturday.setDate(sunday.getDate() + 6)
-    saturday.setHours(23, 59, 59, 0)
+  const handleTimePreset = (preset: TimeRangePreset) => {
+    setTimePreset(preset)
+    if (!preset) return
+    const range = getUtc8PresetRange(preset)
     setFilters((current) => ({
       ...current,
-      startTime: toLocalDateTimeInputValue(sunday),
-      endTime: toLocalDateTimeInputValue(saturday),
-    }))
-  }
-
-  const handleLastWeek = () => {
-    const now = new Date()
-    const thisSunday = new Date(now)
-    thisSunday.setDate(now.getDate() - now.getDay())
-    thisSunday.setHours(0, 0, 0, 0)
-    const lastSunday = new Date(thisSunday)
-    lastSunday.setDate(thisSunday.getDate() - 7)
-    const lastSaturday = new Date(thisSunday)
-    lastSaturday.setMilliseconds(-1)
-    setFilters((current) => ({
-      ...current,
-      startTime: toLocalDateTimeInputValue(lastSunday),
-      endTime: toLocalDateTimeInputValue(lastSaturday),
+      ...range,
     }))
   }
 
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
+    setTimePreset('')
     setHasQueried(false)
     void load(INITIAL_FILTERS)
   }
@@ -510,7 +492,10 @@ export function PositionHistoryScreen() {
             type="datetime-local"
             step={1}
             value={filters.startTime}
-            onChange={(event) => setFilters((current) => ({ ...current, startTime: event.target.value }))}
+            onChange={(event) => {
+              setTimePreset('')
+              setFilters((current) => ({ ...current, startTime: event.target.value }))
+            }}
             className={INPUT_CLS}
           />
         </FilterField>
@@ -519,7 +504,10 @@ export function PositionHistoryScreen() {
             type="datetime-local"
             step={1}
             value={filters.endTime}
-            onChange={(event) => setFilters((current) => ({ ...current, endTime: event.target.value }))}
+            onChange={(event) => {
+              setTimePreset('')
+              setFilters((current) => ({ ...current, endTime: event.target.value }))
+            }}
             className={INPUT_CLS}
           />
         </FilterField>
@@ -527,12 +515,19 @@ export function PositionHistoryScreen() {
           <button type="submit" className="h-9 rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
             {t('log.filter.search')}
           </button>
-          <button type="button" onClick={handleThisWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
-            {t('log.filter.thisWeek')}
-          </button>
-          <button type="button" onClick={handleLastWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
-            {t('log.filter.lastWeek')}
-          </button>
+          <select
+            value={timePreset}
+            onChange={(event) => handleTimePreset(event.target.value as TimeRangePreset)}
+            aria-label={t('log.filter.quickRange')}
+            title={t('log.filter.quickRange')}
+            className={`${INPUT_CLS} w-[100px]`}
+          >
+            <option value=""></option>
+            <option value="THIS_WEEK">{t('log.filter.thisWeek')}</option>
+            <option value="LAST_WEEK">{t('log.filter.lastWeek')}</option>
+            <option value="TODAY">{t('log.filter.today')}</option>
+            <option value="YESTERDAY">{t('log.filter.yesterday')}</option>
+          </select>
           <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
           </button>
@@ -802,20 +797,7 @@ function formatExcursionStatus(value: ApiPositionRecord['excursion_status'], t: 
   return '—'
 }
 
-function toBackendDateTime(value: string) {
-  if (!value) return undefined
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return undefined
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
-    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
-}
-
-function toLocalDateTimeInputValue(date: Date) {
-  const pad = (part: number) => String(part).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
+const toBackendDateTime = utc8InputToUtcDatabase
 
 function formatFileTimestamp(date: Date) {
   const pad = (part: number) => String(part).padStart(2, '0')
