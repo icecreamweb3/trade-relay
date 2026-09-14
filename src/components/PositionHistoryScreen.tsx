@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { useTranslation } from '../i18n/translations'
-import { formatUtcTimestampToLocalString } from '../utils/datetime'
+import { formatUtcTimestampToLocalString, formatUtcTimestampToUtc8String } from '../utils/datetime'
 import { buildPositionRecordWindow, type PositionWindow } from '../utils/orderChart'
 import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
 import { computePositionAnalysis, type TradeAnalysis } from '../utils/tradeAnalysis'
@@ -654,8 +654,8 @@ function buildExportRow(
 ) {
   return {
     [t('log.index')]: index + 1,
-    [t('pos.openTime')]: formatTimestamp(row.open_time),
-    [t('pos.closeTime')]: formatTimestamp(row.close_time),
+    [t('pos.openTime')]: formatUtcTimestampToUtc8String(row.open_time),
+    [t('pos.closeTime')]: formatUtcTimestampToUtc8String(row.close_time),
     [t('log.symbol')]: row.symbol,
     [t('log.side')]: row.side === 'LONG' ? t('pos.long') : t('pos.short'),
     [t('pos.positionMode')]: formatPositionMode(row.position_mode, t),
@@ -721,7 +721,7 @@ function formatSignalCandleAndTrigger(row: ApiPositionRecord, t: (key: string) =
   const reference = [
     row.review_signal_candle_interval,
     row.review_signal_candle_number != null ? `#${row.review_signal_candle_number}` : '',
-    row.review_signal_candle_open_time ? formatTimestamp(row.review_signal_candle_open_time) : '',
+    row.review_signal_candle_open_time ? formatUtcTimestampToUtc8String(row.review_signal_candle_open_time) : '',
   ].filter(Boolean).join(' | ')
   const trigger = row.review_signal_candle_trigger?.trim() ?? ''
   if (reference && trigger) return `${reference} | ${trigger}`

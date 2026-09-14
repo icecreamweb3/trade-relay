@@ -4,7 +4,7 @@ import { api, type ApiOrderReconcileResult } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
-import { parseUtcTimestamp } from '../utils/datetime'
+import { formatUtcTimestampToUtc8String, parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { getUtc8PresetRange, utc8InputToUtcDatabase, type TimeRangePreset } from '../utils/timeRange'
 
@@ -777,8 +777,8 @@ function buildExportRow(order: Order, index: number, t: Translate) {
     [t('log.symbol')]: order.source === 'external'
       ? `${order.symbol} (${t('order.source.external')})`
       : order.symbol,
-    [t('log.createdAt')]: formatLogTimestamp(order.created_at),
-    [t('log.filledAt')]: formatLogTimestamp(order.filled_at || undefined),
+    [t('log.createdAt')]: formatUtcTimestampToUtc8String(order.created_at),
+    [t('log.filledAt')]: formatUtcTimestampToUtc8String(order.filled_at),
     [t('log.side')]: formatOrderSide(order.side, t),
     [t('log.type')]: formatOrderType(order.order_type, t),
     [t('log.qty')]: order.quantity,

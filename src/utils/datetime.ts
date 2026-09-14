@@ -39,3 +39,13 @@ export function formatUtcTimestampToLocalString(value?: string | null): string {
   const parsed = parseUtcTimestamp(value)
   return parsed ? parsed.toLocaleString(getPreferredLocale() === 'en' ? 'en-US' : 'zh-CN', LOCAL_DATE_TIME_OPTIONS) : (value || '-')
 }
+
+/** Format a database UTC timestamp as a stable UTC+8 value for CSV exports. */
+export function formatUtcTimestampToUtc8String(value?: string | null): string {
+  const parsed = parseUtcTimestamp(value)
+  if (!parsed) return value || ''
+  const utc8 = new Date(parsed.getTime() + 8 * 60 * 60 * 1000)
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${utc8.getUTCFullYear()}/${pad(utc8.getUTCMonth() + 1)}/${pad(utc8.getUTCDate())} ` +
+    `${pad(utc8.getUTCHours())}:${pad(utc8.getUTCMinutes())}:${pad(utc8.getUTCSeconds())}`
+}
