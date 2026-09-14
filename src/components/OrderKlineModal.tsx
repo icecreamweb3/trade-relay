@@ -142,7 +142,7 @@ export function OrderKlineLoadingModal({ symbol, onClose }: { symbol: string; on
   )
 }
 
-export function OrderKlineModal({ position, onClose, standalone = false }: { position: PositionWindow; onClose: () => void; standalone?: boolean }) {
+export function OrderKlineModal({ position, onClose, onReviewSaved, standalone = false }: { position: PositionWindow; onClose: () => void; onReviewSaved?: (positionId: number) => void; standalone?: boolean }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [interval, setInterval] = useState('5m')
@@ -393,7 +393,7 @@ export function OrderKlineModal({ position, onClose, standalone = false }: { pos
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionId != null && <PositionReviewForm positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} t={t} />}
+        {position.positionId != null && <PositionReviewForm positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} onReviewSaved={onReviewSaved} t={t} />}
       </section>,
     document.body,
   )
@@ -476,13 +476,14 @@ function formatOpportunityScore(result: OpportunityScoreResult, t: (key: string)
   return `${grade} · ${(result.score ?? 0).toFixed(0)}/100 · RR ${(result.rewardRisk ?? 0).toFixed(2)} · EV ${expectedValue >= 0 ? '+' : ''}${expectedValue.toFixed(2)}R`
 }
 
-function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, t }: {
+function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, onReviewSaved, t }: {
   positionId: number
   entryPrice?: number | null
   positionSide: PositionWindow['positionSide']
   plannedStopPrice?: number | null
   signalCandle: SignalCandleSelection | null
   onSignalCandleLoaded: (selection: SignalCandleSelection | null) => void
+  onReviewSaved?: (positionId: number) => void
   t: (key: string, vars?: Record<string, string | number>) => string
 }) {
   const [draft, setDraft] = useState<ReviewDraft>(EMPTY_REVIEW)
@@ -618,6 +619,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     try {
       await api.savePositionReview(positionId, body)
       setStatus('saved')
+      onReviewSaved?.(positionId)
     } catch {
       setStatus('error')
     } finally {

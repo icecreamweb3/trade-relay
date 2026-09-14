@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { BarChart3, Calculator, DatabaseBackup, Download } from 'lucide-react'
+import { BarChart3, Calculator, CheckCircle2, DatabaseBackup, Download } from 'lucide-react'
 import { api, type ApiPositionRecord } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -406,6 +406,12 @@ export function PositionHistoryScreen() {
     setChartPosition(null)
   }
 
+  const handleReviewSaved = useCallback((positionId: number) => {
+    setRows((current) => current.map((row) => row.position_id === positionId ? { ...row, reviewed: true } : row))
+  }, [])
+
+  useEffect(() => window.electronAPI?.onPositionReviewSaved?.(handleReviewSaved), [handleReviewSaved])
+
   useEffect(() => {
     const stopDragging = () => { dragRef.current = null }
     window.addEventListener('mouseup', stopDragging)
@@ -561,7 +567,19 @@ export function PositionHistoryScreen() {
                 onDoubleClick={() => void handlePositionDoubleClick(row)}
                 className={chartLoadingRecordId === row.id ? 'opacity-60' : ''}
               >
-                <td className="text-[#858585]">{index + 1}</td>
+                <td className="text-[#858585]">
+                  <span className="flex items-center gap-1">
+                    <span>{index + 1}</span>
+                    {row.reviewed && (
+                      <CheckCircle2
+                        size={13}
+                        aria-label={t('pos.reviewed')}
+                        title={t('pos.reviewed')}
+                        className="shrink-0 text-[#0ecb81]"
+                      />
+                    )}
+                  </span>
+                </td>
                 <td className="whitespace-nowrap text-[#858585]">{formatTimestamp(row.open_time)}</td>
                 <td className="whitespace-nowrap text-[#858585]">{formatTimestamp(row.close_time)}</td>
                 <td className="font-semibold">{row.symbol}</td>
@@ -589,7 +607,7 @@ export function PositionHistoryScreen() {
         </table>
       </div>
       {chartPendingRecord && <OrderKlineLoadingModal symbol={chartPendingRecord.symbol} onClose={closePositionChart} />}
-      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closePositionChart} />}
+      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closePositionChart} onReviewSaved={handleReviewSaved} />}
       {analysis && <TradeAnalysisModal analysis={analysis} onClose={() => setAnalysis(null)} />}
     </div>
   )

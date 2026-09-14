@@ -246,6 +246,7 @@ export interface ApiPositionRecord {
   profit_capture_rate?: number | null
   profit_giveback_usdc?: number | null
   excursion_status?: 'PENDING' | 'CALCULATED' | 'FAILED' | null
+  reviewed: boolean
   review_market_state?: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
   review_setup_name?: string | null
   review_setup_variant?: string | null

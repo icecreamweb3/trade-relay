@@ -27,7 +27,14 @@ function OrderKlineWindowApp() {
     return <div className="flex h-screen items-center justify-center bg-[#101318] text-sm text-[#9aa3b2]">Loading position candles...</div>
   }
 
-  return <OrderKlineModal position={position} standalone onClose={() => void window.electronAPI?.closeOrderKlineWindow?.()} />
+  return (
+    <OrderKlineModal
+      position={position}
+      standalone
+      onClose={() => void window.electronAPI?.closeOrderKlineWindow?.()}
+      onReviewSaved={(positionId) => void window.electronAPI?.notifyPositionReviewSaved?.(positionId)}
+    />
+  )
 }
 
 const isOrderKlineWindow = new URLSearchParams(window.location.search).get('window') === 'order-kline'

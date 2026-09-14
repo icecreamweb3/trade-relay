@@ -94,6 +94,7 @@ class PositionRecordOut(BaseModel):
     profit_capture_rate: Optional[float] = None
     profit_giveback_usdc: Optional[float] = None
     excursion_status: Optional[str] = None
+    reviewed: bool = False
     review_market_state: Optional[str] = None
     review_setup_name: Optional[str] = None
     review_setup_variant: Optional[str] = None
@@ -1083,6 +1084,7 @@ def get_position_records(
             profit_capture_rate=float(row["profit_capture_rate"]) if row.get("profit_capture_rate") is not None else None,
             profit_giveback_usdc=float(row["profit_giveback_usdc"]) if row.get("profit_giveback_usdc") is not None else None,
             excursion_status=str(row["excursion_status"]) if row.get("excursion_status") is not None else None,
+            reviewed=bool(row.get("reviewed")),
             review_market_state=row.get("review_market_state"),
             review_setup_name=row.get("review_setup_name"),
             review_setup_variant=row.get("review_setup_variant"),

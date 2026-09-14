@@ -4971,6 +4971,7 @@ def query_position_records(
                     f.metric_status AS excursion_status,
                     f.metric_source AS excursion_source,
                     f.metric_calculated_at AS excursion_calculated_at,
+                    (pr.id IS NOT NULL) AS reviewed,
                     pr.market_state AS review_market_state,
                     pr.setup_name AS review_setup_name,
                     pr.setup_variant AS review_setup_variant,

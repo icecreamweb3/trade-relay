@@ -68,6 +68,35 @@ def test_non_admin_cannot_maintain_another_user():
     assert exc_info.value.status_code == 403
 
 
+def test_position_records_expose_saved_review_marker(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_position_records",
+        lambda **_kwargs: [{
+            "id": 17,
+            "position_id": 41,
+            "username": "Will",
+            "symbol": "BTCUSDC",
+            "side": "LONG",
+            "reviewed": 1,
+        }],
+    )
+
+    result = positions_router.get_position_records(
+        limit=200,
+        offset=0,
+        username=None,
+        symbol=None,
+        side=None,
+        start_time=None,
+        end_time=None,
+        user={"sub": "5", "username": "Will", "role": "user"},
+    )
+
+    assert result[0].position_id == 41
+    assert result[0].reviewed is True
+
+
 def test_position_review_is_loaded_for_position_owner(monkeypatch):
     monkeypatch.setattr(
         positions_router.db_module,

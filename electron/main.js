@@ -905,6 +905,16 @@ ipcMain.handle('close-order-kline-window', (event) => {
   const senderWindow = BrowserWindow.fromWebContents(event.sender)
   if (senderWindow && senderWindow === orderKlineWindow) senderWindow.close()
 })
+ipcMain.handle('position-review-saved', (_event, positionId) => {
+  const normalizedPositionId = Number(positionId)
+  if (!Number.isSafeInteger(normalizedPositionId) || normalizedPositionId <= 0) {
+    throw new Error('Invalid position ID')
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('position-review-saved', normalizedPositionId)
+  }
+  return { ok: true }
+})
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 // On Linux with fractional HiDPI scaling (e.g. 125 / 150 %), Chromium may

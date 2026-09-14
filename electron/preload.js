@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openOrderKlineWindow: (payload) => ipcRenderer.invoke('open-order-kline-window', payload),
   getOrderKlinePayload: () => ipcRenderer.invoke('get-order-kline-payload'),
   closeOrderKlineWindow: () => ipcRenderer.invoke('close-order-kline-window'),
+  notifyPositionReviewSaved: (positionId) => ipcRenderer.invoke('position-review-saved', positionId),
+  onPositionReviewSaved: (callback) => {
+    const handler = (_event, positionId) => callback(positionId)
+    ipcRenderer.on('position-review-saved', handler)
+    return () => ipcRenderer.removeListener('position-review-saved', handler)
+  },
   onOrderKlinePayload: (callback) => {
     const handler = (_event, payload) => callback(payload)
     ipcRenderer.on('order-kline-payload', handler)
