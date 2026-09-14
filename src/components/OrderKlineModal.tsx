@@ -437,6 +437,26 @@ interface OpportunityScoreResult {
   grade: 'A' | 'B' | 'C' | null
 }
 
+export function resolveFirstTargetPriceInput(
+  value: string,
+  entryPrice: number | null | undefined,
+  stopPrice: number | null,
+  side: PositionWindow['positionSide'],
+): number | null {
+  const normalized = value.trim()
+  if (!normalized) return null
+  const rMatch = normalized.match(/^((?:\d+(?:\.\d*)?)|(?:\.\d+))\s*r$/i)
+  if (!rMatch) return Number(normalized)
+
+  const multiple = Number(rMatch[1])
+  if (entryPrice == null || stopPrice == null
+    || !Number.isFinite(entryPrice) || !Number.isFinite(stopPrice) || !Number.isFinite(multiple)
+    || entryPrice <= 0 || stopPrice <= 0 || multiple <= 0) return Number.NaN
+  if (side === 'LONG' && stopPrice < entryPrice) return entryPrice + (entryPrice - stopPrice) * multiple
+  if (side === 'SHORT' && stopPrice > entryPrice) return entryPrice - (stopPrice - entryPrice) * multiple
+  return Number.NaN
+}
+
 function calculateReviewOpportunityScore(
   entryPrice: number | null | undefined,
   stopPrice: number | null,
@@ -574,13 +594,20 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
   }
   const textOrNull = (value: string) => value.trim() || null
   const priceOrNull = (value: string) => value.trim() ? Number(value) : null
+  const firstTargetPrice = useMemo(() => resolveFirstTargetPriceInput(
+    draft.first_target_price,
+    entryPrice,
+    priceOrNull(draft.planned_stop_price),
+    positionSide,
+  ), [draft.first_target_price, draft.planned_stop_price, entryPrice, positionSide])
+  const firstTargetUsesR = /r\s*$/i.test(draft.first_target_price)
   const opportunityScore = useMemo(() => calculateReviewOpportunityScore(
     entryPrice,
     priceOrNull(draft.planned_stop_price),
-    priceOrNull(draft.first_target_price),
+    firstTargetPrice,
     draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability),
     positionSide,
-  ), [draft.estimated_win_probability, draft.first_target_price, draft.planned_stop_price, entryPrice, positionSide])
+  ), [draft.estimated_win_probability, draft.planned_stop_price, entryPrice, firstTargetPrice, positionSide])
 
   const save = async () => {
     if (saving) return
@@ -597,7 +624,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       signal_candle_number: draft.signal_candle_number,
       opportunity_grade: opportunityScore.grade,
       estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 50 | 60 | 75 | 80,
-      first_target_price: priceOrNull(draft.first_target_price),
+      first_target_price: firstTargetPrice,
       planned_reward_risk: opportunityScore.rewardRisk,
       expected_value_r: opportunityScore.expectedValue,
       opportunity_score: opportunityScore.score,
@@ -666,7 +693,23 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
           className={plannedStopPrice == null ? inputClass : `${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`}
         />)}
         {label('review.actualStop', 'review.tip.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
-        {label('review.firstTargetPrice', 'review.tip.firstTargetPrice', <input type="number" min="0" step="any" value={draft.first_target_price} onChange={(e) => update('first_target_price', e.target.value)} className={inputClass} />)}
+        {label('review.firstTargetPrice', 'review.tip.firstTargetPrice', <div>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={draft.first_target_price}
+            onChange={(e) => update('first_target_price', e.target.value)}
+            placeholder={t('review.firstTargetPricePlaceholder')}
+            className={inputClass}
+          />
+          {firstTargetUsesR && (
+            <div className={`mt-1 text-[10px] ${firstTargetPrice != null && Number.isFinite(firstTargetPrice) && firstTargetPrice > 0 ? 'text-[#69a4ff]' : 'text-[#f0b90b]'}`}>
+              {firstTargetPrice != null && Number.isFinite(firstTargetPrice) && firstTargetPrice > 0
+                ? `${draft.first_target_price.trim().toUpperCase()} → ${formatCalculatedTargetPrice(firstTargetPrice)}`
+                : t('review.firstTargetRUnavailable')}
+            </div>
+          )}
+        </div>)}
         {label('review.firstTarget', 'review.tip.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
         {label('review.structuralTarget', 'review.tip.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
         <div className="col-span-4">{label('review.exitReason', 'review.tip.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />)}</div>
@@ -1266,6 +1309,10 @@ function formatPrice(value: number): string {
   if (Math.abs(value) >= 1000) return value.toLocaleString('en-US', { maximumFractionDigits: 2 })
   if (Math.abs(value) >= 1) return value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
   return value.toPrecision(5)
+}
+
+function formatCalculatedTargetPrice(value: number): string {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 10 })
 }
 
 function formatCompactNumber(value: number): string {
