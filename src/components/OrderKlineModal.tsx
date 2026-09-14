@@ -19,10 +19,15 @@ const SETUP_OPTIONS = [
   'TWO_BAR_REVERSAL',
   'BULL_BEAR_FLAG',
   'DOUBLE_TOP_BOTTOM_FLAG',
+  'RANGE_BREAKOUT_EXTREME_CLOSE',
   'OTHER',
 ] as const
-type SetupProbability = '' | '20' | '40' | '50' | '60' | '75' | '80'
+type SetupProbability = '' | '20' | '40' | '50' | '55' | '60' | '75' | '80'
 type SetupVariant = { value: string; probability: Exclude<SetupProbability, ''> }
+
+const SETUP_DEFAULT_PROBABILITIES: Partial<Record<(typeof SETUP_OPTIONS)[number], Exclude<SetupProbability, ''>>> = {
+  RANGE_BREAKOUT_EXTREME_CLOSE: '55',
+}
 
 export const SETUP_VARIANTS: Partial<Record<(typeof SETUP_OPTIONS)[number], readonly SetupVariant[]>> = {
   SPIKE_AND_CHANNEL: [
@@ -580,7 +585,9 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       ...current,
       setup_name: setupName,
       setup_variant: firstVariant?.value ?? '',
-      estimated_win_probability: firstVariant?.probability ?? '',
+      estimated_win_probability: firstVariant?.probability
+        ?? SETUP_DEFAULT_PROBABILITIES[setupName as keyof typeof SETUP_DEFAULT_PROBABILITIES]
+        ?? '',
     }))
     setStatus('idle')
   }
@@ -623,7 +630,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       signal_candle_open_time: draft.signal_candle_open_time || null,
       signal_candle_number: draft.signal_candle_number,
       opportunity_grade: opportunityScore.grade,
-      estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 50 | 60 | 75 | 80,
+      estimated_win_probability: draft.estimated_win_probability === '' ? null : Number(draft.estimated_win_probability) as 20 | 40 | 50 | 55 | 60 | 75 | 80,
       first_target_price: firstTargetPrice,
       planned_reward_risk: opportunityScore.rewardRisk,
       expected_value_r: opportunityScore.expectedValue,
@@ -675,7 +682,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
         {label('review.setupName', 'review.tip.setupName', <select value={draft.setup_name} onChange={(e) => updateSetup(e.target.value)} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_name && !SETUP_OPTIONS.some((value) => value === draft.setup_name) && <option value={draft.setup_name}>{draft.setup_name}</option>}{SETUP_OPTIONS.map((value, index) => <option key={value} value={value}>{index + 1}. {t(`review.setup.${value}`)}</option>)}</select>)}
         {label('review.setupVariant', 'review.tip.setupVariant', <select value={draft.setup_variant} onChange={(e) => updateSetupVariant(e.target.value)} disabled={!SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.length} className={inputClass}><option value="">{t('review.unset')}</option>{draft.setup_variant && !SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.some((variant) => variant.value === draft.setup_variant) && <option value={draft.setup_variant}>{draft.setup_variant}</option>}{SETUP_VARIANTS[draft.setup_name as keyof typeof SETUP_VARIANTS]?.map((variant) => <option key={variant.value} value={variant.value}>{t(`review.setupVariant.${variant.value}`)} · {variant.probability}%</option>)}</select>)}
         {label('review.grade', 'review.tip.grade', <div className={`${inputClass} flex items-center ${opportunityScore.grade === 'A' ? 'text-[#0ecb81]' : opportunityScore.grade === 'B' ? 'text-[#69a4ff]' : opportunityScore.grade === 'C' ? 'text-[#f0b90b]' : opportunityScore.status === 'unqualified' ? 'text-[#f6465d]' : 'text-[#8f99a8]'}`}>{formatOpportunityScore(opportunityScore, t)}</div>)}
-        {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="50">50%</option><option value="60">60%</option><option value="75">75%</option><option value="80">80%</option></select>)}
+        {label('review.estimatedWinProbability', 'review.tip.estimatedWinProbability', <select value={draft.estimated_win_probability} onChange={(e) => update('estimated_win_probability', e.target.value as ReviewDraft['estimated_win_probability'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="20">20%</option><option value="40">40%</option><option value="50">50%</option><option value="55">55%</option><option value="60">60%</option><option value="75">75%</option><option value="80">80%</option></select>)}
         {label('review.plannedTrade', 'review.tip.plannedTrade', <select value={draft.is_planned_trade} onChange={(e) => update('is_planned_trade', e.target.value as ReviewDraft['is_planned_trade'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="YES">{t('review.yes')}</option><option value="NO">{t('review.no')}</option></select>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea value={draft.entry_rationale} onChange={(e) => update('entry_rationale', e.target.value)} className={areaClass} maxLength={5000} />)}
         {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}

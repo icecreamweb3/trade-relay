@@ -256,7 +256,7 @@ export interface ApiPositionRecord {
   review_signal_candle_open_time?: string | null
   review_signal_candle_number?: number | null
   review_opportunity_grade?: 'A' | 'B' | 'C' | null
-  review_estimated_win_probability?: 20 | 40 | 50 | 60 | 75 | 80 | null
+  review_estimated_win_probability?: 20 | 40 | 50 | 55 | 60 | 75 | 80 | null
   review_first_target_price?: number | null
   review_planned_reward_risk?: number | null
   review_expected_value_r?: number | null
@@ -284,7 +284,7 @@ export interface ApiPositionReview {
   signal_candle_open_time: string | null
   signal_candle_number: number | null
   opportunity_grade: 'A' | 'B' | 'C' | null
-  estimated_win_probability: 20 | 40 | 50 | 60 | 75 | 80 | null
+  estimated_win_probability: 20 | 40 | 50 | 55 | 60 | 75 | 80 | null
   first_target_price: number | null
   planned_reward_risk: number | null
   expected_value_r: number | null

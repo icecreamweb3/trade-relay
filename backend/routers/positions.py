@@ -129,7 +129,7 @@ class PositionReviewIn(BaseModel):
     signal_candle_open_time: Optional[datetime] = None
     signal_candle_number: Optional[int] = Field(None, ge=1, le=1000)
     opportunity_grade: Optional[Literal["A", "B", "C"]] = None
-    estimated_win_probability: Optional[Literal[20, 40, 50, 60, 75, 80]] = None
+    estimated_win_probability: Optional[Literal[20, 40, 50, 55, 60, 75, 80]] = None
     first_target_price: Optional[float] = Field(None, gt=0)
     planned_reward_risk: Optional[float] = None
     expected_value_r: Optional[float] = None

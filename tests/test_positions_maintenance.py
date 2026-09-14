@@ -179,10 +179,10 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
         },
     )
     body = positions_router.PositionReviewIn(
-        setup_name="  trend pullback  ",
+        setup_name="  RANGE_BREAKOUT_EXTREME_CLOSE  ",
         setup_variant="  STRONG_TREND_CONTINUATION  ",
         opportunity_grade="A",
-        estimated_win_probability=80,
+        estimated_win_probability=55,
         is_planned_trade=True,
     )
 
@@ -194,9 +194,9 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
 
     assert result.user_id == 8
     assert calls[0][0:2] == (41, 8)
-    assert calls[0][2]["setup_name"] == "trend pullback"
+    assert calls[0][2]["setup_name"] == "RANGE_BREAKOUT_EXTREME_CLOSE"
     assert calls[0][2]["setup_variant"] == "STRONG_TREND_CONTINUATION"
-    assert calls[0][2]["estimated_win_probability"] == 80
+    assert calls[0][2]["estimated_win_probability"] == 55
     assert calls[0][2]["planned_stop_price"] == 95
 
 
@@ -251,6 +251,7 @@ def test_review_uses_manual_planned_stop_when_history_has_none(monkeypatch):
         (20, -0.4, 40, None),
         (40, 0.2, 55, "C"),
         (50, 0.5, 62.5, "B"),
+        (55, 0.65, 66.25, "B"),
         (60, 0.8, 70, "B"),
         (75, 1.25, 81.25, "A"),
         (80, 1.4, 85, "A"),

@@ -712,7 +712,7 @@ function formatReviewSetupName(value: string | null | undefined, t: (key: string
   const knownValues = new Set([
     'SPIKE_AND_CHANNEL', 'WEDGE_REVERSAL_3_PUSH', 'TWENTY_GAP_BARS', 'TRIANGLES',
     'EXPANDING_TRIANGLES', 'INSIDE_INSIDE', 'INSIDE_OUTSIDE_INSIDE', 'TWO_BAR_REVERSAL',
-    'BULL_BEAR_FLAG', 'DOUBLE_TOP_BOTTOM_FLAG', 'OTHER',
+    'BULL_BEAR_FLAG', 'DOUBLE_TOP_BOTTOM_FLAG', 'RANGE_BREAKOUT_EXTREME_CLOSE', 'OTHER',
   ])
   return knownValues.has(value) ? t(`review.setup.${value}`) : value
 }
