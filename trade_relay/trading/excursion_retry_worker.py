@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import threading
+from datetime import timedelta
 
 from trade_relay import config as cfg_module
 from trade_relay import database as db_module
@@ -18,6 +19,7 @@ from trade_relay.trading.excursion_metrics import (
     fetch_cycle_klines,
     order_time,
 )
+from trade_relay.trading.order_history_reconciliation import reconcile_order_history
 
 
 _log = logging.getLogger(__name__)
@@ -49,31 +51,7 @@ def _target_ids(value) -> list[int]:
     return result
 
 
-def _process_candidate(row: dict, clients: dict[str, BinanceClient]) -> None:
-    position_id = int(row["id"])
-    orders = db_module.get_filled_orders_for_position_excursion(row)
-    cycle = choose_position_cycle(
-        orders,
-        str(row.get("position_side") or ""),
-        target_close_order_ids=_target_ids(row.get("target_close_order_ids")),
-        closed_at=row.get("updated_at"),
-    )
-    # Order IDs can be repaired without waiting for Binance kline history. First
-    # validate the reconstructed fills against position_history, then persist the
-    # exact cycle so position_history_final immediately receives both ID groups.
-    preflight_metrics = calculate_excursion_metrics(
-        cycle,
-        [],
-        stored_initial_risk=row.get("initial_risk_usdc"),
-        stored_stop_price=row.get("planned_stop_price"),
-    )
-    _validate_realized_pnl(row, preflight_metrics)
-    db_module.replace_filled_orders_for_position(
-        position_id,
-        [int(order["id"]) for order in cycle if order.get("id")],
-    )
-    db_module.upsert_position_history_final(position_id)
-
+def _client_for_candidate(row: dict, clients: dict[str, BinanceClient]) -> BinanceClient:
     username = str(row.get("username") or "")
     if username not in clients:
         api_key = cfg_module.get_api_key(username)
@@ -85,8 +63,76 @@ def _process_candidate(row: dict, clients: dict[str, BinanceClient]) -> None:
             secret_key=api_secret,
             testnet=cfg_module.is_testnet(username),
         )
+    return clients[username]
+
+
+def _load_validated_cycle(row: dict) -> tuple[list[dict], dict]:
+    orders = db_module.get_filled_orders_for_position_excursion(row)
+    cycle = choose_position_cycle(
+        orders,
+        str(row.get("position_side") or ""),
+        target_close_order_ids=_target_ids(row.get("target_close_order_ids")),
+        closed_at=row.get("target_close_at") or row.get("updated_at"),
+    )
+    preflight_metrics = calculate_excursion_metrics(
+        cycle,
+        [],
+        stored_initial_risk=row.get("initial_risk_usdc"),
+        stored_stop_price=row.get("planned_stop_price"),
+    )
+    _validate_realized_pnl(row, preflight_metrics)
+    return cycle, preflight_metrics
+
+
+def _reconcile_candidate_orders(row: dict, client: BinanceClient) -> None:
+    opened_at = row.get("opened_at")
+    closed_at = row.get("target_close_at") or row.get("closed_at") or row.get("updated_at")
+    if opened_at is None or closed_at is None:
+        raise ExcursionCalculationError("持仓缺少可用于补全成交历史的时间范围")
+    start_time = order_time({"filled_at": opened_at}) - timedelta(minutes=2)
+    end_time = order_time({"filled_at": closed_at}) + timedelta(minutes=2)
+    if end_time <= start_time:
+        raise ExcursionCalculationError("持仓成交历史补全时间范围无效")
+    result = reconcile_order_history(
+        username=str(row.get("username") or ""),
+        client=client,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if int(result.get("failed") or 0) > 0:
+        raise ExcursionCalculationError(
+            f"成交历史补全失败: {result.get('warnings') or []}"
+        )
+
+
+def _process_candidate(row: dict, clients: dict[str, BinanceClient]) -> None:
+    position_id = int(row["id"])
+    client: BinanceClient | None = None
+    try:
+        cycle, _ = _load_validated_cycle(row)
+    except ExcursionCalculationError as original_error:
+        client = _client_for_candidate(row, clients)
+        _log.warning(
+            "[EXCURSION_SYNC] phase=reconcile_orders position_id=%s error=%s",
+            position_id,
+            original_error,
+        )
+        _reconcile_candidate_orders(row, client)
+        cycle, _ = _load_validated_cycle(row)
+
+    # Order IDs can be repaired without waiting for Binance kline history. First
+    # validate the reconstructed fills against position_history, then persist the
+    # exact cycle so position_history_final immediately receives both ID groups.
+    db_module.replace_filled_orders_for_position(
+        position_id,
+        [int(order["id"]) for order in cycle if order.get("id")],
+    )
+    db_module.upsert_position_history_final(position_id)
+
+    if client is None:
+        client = _client_for_candidate(row, clients)
     klines = fetch_cycle_klines(
-        clients[username],
+        client,
         str(row["symbol"]),
         order_time(cycle[0]),
         order_time(cycle[-1]),

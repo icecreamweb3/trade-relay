@@ -1,6 +1,17 @@
 from trade_relay.trading import trade_details_retry_worker
 
 
+def test_canceled_partial_fill_is_complete_when_trade_metadata_exists():
+    assert trade_details_retry_worker._order_needs_trade_details_sync({
+        "status": "CANCELED",
+        "trade_direction": "OPEN",
+        "quantity": 0.01,
+        "filled_qty": 0.001,
+        "commission": 0.0,
+        "commission_asset": "USDC",
+    }) is False
+
+
 def test_run_once_retries_due_filled_order_and_clears_state_on_success(monkeypatch):
     processed = []
     cleared = []

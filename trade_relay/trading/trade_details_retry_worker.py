@@ -41,9 +41,16 @@ def _backoff_seconds(attempts: int) -> float:
 
 def _order_needs_trade_details_sync(order_row: dict) -> bool:
     trade_direction = str(order_row.get("trade_direction") or "").upper()
+    status = str(order_row.get("status") or "").upper()
     quantity = abs(float(order_row.get("quantity") or 0.0))
     filled_qty = abs(float(order_row.get("filled_qty") or 0.0))
-    quantity_incomplete = abs(quantity - filled_qty) > _QTY_SYNC_TOLERANCE
+    partial_quantity_is_final_or_expected = status in {
+        "PARTIALLY_FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED",
+    }
+    quantity_incomplete = (
+        not partial_quantity_is_final_or_expected
+        and abs(quantity - filled_qty) > _QTY_SYNC_TOLERANCE
+    )
 
     # Some Binance CLOSE fills can settle with a final filled_qty that differs slightly
     # from the original requested quantity. Once a CLOSE order has realized PnL and

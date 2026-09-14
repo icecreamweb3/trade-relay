@@ -387,15 +387,40 @@ class UserOrderStatusStream:
             return
         self._persist_status(order)
         status = str(order.get("status") or "").upper()
+        executed_qty = float(order.get("executedQty") or 0)
+        avg_price_raw = order.get("avgPrice")
+        avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
+
+        # A canceled/expired order can still contain real executions. In particular,
+        # an OPEN limit order may partially fill before its remainder is canceled.
+        # Link and enrich every executed OPEN order, regardless of terminal status.
+        if executed_qty > 0:
+            db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
+            if db_order and str(db_order.get("trade_direction") or "").upper() == "OPEN":
+                if db_order.get("id") and db_order.get("position_id") is None:
+                    try:
+                        position_id = db.link_filled_open_order_to_position(int(db_order["id"]))
+                        if position_id is not None:
+                            db_order = {**db_order, "position_id": position_id}
+                    except Exception:
+                        logger.exception(
+                            "Failed to link executed OPEN order from REST sync: user=%s order_id=%s",
+                            self.username,
+                            db_order.get("id"),
+                        )
+                if status != "FILLED":
+                    threading.Thread(
+                        target=sync_filled_order_trade_details,
+                        kwargs={"username": self.username, "client": self.client, "order_row": db_order},
+                        daemon=True,
+                    ).start()
+                if status == "FILLED":
+                    self._place_open_fill_tpsl(db_order, executed_qty, avg_price)
 
         # When the order is fully filled, handle position_history and position sync —
         # same as the poll path, because the WebSocket ORDER_TRADE_UPDATE may arrive
         # before this sync runs (race) or may never arrive (reconnect gap).
         if status == "FILLED":
-            executed_qty = float(order.get("executedQty") or 0)
-            avg_price_raw = order.get("avgPrice")
-            avg_price = float(avg_price_raw) if avg_price_raw not in (None, "", "0", "0.00000000") else None
-
             if executed_qty > 0 and avg_price:
                 db_order = db.get_order_by_exchange_id(self.username, exchange_order_id)
                 if db_order and str(db_order.get("trade_direction") or "").upper() == "CLOSE":
@@ -620,7 +645,7 @@ class UserOrderStatusStream:
                     filled_at=result.get("updateTime") if new_status == "FILLED" else None,
                 )
                 notify_needed = True
-                if new_status in ("FILLED", "PARTIALLY_FILLED") and executed_qty > 0:
+                if executed_qty > 0:
                     fills.append(({**row, "exchange_order_id": exchange_order_id}, new_status, executed_qty, avg_price))
             except Exception:
                 logger.exception("Poll: error querying exchange_order_id=%s user=%s", exchange_order_id, self.username)
@@ -650,9 +675,21 @@ class UserOrderStatusStream:
                     with self._handled_close_fills_lock:
                         self._handled_close_fills.add(exchange_order_id)
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
-            elif trade_direction == "OPEN" and new_status == "FILLED":
+            elif trade_direction == "OPEN":
+                if db_row.get("id") and db_row.get("position_id") is None:
+                    try:
+                        position_id = db.link_filled_open_order_to_position(int(db_row["id"]))
+                        if position_id is not None:
+                            db_row = {**db_row, "position_id": position_id}
+                    except Exception:
+                        logger.exception(
+                            "Poll: failed to link executed OPEN order user=%s order_id=%s",
+                            self.username,
+                            db_row.get("id"),
+                        )
                 sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_row)
-                self._place_open_fill_tpsl(db_row, executed_qty, avg_price)
+                if new_status == "FILLED":
+                    self._place_open_fill_tpsl(db_row, executed_qty, avg_price)
 
             symbols_to_sync.add(symbol)
 
@@ -1241,7 +1278,7 @@ class UserOrderStatusStream:
         if execution_type != "TRADE":
             return
         order_status = str(order.get("X") or "").upper()
-        if order_status != "FILLED":
+        if order_status not in ("FILLED", "PARTIALLY_FILLED"):
             return
 
         exchange_order_id = str(order.get("i") or "")
@@ -1265,6 +1302,11 @@ class UserOrderStatusStream:
                 )
 
         sync_filled_order_trade_details(username=self.username, client=self.client, order_row=db_order)
+
+        # Keep the existing TP/SL behavior: place protection only after the requested
+        # OPEN order is fully filled. Partial executions are still linked immediately.
+        if order_status != "FILLED":
+            return
 
         executed_qty = _safe_float(order.get("z") or order.get("executedQty") or db_order.get("filled_qty") or 0)
         avg_price = _safe_float(order.get("ap") or order.get("avgPrice") or db_order.get("avg_price") or 0)

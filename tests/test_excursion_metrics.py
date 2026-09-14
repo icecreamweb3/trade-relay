@@ -157,6 +157,7 @@ def test_worker_rejects_cycle_before_replacing_links_when_realized_pnl_mismatche
     replaced = []
     monkeypatch.setattr(excursion_retry_worker.db_module, "get_filled_orders_for_position_excursion", lambda row: orders)
     monkeypatch.setattr(excursion_retry_worker.db_module, "replace_filled_orders_for_position", lambda *args: replaced.append(args))
+    monkeypatch.setattr(excursion_retry_worker, "_reconcile_candidate_orders", lambda *args: None)
 
     class Client:
         def get_kline_data(self, **kwargs):
@@ -175,6 +176,52 @@ def test_worker_rejects_cycle_before_replacing_links_when_realized_pnl_mismatche
     with pytest.raises(ExcursionCalculationError, match="已实现盈亏"):
         excursion_retry_worker._process_candidate(row, {"Will": Client()})
     assert replaced == []
+
+
+def test_worker_recovers_missing_open_order_before_calculating(monkeypatch):
+    start = datetime(2026, 9, 5, 0, 0)
+    missing_open = _order(3, datetime(2026, 9, 5, 0, 1), "OPEN", "BUY", 0.001, 99)
+    orders = [
+        _order(1, start, "OPEN", "BUY", 0.01, 100),
+        _order(2, datetime(2026, 9, 5, 0, 2), "OPEN", "BUY", 0.01, 98),
+        _order(4, datetime(2026, 9, 5, 0, 3), "CLOSE", "SELL", 0.011, 101,
+               realized_pnl=0.022),
+        _order(5, datetime(2026, 9, 5, 0, 4), "CLOSE", "SELL", 0.01, 102,
+               realized_pnl=0.02),
+    ]
+    calls = []
+    monkeypatch.setattr(excursion_retry_worker.db_module, "get_filled_orders_for_position_excursion", lambda row: orders)
+    monkeypatch.setattr(excursion_retry_worker.db_module, "replace_filled_orders_for_position", lambda *args: calls.append(("replace", args)))
+    monkeypatch.setattr(excursion_retry_worker.db_module, "upsert_position_history_final", lambda *args: calls.append(("upsert", args)))
+    monkeypatch.setattr(excursion_retry_worker.db_module, "save_position_excursion_metrics", lambda *args: calls.append(("save", args)))
+
+    def reconcile(_row, _client):
+        orders.insert(1, missing_open)
+        calls.append(("reconcile", ()))
+
+    monkeypatch.setattr(excursion_retry_worker, "_reconcile_candidate_orders", reconcile)
+
+    class Client:
+        def get_kline_data(self, **kwargs):
+            return [_kline(datetime(2026, 9, 5, 0, 2), low=97, high=103)]
+
+    row = {
+        "id": 10,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "target_close_order_ids": "4,5",
+        "opened_at": start,
+        "updated_at": datetime(2026, 9, 5, 0, 4),
+        "realized_pnl": 0.042,
+    }
+
+    excursion_retry_worker._process_candidate(row, {"Will": Client()})
+
+    assert calls[0] == ("reconcile", ())
+    assert calls[1] == ("replace", (10, [1, 3, 2, 4, 5]))
+    assert calls[2] == ("upsert", (10,))
+    assert calls[3][0] == "save"
 
 
 def test_worker_refreshes_order_ids_before_kline_sync(monkeypatch):

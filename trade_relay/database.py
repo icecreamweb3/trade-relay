@@ -1386,7 +1386,7 @@ def _upsert_position_history_final_from_position_cursor(
                            ) AS close_order_ids
                       FROM orders
                      WHERE position_id IS NOT NULL
-                       AND UPPER(COALESCE(status, '')) = 'FILLED'
+                       AND ABS(COALESCE(filled_qty, 0)) > 0
                        AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
                      GROUP BY position_id
                ) oa ON oa.position_id = p.id
@@ -2255,9 +2255,9 @@ def get_filled_order_totals(user_id: int) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT SUM(CASE WHEN status = 'FILLED' AND UPPER(COALESCE(trade_direction, '')) = 'CLOSE' THEN 1 ELSE 0 END) AS close_count,
-                       SUM(CASE WHEN status = 'FILLED' THEN COALESCE(realized_pnl, 0) ELSE 0 END) AS pnl,
-                       SUM(CASE WHEN status = 'FILLED' THEN COALESCE(commission, 0) ELSE 0 END) AS commission
+                SELECT SUM(CASE WHEN ABS(COALESCE(filled_qty, 0)) > 0 AND UPPER(COALESCE(trade_direction, '')) = 'CLOSE' THEN 1 ELSE 0 END) AS close_count,
+                       SUM(CASE WHEN ABS(COALESCE(filled_qty, 0)) > 0 THEN COALESCE(realized_pnl, 0) ELSE 0 END) AS pnl,
+                       SUM(CASE WHEN ABS(COALESCE(filled_qty, 0)) > 0 THEN COALESCE(commission, 0) ELSE 0 END) AS commission
                 FROM orders
                 WHERE user_id = %s
                 """,
@@ -2837,7 +2837,7 @@ def get_due_order_trade_details_retry_candidates(limit: int = 100) -> list[dict]
                 """
                 SELECT *
                 FROM orders
-                WHERE status = 'FILLED'
+                WHERE ABS(COALESCE(filled_qty, 0)) > 0
                   AND exchange_order_id IS NOT NULL
                   AND TRIM(COALESCE(exchange_order_id, '')) <> ''
                   AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
@@ -2845,7 +2845,10 @@ def get_due_order_trade_details_retry_candidates(limit: int = 100) -> list[dict]
                                 commission IS NULL
                      OR commission_asset IS NULL
                      OR TRIM(COALESCE(commission_asset, '')) = ''
-                            OR ABS(ABS(COALESCE(quantity, 0)) - ABS(COALESCE(filled_qty, 0))) > 0.000000001
+                            OR (
+                                   UPPER(COALESCE(status, '')) = 'FILLED'
+                               AND ABS(ABS(COALESCE(quantity, 0)) - ABS(COALESCE(filled_qty, 0))) > 0.000000001
+                            )
                      OR (UPPER(COALESCE(trade_direction, '')) = 'CLOSE' AND realized_pnl IS NULL)
                   )
                   AND (
@@ -3128,7 +3131,7 @@ def update_order_status_by_exchange_id(
 
 
 def get_recent_fills(limit: int = 20) -> list:
-    """Return most recent FILLED orders for the ticker broadcast.
+    """Return most recent executed orders for the ticker broadcast.
 
     Returns rows: {username, symbol, side, filled_qty, avg_price, commission, created_at}
     """
@@ -3140,8 +3143,7 @@ def get_recent_fills(limit: int = 20) -> list:
                           COALESCE(o.commission, 0) AS commission, o.created_at
                    FROM orders o
                    JOIN users u ON u.id = o.user_id
-                   WHERE o.status = 'FILLED'
-                     AND o.filled_qty > 0
+                   WHERE ABS(COALESCE(o.filled_qty, 0)) > 0
                      AND o.avg_price IS NOT NULL
                    ORDER BY o.created_at DESC
                    LIMIT %s""",
@@ -3527,7 +3529,7 @@ def get_order_symbols_for_user_range(username: str, start_time, end_time) -> lis
 
 
 def get_recent_platform_trades(limit: int = 30) -> list:
-    """返回平台内所有用户最近的已成交订单。
+    """返回平台内所有用户最近有实际成交的订单，包括部分成交后撤单。
     每行包含: username, symbol, side, order_type, order_category, filled_qty, avg_price,
     realized_pnl, commission, commission_asset, created_at, filled_at
     """
@@ -3541,8 +3543,7 @@ def get_recent_platform_trades(limit: int = 30) -> list:
                       COALESCE(commission, 0) AS commission,
                       commission_asset, created_at, filled_at
                 FROM orders
-                WHERE status = 'FILLED'
-                  AND filled_qty > 0
+                WHERE ABS(COALESCE(filled_qty, 0)) > 0
                   AND avg_price IS NOT NULL
                 ORDER BY COALESCE(filled_at, created_at) DESC
                 LIMIT %s
@@ -3585,7 +3586,6 @@ def get_user_filled_order_markers(
                                 FROM orders FORCE INDEX (idx_user_symbol_status_filled_at)
                 WHERE user_id = %s
                                     AND symbol = %s
-                  AND status = 'FILLED'
                   AND filled_qty > 0
                   AND avg_price IS NOT NULL
                                     ORDER BY filled_at DESC
@@ -3627,7 +3627,6 @@ def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
                 FROM orders FORCE INDEX (idx_user_symbol_status_filled_at)
                 WHERE user_id = %s
                   AND symbol = %s
-                  AND status = 'FILLED'
                   AND filled_qty > 0
                   AND avg_price IS NOT NULL
                 ORDER BY filled_at DESC
@@ -3687,7 +3686,7 @@ def get_position_record_order_context(
                 f"""SELECT *
                        FROM orders
                       WHERE user_id = %s
-                        AND UPPER(COALESCE(status, '')) = 'FILLED'
+                        AND ABS(COALESCE(filled_qty, 0)) > 0
                         AND ({' OR '.join(conditions)})
                       ORDER BY COALESCE(filled_at, updated_at, created_at), id
                       LIMIT %s""",
@@ -3916,7 +3915,7 @@ def get_total_commission_by_asset(user_id: int) -> list:
                        SUM(COALESCE(commission, 0)) AS total
                 FROM orders
                 WHERE user_id = %s
-                  AND status = 'FILLED'
+                  AND ABS(COALESCE(filled_qty, 0)) > 0
                   AND (commission IS NOT NULL OR commission_asset IS NOT NULL)
                 GROUP BY COALESCE(NULLIF(TRIM(commission_asset), ''), 'UNKNOWN')
                 ORDER BY asset ASC
@@ -3986,7 +3985,7 @@ def get_profile_current_balance(user_id: int) -> float | None:
 # ──────────────────────────────────────────────
 
 def link_filled_open_order_to_position(order_id: int) -> Optional[int]:
-    """Create/reuse the live position for a filled OPEN order and link it atomically."""
+    """Create/reuse the live position for an executed OPEN order and link it atomically."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -3994,9 +3993,11 @@ def link_filled_open_order_to_position(order_id: int) -> Optional[int]:
             order = cur.fetchone()
             if not order:
                 return None
-            if str(order.get("status") or "").upper() != "FILLED":
-                return None
             if str(order.get("trade_direction") or "").upper() != "OPEN":
+                return None
+
+            filled_qty = abs(_safe_float(order.get("filled_qty")))
+            if filled_qty <= 0:
                 return None
 
             existing_position_id = order.get("position_id")
@@ -4009,7 +4010,7 @@ def link_filled_open_order_to_position(order_id: int) -> Optional[int]:
                 position_side = "BOTH"
             else:
                 position_side = "LONG" if side == "BUY" else "SHORT" if side == "SELL" else "BOTH"
-            quantity = abs(_safe_float(order.get("filled_qty") or order.get("quantity")))
+            quantity = filled_qty
             entry_price = _safe_float(order.get("avg_price") or order.get("price") or order.get("stop_price"))
             opened_at = _coerce_utc_naive_datetime(
                 order.get("filled_at") or order.get("updated_at") or order.get("created_at")
@@ -5149,7 +5150,12 @@ def get_due_position_excursion_candidates(limit: int = 100, current_version: int
                           (SELECT GROUP_CONCAT(ph.close_order_id ORDER BY ph.id)
                              FROM position_history ph
                             WHERE ph.position_id = p.id AND ph.close_order_id IS NOT NULL
-                          ) AS target_close_order_ids
+                          ) AS target_close_order_ids,
+                          (SELECT MAX(COALESCE(co.filled_at, ph.updated_at, ph.created_at))
+                             FROM position_history ph
+                             LEFT JOIN orders co ON co.id = ph.close_order_id
+                            WHERE ph.position_id = p.id
+                          ) AS target_close_at
                      FROM positions p
                     WHERE UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE'
                       AND (p.excursion_status = 'PENDING'
@@ -5470,7 +5476,7 @@ def get_filled_orders_for_position_excursion(position_row: dict, limit: int = 50
             cur.execute(
                 """SELECT * FROM orders
                     WHERE user_id = %s AND exchange = %s AND symbol = %s
-                      AND UPPER(status) = 'FILLED'
+                      AND ABS(COALESCE(filled_qty, 0)) > 0
                       AND UPPER(COALESCE(trade_direction, '')) IN ('OPEN', 'CLOSE')
                     ORDER BY COALESCE(filled_at, updated_at, created_at), id
                     LIMIT %s""",

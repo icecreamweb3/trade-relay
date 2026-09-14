@@ -3543,6 +3543,7 @@ def test_position_history_final_prefers_position_entry_and_weights_close_prices(
     assert "COALESCE(NULLIF(pha.close_commission, 0), oa.close_commission, 0)" in sql
     assert "AS open_order_ids" in sql
     assert "AS close_order_ids" in sql
+    assert "ABS(COALESCE(filled_qty, 0)) > 0" in sql
     assert "UPPER(COALESCE(p.status, 'OPEN')) = 'CLOSE' AND p.id = %s" in sql
     assert params == (509,)
 
@@ -3567,7 +3568,131 @@ def test_linked_history_cleanup_only_deletes_legacy_row_after_canonical_exists()
     assert params == (485, 1271)
 
 
-def test_filled_open_order_creates_position_and_links_position_id(monkeypatch):
+def test_open_partial_fill_is_linked_without_placing_tpsl(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream.__new__(
+        order_status_stream.UserOrderStatusStream
+    )
+    stream.username = "Will"
+    stream.client = object()
+    linked = []
+    trade_syncs = []
+    tpsl_calls = []
+
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_order_by_exchange_id",
+        lambda username, exchange_order_id: {
+            "id": 8184,
+            "username": username,
+            "symbol": "BTCUSDC",
+            "trade_direction": "OPEN",
+            "status": "PARTIALLY_FILLED",
+            "filled_qty": 0.001,
+            "avg_price": 77476.0,
+            "position_id": None,
+            "exchange_order_id": exchange_order_id,
+        },
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "link_filled_open_order_to_position",
+        lambda order_id: linked.append(order_id) or 6121,
+    )
+    monkeypatch.setattr(
+        order_status_stream,
+        "sync_filled_order_trade_details",
+        lambda **kwargs: trade_syncs.append(kwargs),
+    )
+    stream._place_open_fill_tpsl = lambda *args, **kwargs: tpsl_calls.append((args, kwargs))
+
+    stream._handle_open_fill_tpsl({
+        "x": "TRADE",
+        "X": "PARTIALLY_FILLED",
+        "i": "76007265768",
+        "z": "0.001",
+        "ap": "77476.0",
+    })
+
+    assert linked == [8184]
+    assert len(trade_syncs) == 1
+    assert trade_syncs[0]["order_row"]["position_id"] == 6121
+    assert tpsl_calls == []
+
+
+def test_poll_links_canceled_open_order_with_partial_execution(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream.__new__(
+        order_status_stream.UserOrderStatusStream
+    )
+    stream.username = "Will"
+    status_updates = []
+    linked = []
+    trade_syncs = []
+    position_syncs = []
+    notifications = []
+
+    row = {
+        "id": 8184,
+        "username": "Will",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "trade_direction": "OPEN",
+        "position_mode": "DUAL",
+        "status": "PARTIALLY_FILLED",
+        "filled_qty": 0.001,
+        "position_id": None,
+        "exchange_order_id": "76007265768",
+    }
+
+    class StubClient:
+        def get_order_status(self, symbol, exchange_order_id):
+            assert (symbol, exchange_order_id) == ("BTCUSDC", "76007265768")
+            return {
+                "status": "CANCELED",
+                "executedQty": "0.001",
+                "avgPrice": "77476.0",
+            }
+
+    stream.client = StubClient()
+    monkeypatch.setattr(order_status_stream.db, "get_active_orders_for_user", lambda username: [row])
+    monkeypatch.setattr(order_status_stream.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda **kwargs: status_updates.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "link_filled_open_order_to_position",
+        lambda order_id: linked.append(order_id) or 6121,
+    )
+    monkeypatch.setattr(
+        order_status_stream,
+        "sync_filled_order_trade_details",
+        lambda **kwargs: trade_syncs.append(kwargs),
+    )
+    stream._place_open_fill_tpsl = lambda *args, **kwargs: pytest.fail(
+        "TP/SL must not be placed for a canceled partial OPEN order"
+    )
+    stream._sync_position_from_rest = lambda symbol: position_syncs.append(symbol)
+    stream._notify_listeners = lambda event, force=False: notifications.append((event, force))
+
+    stream._poll_open_orders_once()
+
+    assert status_updates[0]["status"] == "CANCELED"
+    assert status_updates[0]["filled_qty"] == 0.001
+    assert linked == [8184]
+    assert len(trade_syncs) == 1
+    assert trade_syncs[0]["order_row"]["position_id"] == 6121
+    assert position_syncs == ["BTCUSDC"]
+    assert notifications[-1][1] is True
+
+
+@pytest.mark.parametrize("order_status", ["FILLED", "CANCELED"])
+def test_executed_open_order_creates_position_and_links_position_id(monkeypatch, order_status):
     from trade_relay import database as db_module
 
     statements = []
@@ -3589,7 +3714,7 @@ def test_filled_open_order_creates_position_and_links_position_id(monkeypatch):
                     "side": "BUY",
                     "position_mode": "DUAL",
                     "trade_direction": "OPEN",
-                    "status": "FILLED",
+                    "status": order_status,
                     "filled_qty": 0.01,
                     "avg_price": 79000,
                     "filled_at": "2026-09-08 01:02:03",
