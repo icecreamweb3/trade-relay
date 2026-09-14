@@ -197,6 +197,52 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
     assert calls[0][2]["setup_name"] == "trend pullback"
     assert calls[0][2]["setup_variant"] == "STRONG_TREND_CONTINUATION"
     assert calls[0][2]["estimated_win_probability"] == 80
+    assert calls[0][2]["planned_stop_price"] == 95
+
+
+def test_review_uses_manual_planned_stop_when_history_has_none(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_by_id",
+        lambda position_id: {"id": position_id, "user_id": 5},
+    )
+    saved_values = {}
+
+    def upsert(position_id, user_id, values):
+        saved_values.update(values)
+        return {
+            "id": 11,
+            "position_id": position_id,
+            "user_id": user_id,
+            **values,
+            "created_at": datetime(2026, 9, 12, 8, 0),
+            "updated_at": datetime(2026, 9, 12, 8, 1),
+        }
+
+    monkeypatch.setattr(positions_router.db_module, "upsert_position_review", upsert)
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_review_scoring_context",
+        lambda position_id, user_id: {
+            "entry_price": 100,
+            "planned_stop_price": None,
+            "side": "LONG",
+        },
+    )
+
+    result = positions_router.save_position_review(
+        41,
+        positions_router.PositionReviewIn(
+            planned_stop_price=94,
+            first_target_price=112,
+            estimated_win_probability=60,
+        ),
+        {"sub": "5", "username": "Will", "role": "user"},
+    )
+
+    assert saved_values["planned_stop_price"] == 94
+    assert saved_values["planned_reward_risk"] == 2
+    assert result.planned_stop_price == 94
 
 
 @pytest.mark.parametrize(

@@ -500,6 +500,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     setStatus('idle')
     api.getPositionReview(positionId).then((review) => {
       if (!active || !review) return
+      const effectivePlannedStop = authoritativePlannedStop || review.planned_stop_price?.toString() || ''
       const savedSignalCandleOpenTime = parseUtcTimestamp(review.signal_candle_open_time)
       const savedSignalCandle = review.signal_candle_interval && savedSignalCandleOpenTime && review.signal_candle_number
         ? {
@@ -523,7 +524,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
         first_target_price: review.first_target_price?.toString() ?? '',
         is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
         first_entry_pnl_state: review.first_entry_pnl_state ?? '',
-        planned_stop_price: authoritativePlannedStop,
+        planned_stop_price: effectivePlannedStop,
         actual_stop_fill_price: review.actual_stop_fill_price?.toString() ?? '',
         first_target: review.first_target ?? '',
         structural_target: review.structural_target ?? '',
@@ -653,7 +654,17 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
         {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>)}
         {label('review.firstEntryPnl', 'review.tip.firstEntryPnl', <select value={draft.first_entry_pnl_state} onChange={(e) => update('first_entry_pnl_state', e.target.value as ReviewDraft['first_entry_pnl_state'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="PROFIT">{t('review.pnl.profit')}</option><option value="LOSS">{t('review.pnl.loss')}</option><option value="BREAKEVEN">{t('review.pnl.breakeven')}</option><option value="NOT_APPLICABLE">{t('review.notApplicable')}</option></select>)}
         {label('review.discipline', 'review.tip.discipline', <select value={draft.discipline_trigger} onChange={(e) => update('discipline_trigger', e.target.value as ReviewDraft['discipline_trigger'])} className={inputClass}><option value="">{t('review.unset')}</option><option value="NONE">{t('review.discipline.none')}</option><option value="COOLDOWN">{t('review.discipline.cooldown')}</option><option value="STOP_TRADING">{t('review.discipline.stop')}</option><option value="BOTH">{t('review.discipline.both')}</option></select>)}
-        {label('review.plannedStop', 'review.tip.plannedStop', <input type="number" value={draft.planned_stop_price} readOnly title={t('review.plannedStopSource')} className={`${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`} />)}
+        {label('review.plannedStop', 'review.tip.plannedStop', <input
+          type="number"
+          min="0"
+          step="any"
+          value={draft.planned_stop_price}
+          readOnly={plannedStopPrice != null}
+          onChange={(e) => update('planned_stop_price', e.target.value)}
+          placeholder={plannedStopPrice == null ? t('review.plannedStopManual') : undefined}
+          title={t(plannedStopPrice == null ? 'review.plannedStopManual' : 'review.plannedStopSource')}
+          className={plannedStopPrice == null ? inputClass : `${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`}
+        />)}
         {label('review.actualStop', 'review.tip.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
         {label('review.firstTargetPrice', 'review.tip.firstTargetPrice', <input type="number" min="0" step="any" value={draft.first_target_price} onChange={(e) => update('first_target_price', e.target.value)} className={inputClass} />)}
         {label('review.firstTarget', 'review.tip.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}

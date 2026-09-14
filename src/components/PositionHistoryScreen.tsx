@@ -591,7 +591,7 @@ export function PositionHistoryScreen() {
                 <td className={`font-mono ${pnlTone(row.realized_pnl)}`}>{formatSigned(row.realized_pnl)}</td>
                 <td className="font-mono text-[#858585]">{row.commission.toFixed(4)} {row.commission_asset ?? ''}</td>
                 <td className={`font-mono ${pnlTone(row.net_pnl)}`}>{formatSigned(row.net_pnl)}</td>
-                <td className="font-mono">{formatNumber(row.planned_stop_price, 2)}</td>
+                <td className="font-mono">{formatNumber(row.planned_stop_price ?? row.review_planned_stop_price, 2)}</td>
                 <td className="font-mono">{formatNumber(row.initial_risk_usdc)}</td>
                 <td className="font-mono text-buy">{formatExcursion(row.mfe_usdc, row.mfe_r, '+')}</td>
                 <td className="font-mono text-sell">{formatExcursion(row.mae_usdc, row.mae_r, '-')}</td>
@@ -652,7 +652,7 @@ function buildExportRow(
     [t('trade.commission')]: row.commission,
     [t('trade.commissionAsset')]: row.commission_asset ?? '',
     [t('pos.historyExport.netPnl')]: row.net_pnl ?? null,
-    [t('pos.historyExport.plannedStop')]: row.planned_stop_price ?? null,
+    [t('pos.historyExport.plannedStop')]: row.planned_stop_price ?? row.review_planned_stop_price ?? null,
     [t('pos.historyExport.initialRisk')]: row.initial_risk_usdc ?? null,
     [t('pos.mfe')]: row.mfe_usdc ?? null,
     [t('pos.mae')]: row.mae_usdc ?? null,
@@ -677,7 +677,7 @@ function buildExportRow(
     [t('review.export.score')]: row.review_opportunity_score ?? null,
     [t('review.export.plannedTrade')]: formatReviewBoolean(row.review_is_planned_trade, t),
     [t('review.export.firstEntryPnl')]: formatReviewPnlState(row.review_first_entry_pnl_state, t),
-    [t('review.export.plannedStop')]: row.planned_stop_price ?? null,
+    [t('review.export.plannedStop')]: row.review_planned_stop_price ?? row.planned_stop_price ?? null,
     [t('review.export.actualStop')]: row.review_actual_stop_fill_price ?? null,
     [t('review.export.firstTarget')]: row.review_first_target ?? '',
     [t('review.export.structuralTarget')]: row.review_structural_target ?? '',

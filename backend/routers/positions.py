@@ -1217,7 +1217,8 @@ def save_position_review(
             values[field] = value.strip() or None
     context = db_module.get_position_review_scoring_context(position_id, owner_id) or {}
     authoritative_stop = context.get("planned_stop_price")
-    values["planned_stop_price"] = float(authoritative_stop) if authoritative_stop is not None else None
+    if authoritative_stop is not None:
+        values["planned_stop_price"] = float(authoritative_stop)
     values.update(_calculate_opportunity_score(
         float(context["entry_price"]) if context.get("entry_price") is not None else None,
         values["planned_stop_price"],
