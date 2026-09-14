@@ -22,17 +22,17 @@ export function getUtc8PresetRange(
     utc8Now.getUTCMonth(),
     utc8Now.getUTCDate(),
   )
-  const mondayOffset = (utc8Now.getUTCDay() + 6) % 7
+  const sundayOffset = utc8Now.getUTCDay()
 
   let start = today
   let durationDays = 1
   if (preset === 'YESTERDAY') start -= DAY_MS
   if (preset === 'THIS_WEEK') {
-    start -= mondayOffset * DAY_MS
+    start -= sundayOffset * DAY_MS
     durationDays = 7
   }
   if (preset === 'LAST_WEEK') {
-    start -= (mondayOffset + 7) * DAY_MS
+    start -= (sundayOffset + 7) * DAY_MS
     durationDays = 7
   }
 

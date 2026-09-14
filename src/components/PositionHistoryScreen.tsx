@@ -511,8 +511,8 @@ export function PositionHistoryScreen() {
             className={INPUT_CLS}
           />
         </FilterField>
-        <div className="flex items-end gap-2">
-          <button type="submit" className="h-9 rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
+        <div className="flex shrink-0 items-end gap-2">
+          <button type="submit" className="h-9 shrink-0 whitespace-nowrap rounded bg-[#2f7cf6] px-3 text-sm text-white hover:bg-[#4b90fb]">
             {t('log.filter.search')}
           </button>
           <select
@@ -520,7 +520,7 @@ export function PositionHistoryScreen() {
             onChange={(event) => handleTimePreset(event.target.value as TimeRangePreset)}
             aria-label={t('log.filter.quickRange')}
             title={t('log.filter.quickRange')}
-            className={`${INPUT_CLS} w-[100px]`}
+            className="order-filter-input h-9 w-[100px] shrink-0 rounded border border-[#3e3e42] bg-[#161a21] px-2 py-1.5 text-sm text-[#dde4ef] outline-none focus:border-[#2f7cf6]"
           >
             <option value=""></option>
             <option value="THIS_WEEK">{t('log.filter.thisWeek')}</option>
@@ -528,14 +528,14 @@ export function PositionHistoryScreen() {
             <option value="TODAY">{t('log.filter.today')}</option>
             <option value="YESTERDAY">{t('log.filter.yesterday')}</option>
           </select>
-          <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
+          <button type="button" onClick={handleClear} className="h-9 shrink-0 whitespace-nowrap rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
           </button>
           <button
             type="button"
             onClick={() => void handleExport()}
             disabled={exporting}
-            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download size={14} />
             {exporting ? t('pos.historyExport.exporting') : t('log.filter.export')}
@@ -544,7 +544,7 @@ export function PositionHistoryScreen() {
             type="button"
             onClick={() => void handleAnalyze()}
             disabled={analyzing}
-            className="flex h-9 items-center gap-1.5 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-50"
+            className="flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36] disabled:cursor-wait disabled:opacity-50"
           >
             <BarChart3 size={14} />
             {t('log.analyze')}
