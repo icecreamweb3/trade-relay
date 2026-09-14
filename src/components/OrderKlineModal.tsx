@@ -993,6 +993,10 @@ function CandlestickChart({
         className="pointer-events-none absolute left-[220px] right-3 top-3 z-10 flex h-[30px] items-center gap-3 overflow-hidden whitespace-nowrap text-xs font-medium"
         aria-live="polite"
       >
+        <span className="flex gap-1">
+          <span className="text-[#818b9a]">{locale.toLowerCase().startsWith('zh') ? '开盘时间' : 'Open time'}</span>
+          <span className="text-[#69a4ff]">{formatUtc8DateTime(hoveredBar.open_time)}</span>
+        </span>
         {([
           ['O', hoveredBar.open],
           ['H', hoveredBar.high],
@@ -1262,6 +1266,12 @@ function formatDateTime(timestamp: number): string {
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function formatUtc8DateTime(timestamp: number): string {
+  const date = new Date(timestamp + BEIJING_OFFSET_MS)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
 }
 
 function formatStoredUtcDateTime(value: string): string {
