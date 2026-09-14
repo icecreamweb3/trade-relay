@@ -138,6 +138,22 @@ export function OrderLogScreen() {
     }))
   }
 
+  const handleLastWeek = () => {
+    const now = new Date()
+    const thisSunday = new Date(now)
+    thisSunday.setDate(now.getDate() - now.getDay())
+    thisSunday.setHours(0, 0, 0, 0)
+    const lastSunday = new Date(thisSunday)
+    lastSunday.setDate(thisSunday.getDate() - 7)
+    const lastSaturday = new Date(thisSunday)
+    lastSaturday.setMilliseconds(-1)
+    setFilters((current) => ({
+      ...current,
+      startTime: toLocalDateTimeInputValue(lastSunday),
+      endTime: toLocalDateTimeInputValue(lastSaturday),
+    }))
+  }
+
   const handleClear = () => {
     setFilters(INITIAL_FILTERS)
     load(INITIAL_FILTERS)
@@ -356,6 +372,9 @@ export function OrderLogScreen() {
           </button>
           <button type="button" onClick={handleThisWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.thisWeek')}
+          </button>
+          <button type="button" onClick={handleLastWeek} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
+            {t('log.filter.lastWeek')}
           </button>
           <button type="button" onClick={handleClear} className="h-9 rounded border border-[#3e3e42] px-3 text-sm text-[#c5ccd8] hover:bg-[#252b36]">
             {t('log.filter.clear')}
