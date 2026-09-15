@@ -1272,6 +1272,7 @@ def _upsert_position_history_final_from_position_cursor(
     position_id: Optional[int] = None,
 ) -> None:
     """Aggregate complete OPEN/CLOSE cycles into the immutable-style final table."""
+    _reconcile_position_history_position_ids_cursor(cur, position_id)
     position_filter = " AND p.id = %s" if position_id is not None else ""
     params = (position_id,) if position_id is not None else ()
     cur.execute(
@@ -1413,6 +1414,57 @@ def _upsert_position_history_final_from_position_cursor(
                     metric_status = VALUES(metric_status), metric_source = VALUES(metric_source),
                     metric_version = VALUES(metric_version),
                     metric_calculated_at = VALUES(metric_calculated_at), updated_at = VALUES(updated_at)""",
+        params,
+    )
+
+
+def _reconcile_position_history_position_ids_cursor(
+    cur: pymysql.cursors.Cursor,
+    position_id: Optional[int] = None,
+) -> None:
+    """Inherit the canonical cycle id from an explicitly linked close order.
+
+    A close fill can reach ``position_history`` before the order/position sync has
+    attached its ``position_id``.  Once the order is linked, its history row must
+    follow that link instead of remaining a second, legacy-looking position.
+    """
+    position_filter = " AND o.position_id = %s" if position_id is not None else ""
+    params = (int(position_id),) if position_id is not None else ()
+    cur.execute(
+        f"""UPDATE position_history ph
+               JOIN orders o ON o.id = ph.close_order_id
+               LEFT JOIN position_history linked
+                 ON linked.id <> ph.id
+                AND linked.user_id = ph.user_id
+                AND linked.close_order_id = ph.close_order_id
+                AND linked.position_id = o.position_id
+                SET ph.position_id = o.position_id
+              WHERE ph.position_id IS NULL
+                AND o.position_id IS NOT NULL
+                AND linked.id IS NULL{position_filter}""",
+        params,
+    )
+
+
+def _delete_linked_legacy_position_finals_cursor(
+    cur: pymysql.cursors.Cursor,
+    position_id: Optional[int] = None,
+) -> None:
+    """Remove legacy shadows only after their canonical final row exists."""
+    position_filter = (
+        " AND COALESCE(ph.position_id, o.position_id) = %s"
+        if position_id is not None else ""
+    )
+    params = (int(position_id),) if position_id is not None else ()
+    cur.execute(
+        f"""DELETE legacy
+               FROM position_history_final legacy
+               JOIN position_history ph ON ph.id = legacy.source_history_id
+               LEFT JOIN orders o ON o.id = ph.close_order_id
+               JOIN position_history_final canonical
+                 ON canonical.position_id = COALESCE(ph.position_id, o.position_id)
+              WHERE legacy.position_id IS NULL
+                AND COALESCE(ph.position_id, o.position_id) IS NOT NULL{position_filter}""",
         params,
     )
 
@@ -1883,6 +1935,7 @@ def init_db() -> None:
                     "COMMENT '周期 OPEN 订单ID，逗号分隔' AFTER net_pnl"
                 )
             _upsert_position_history_final_from_position_cursor(cur)
+            _delete_linked_legacy_position_finals_cursor(cur)
             _backfill_unlinked_position_history_final(cur)
             _rebuild_positions_realized_pnl(cur)
 
@@ -4397,6 +4450,14 @@ def add_position_history(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            if position_id is None and close_order_id is not None:
+                cur.execute(
+                    "SELECT position_id FROM orders WHERE id = %s LIMIT 1",
+                    (close_order_id,),
+                )
+                linked_order = cur.fetchone() or {}
+                if linked_order.get("position_id") is not None:
+                    position_id = int(linked_order["position_id"])
             if position_id is not None and close_order_id is not None:
                 cur.execute(
                     "UPDATE orders SET position_id = COALESCE(position_id, %s) WHERE id = %s",
@@ -4435,10 +4496,8 @@ def add_position_history(
                         _backfill_unlinked_position_history_final(cur, history_id)
                     else:
                         _upsert_position_history_final_from_position_cursor(cur, int(effective_position_id))
-                        _delete_legacy_final_after_position_link_cursor(
-                            cur,
-                            history_id,
-                            int(effective_position_id),
+                        _delete_linked_legacy_position_finals_cursor(
+                            cur, int(effective_position_id)
                         )
                     _refresh_daily_profile_for_history_row(cur, history_id)
                     conn.commit()
@@ -4507,8 +4566,22 @@ def update_position_history_values(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT position_id FROM position_history WHERE id = %s", (history_id,))
+            cur.execute(
+                """SELECT ph.position_id,
+                          o.position_id AS order_position_id
+                     FROM position_history ph
+                     LEFT JOIN orders o ON o.id = ph.close_order_id
+                    WHERE ph.id = %s""",
+                (history_id,),
+            )
             history_row = cur.fetchone() or {}
+            history_position_id = history_row.get("position_id")
+            if history_position_id is None and history_row.get("order_position_id") is not None:
+                history_position_id = int(history_row["order_position_id"])
+                cur.execute(
+                    "UPDATE position_history SET position_id = %s WHERE id = %s AND position_id IS NULL",
+                    (history_position_id, history_id),
+                )
             if commission_asset is None:
                 cur.execute(
                     "UPDATE position_history SET realized_pnl = %s, commission = %s WHERE id = %s",
@@ -4521,12 +4594,14 @@ def update_position_history_values(
                 )
             affected_rows = cur.rowcount
             if affected_rows > 0:
-                history_position_id = history_row.get("position_id")
                 _refresh_position_realized_pnl(cur, history_position_id)
                 if history_position_id is None:
                     _backfill_unlinked_position_history_final(cur, history_id)
                 else:
                     _upsert_position_history_final_from_position_cursor(cur, int(history_position_id))
+                    _delete_linked_legacy_position_finals_cursor(
+                        cur, int(history_position_id)
+                    )
                 _refresh_daily_profile_for_history_row(cur, history_id)
             conn.commit()
             success = affected_rows > 0
@@ -5007,6 +5082,24 @@ def query_position_records(
                LEFT JOIN position_reviews pr
                  ON pr.position_id = f.position_id AND pr.user_id = f.user_id
               WHERE 1 = 1"""
+    # A legacy row has no open time.  If its close falls inside a canonical
+    # cycle for the same position identity, it is a partial-close shadow, not a
+    # separate position.  Keep genuinely standalone legacy history visible.
+    sql += """ AND NOT (
+                    f.position_id IS NULL
+                    AND EXISTS (
+                        SELECT 1
+                          FROM position_history_final canonical
+                         WHERE canonical.position_id IS NOT NULL
+                           AND canonical.user_id = f.user_id
+                           AND canonical.symbol = f.symbol
+                           AND UPPER(canonical.side) = UPPER(f.side)
+                           AND canonical.open_time IS NOT NULL
+                           AND canonical.close_time IS NOT NULL
+                           AND COALESCE(f.close_time, f.updated_at, f.created_at)
+                               BETWEEN canonical.open_time AND canonical.close_time
+                    )
+               )"""
     params: list = []
     if user_id is not None:
         sql += " AND f.user_id = %s"

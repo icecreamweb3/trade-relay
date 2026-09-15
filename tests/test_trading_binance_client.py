@@ -3505,6 +3505,8 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "pr.final_exit_reason AS review_final_exit_reason" in sql
     assert "LEFT JOIN position_reviews pr" in sql
     assert "pr.position_id = f.position_id AND pr.user_id = f.user_id" in sql
+    assert "f.position_id IS NULL" in sql
+    assert "BETWEEN canonical.open_time AND canonical.close_time" in sql
     assert "f.user_id = %s" in sql
     assert "UPPER(f.symbol) LIKE %s" in sql
     assert "UPPER(f.side) = %s" in sql
@@ -3566,6 +3568,110 @@ def test_linked_history_cleanup_only_deletes_legacy_row_after_canonical_exists()
     assert "legacy.source_history_id = %s" in sql
     assert "ph.position_id = %s" in sql
     assert params == (485, 1271)
+
+
+def test_reconcile_history_inherits_position_id_without_linking_duplicate_shadow():
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params=()):
+            queries.append((" ".join(sql.split()), params))
+
+    db_module._reconcile_position_history_position_ids_cursor(_StubCursor(), 1271)
+
+    sql, params = queries[0]
+    assert "UPDATE position_history ph JOIN orders o ON o.id = ph.close_order_id" in sql
+    assert "SET ph.position_id = o.position_id" in sql
+    assert "linked.close_order_id = ph.close_order_id" in sql
+    assert "linked.position_id = o.position_id" in sql
+    assert "o.position_id = %s" in sql
+    assert params == (1271,)
+
+
+def test_bulk_legacy_cleanup_accepts_position_link_inherited_from_close_order():
+    from trade_relay import database as db_module
+
+    queries = []
+
+    class _StubCursor:
+        def execute(self, sql, params=()):
+            queries.append((" ".join(sql.split()), params))
+
+    db_module._delete_linked_legacy_position_finals_cursor(_StubCursor(), 1271)
+
+    sql, params = queries[0]
+    assert "LEFT JOIN orders o ON o.id = ph.close_order_id" in sql
+    assert "canonical.position_id = COALESCE(ph.position_id, o.position_id)" in sql
+    assert "COALESCE(ph.position_id, o.position_id) = %s" in sql
+    assert params == (1271,)
+
+
+def test_add_position_history_inherits_position_id_from_close_order(monkeypatch):
+    from trade_relay import database as db_module
+
+    queries = []
+    fetches = iter([{"position_id": 1271}, None])
+
+    class _StubCursor:
+        lastrowid = 485
+        rowcount = 1
+
+        def execute(self, sql, params=()):
+            queries.append((" ".join(sql.split()), params))
+
+        def fetchone(self):
+            return next(fetches, None)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _StubConn:
+        def cursor(self):
+            return _StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    canonical = []
+    legacy = []
+    monkeypatch.setattr(db_module, "get_connection", lambda: _StubConn())
+    monkeypatch.setattr(db_module, "_refresh_position_realized_pnl", lambda *args: None)
+    monkeypatch.setattr(
+        db_module,
+        "_upsert_position_history_final_from_position_cursor",
+        lambda cursor, position_id: canonical.append(position_id),
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_backfill_unlinked_position_history_final",
+        lambda cursor, history_id: legacy.append(history_id),
+    )
+    monkeypatch.setattr(db_module, "_refresh_daily_profile_for_user_date", lambda *args: None)
+
+    history_id = db_module.add_position_history(
+        user_id=5,
+        username="Will",
+        symbol="BTCUSDC",
+        side="SHORT",
+        entry_price=77753.9,
+        close_price=77225.1,
+        quantity=0.009,
+        close_order_id=406,
+    )
+
+    insert = next(item for item in queries if item[0].startswith("INSERT INTO position_history"))
+    assert history_id == 485
+    assert insert[1][11] == 1271
+    assert canonical == [1271]
+    assert legacy == []
 
 
 def test_open_partial_fill_is_linked_without_placing_tpsl(monkeypatch):
