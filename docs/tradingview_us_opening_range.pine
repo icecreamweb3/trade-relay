@@ -1,6 +1,6 @@
 //@version=6
 indicator(
-     "美股早盘区间 09:30–11:00 ET",
+     "美股早盘区间 09:30–11:00 ET · 今日/全部 v2",
      shorttitle = "US Opening Range",
      overlay = true,
      max_lines_count = 300,
@@ -14,7 +14,8 @@ indicator(
 //   下方目标 = ORL - 1×/2×TR。
 //
 // 显示规则：
-//   1. 为屏幕内每个交易日绘制独立的水平区间，不连接相邻两天。
+//   1. 默认只绘制纽约当地今日的区间；可在设置中切换为全部交易日。
+//      每个交易日使用独立的水平区间，不连接相邻两天。
 //   2. 纽约时间 09:30–11:00 使用该时段最终 ORH/ORL 绘制完整矩形。
 //   3. 11:00 ET 后把水平区间延续到下一个美股早盘区间开始。
 //   4. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
@@ -33,6 +34,13 @@ string activeDays = input.string(
      "有效星期",
      tooltip = "1=周日，2=周一，…，7=周六；默认周一至周五。若用于全天候市场可改为 1234567",
      group = GROUP_SESSION
+)
+
+bool showAllTradingDays = input.bool(
+     false,
+     "显示全部交易日美盘区间",
+     tooltip = "默认关闭，仅显示纽约当地今日的美盘区间；开启后显示视口内全部交易日的历史美盘区间。",
+     group = GROUP_DISPLAY
 )
 
 bool showOpeningRange = input.bool(
@@ -65,6 +73,9 @@ bool showLabels = input.bool(
 // 此设置不受图表显示时区和品种交易所时区影响。
 string SESSION_TIMEZONE = "America/New_York"
 string sessionSpec = sessionInput + ":" + activeDays
+int todaySessionDate = year(timenow, SESSION_TIMEZONE) * 10000
+     + month(timenow, SESSION_TIMEZONE) * 100
+     + dayofmonth(timenow, SESSION_TIMEZONE)
 
 bool inOpeningRange = not na(
      time(timeframe.period, sessionSpec, SESSION_TIMEZONE)
@@ -121,9 +132,14 @@ if barstate.islast
             int candidateRight = index + 1 < storedCount
                  ? array.get(sessionStarts, index + 1)
                  : chart.right_visible_bar_time
+            int candidateSessionDate = year(candidateStart, SESSION_TIMEZONE) * 10000
+                 + month(candidateStart, SESSION_TIMEZONE) * 100
+                 + dayofmonth(candidateStart, SESSION_TIMEZONE)
+            bool matchesDisplayRange = showAllTradingDays
+                 or candidateSessionDate == todaySessionDate
             bool overlapsViewport = candidateStart <= chart.right_visible_bar_time
                  and candidateRight >= chart.left_visible_bar_time
-            if overlapsViewport
+            if overlapsViewport and matchesDisplayRange
                 if na(firstVisibleIndex)
                     firstVisibleIndex := index
                 lastVisibleIndex := index
