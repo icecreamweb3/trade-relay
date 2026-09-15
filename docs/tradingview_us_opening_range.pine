@@ -144,6 +144,10 @@ if barstate.islast
             bool hasHorizontalSpace = segmentRight > selectedStart
             bool canExtend = segmentRight > selectedEnd and rangeHeight > 0
             bool isLatestVisible = index == lastVisibleIndex
+            int visibleLineLeft = math.max(selectedStart, chart.left_visible_bar_time)
+            int mainLabelX = visibleLineLeft + int(math.round((segmentRight - visibleLineLeft) / 2.0))
+            int visibleExtensionLeft = math.max(selectedEnd, chart.left_visible_bar_time)
+            int extensionLabelX = visibleExtensionLeft + int(math.round((segmentRight - visibleExtensionLeft) / 2.0))
 
             color rangeColor = color.rgb(245, 158, 11)
             color upperColor = color.rgb(239, 107, 127)
@@ -199,24 +203,24 @@ if barstate.islast
 
                 if showLabels and isLatestVisible
                     label highLabel = label.new(
-                         x = segmentRight,
+                         x = mainLabelX,
                          y = selectedHigh,
-                         text = "ORH  " + str.tostring(selectedHigh, format.mintick),
+                         text = str.tostring(selectedHigh, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = rangeColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = rangeColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     label lowLabel = label.new(
-                         x = segmentRight,
+                         x = mainLabelX,
                          y = selectedLow,
-                         text = "ORL  " + str.tostring(selectedLow, format.mintick),
+                         text = str.tostring(selectedLow, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = rangeColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = rangeColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     array.push(drawnLabels, highLabel)
                     array.push(drawnLabels, lowLabel)
@@ -268,24 +272,24 @@ if barstate.islast
 
                 if showLabels and isLatestVisible
                     label upperLabel1 = label.new(
-                         x = segmentRight,
+                         x = extensionLabelX,
                          y = upper1,
                          text = "+1×TR  " + str.tostring(upper1, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = upperColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = upperColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     label upperLabel2 = label.new(
-                         x = segmentRight,
+                         x = extensionLabelX,
                          y = upper2,
                          text = "+2×TR  " + str.tostring(upper2, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = upperColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = upperColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     array.push(drawnLabels, upperLabel1)
                     array.push(drawnLabels, upperLabel2)
@@ -337,24 +341,24 @@ if barstate.islast
 
                 if showLabels and isLatestVisible
                     label lowerLabel1 = label.new(
-                         x = segmentRight,
+                         x = extensionLabelX,
                          y = lower1,
                          text = "-1×TR  " + str.tostring(lower1, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = lowerColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = lowerColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     label lowerLabel2 = label.new(
-                         x = segmentRight,
+                         x = extensionLabelX,
                          y = lower2,
                          text = "-2×TR  " + str.tostring(lower2, format.mintick),
                          xloc = xloc.bar_time,
-                         style = label.style_label_left,
-                         color = lowerColor,
-                         textcolor = color.white,
-                         size = size.tiny
+                         style = label.style_none,
+                         textcolor = lowerColor,
+                         textalign = text.align_center,
+                         size = size.small
                     )
                     array.push(drawnLabels, lowerLabel1)
                     array.push(drawnLabels, lowerLabel2)
