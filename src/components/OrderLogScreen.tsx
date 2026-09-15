@@ -288,7 +288,6 @@ export function OrderLogScreen() {
       const orderChartPosition: PositionWindow = {
         ...position,
         focusTime: selectedMarker.timestamp,
-        markers: [selectedMarker],
       }
       setChartPendingOrder(null)
       if (window.electronAPI?.openOrderKlineWindow) {

@@ -956,12 +956,30 @@ function CandlestickChart({
 }) {
   const [visibleRange, setVisibleRange] = useState(() => ({ start: 0, end: klines.length }))
   const [hoveredBarOpenTime, setHoveredBarOpenTime] = useState<number | null>(null)
+  const chartContainerRef = useRef<HTMLDivElement>(null)
+  const [chartSize, setChartSize] = useState({ width: 1400, height: 690 })
   const dragRef = useRef<{ clientX: number; start: number; end: number; moved: boolean } | null>(null)
 
   useEffect(() => {
     setVisibleRange({ start: 0, end: klines.length })
     setHoveredBarOpenTime(null)
   }, [klines])
+
+  useEffect(() => {
+    const container = chartContainerRef.current
+    if (!container) return
+    const updateSize = () => {
+      const bounds = container.getBoundingClientRect()
+      setChartSize({
+        width: Math.max(640, Math.round(bounds.width)),
+        height: Math.max(360, Math.round(bounds.height)),
+      })
+    }
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
 
   const rangeStart = Math.max(0, Math.min(visibleRange.start, Math.max(0, klines.length - 1)))
   const rangeEnd = Math.max(rangeStart + 1, Math.min(visibleRange.end, klines.length))
@@ -978,8 +996,7 @@ function CandlestickChart({
 
   const resetZoom = () => setVisibleRange({ start: 0, end: klines.length })
 
-  const width = 1400
-  const height = 690
+  const { width, height } = chartSize
   const margin = { top: 48, right: 92, bottom: 54, left: 18 }
   const volumeHeight = 80
   const priceBottom = height - margin.bottom - volumeHeight - 28
@@ -1044,7 +1061,7 @@ function CandlestickChart({
   })
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded bg-[#0d1014]">
+    <div ref={chartContainerRef} className="relative h-full w-full overflow-hidden rounded bg-[#0d1014]">
       <div className="absolute left-3 top-3 z-10 flex items-center gap-1 rounded border border-[#343b46] bg-[#171b21]/95 p-1 text-[#aeb7c4] shadow">
         <button type="button" onClick={() => zoom(0.7)} title="Zoom in" className="rounded p-1 hover:bg-[#2b333e] hover:text-white"><ZoomIn size={15} /></button>
         <button type="button" onClick={() => zoom(1.4)} title="Zoom out" className="rounded p-1 hover:bg-[#2b333e] hover:text-white"><ZoomOut size={15} /></button>
@@ -1071,7 +1088,7 @@ function CandlestickChart({
       </div>}
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid meet"
         className="h-full w-full select-none touch-none cursor-grab active:cursor-grabbing"
         role="img"
         onDoubleClick={resetZoom}
