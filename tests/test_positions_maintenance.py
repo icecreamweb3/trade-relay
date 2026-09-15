@@ -37,6 +37,12 @@ def test_admin_can_run_mfe_maintenance_for_selected_user(monkeypatch):
         lambda username: {"id": 7, "username": username},
     )
     calls = []
+    backfill_calls = []
+    monkeypatch.setattr(
+        positions_router,
+        "backfill_missing_position_ids",
+        lambda **kwargs: backfill_calls.append(kwargs) or {},
+    )
     monkeypatch.setattr(
         positions_router,
         "recalculate_missing_metrics",
@@ -55,6 +61,7 @@ def test_admin_can_run_mfe_maintenance_for_selected_user(monkeypatch):
     ))
 
     assert result["calculated"] == 2
+    assert backfill_calls == [{"user_id": 7, "dry_run": False}]
     assert calls == [{"user_id": 7, "dry_run": False}]
 
 

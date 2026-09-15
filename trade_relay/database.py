@@ -3123,6 +3123,9 @@ def update_order_metadata(order_id: int, **fields_to_update) -> bool:
         "exchange_order_id",
         "client_order_id",
         "trade_direction",
+        "position_id",
+        "position_mode",
+        "reduce_only",
         "error_message",
     }
     fields = {key: value for key, value in fields_to_update.items() if key in allowed_fields and value is not None}
@@ -4796,6 +4799,28 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
         created_at = None
         updated_at = None
 
+    position_id: Optional[int] = None
+    if trade_direction == "CLOSE":
+        close_position_side = raw_ps if raw_ps in ("LONG", "SHORT") else "BOTH"
+        try:
+            matched_position = get_position_for_close_fill(
+                user_id,
+                symbol,
+                close_position_side,
+                filled_at or updated_at or created_at,
+            )
+            if matched_position and matched_position.get("id") is not None:
+                position_id = int(matched_position["id"])
+        except Exception:
+            logger.warning(
+                "adopt_external_order: failed to resolve position user=%s order=%s symbol=%s side=%s",
+                username,
+                exchange_order_id,
+                symbol,
+                close_position_side,
+                exc_info=True,
+            )
+
     if not symbol or not side or not order_type or quantity <= 0:
         logger.warning(
             "adopt_external_order: incomplete WS event for exchange_order_id=%s, skipping",
@@ -4808,6 +4833,14 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
     # so ON DUPLICATE KEY UPDATE would not fire — do the dedup at application level instead.
     existing = get_order_by_exchange_id(username, exchange_order_id)
     if existing:
+        if position_id is not None and existing.get("position_id") is None:
+            update_order_metadata(
+                int(existing["id"]),
+                trade_direction="CLOSE",
+                position_id=position_id,
+                position_mode=position_mode,
+                reduce_only=reduce_only,
+            )
         return int(existing["id"])
 
     # Also check by client_order_id to avoid duplicating triggered conditional orders.
@@ -4818,6 +4851,14 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
             # Back-fill exchange_order_id if missing
             if not str(existing.get("exchange_order_id") or "").strip():
                 update_order_metadata(int(existing["id"]), exchange_order_id=exchange_order_id)
+            if position_id is not None and existing.get("position_id") is None:
+                update_order_metadata(
+                    int(existing["id"]),
+                    trade_direction="CLOSE",
+                    position_id=position_id,
+                    position_mode=position_mode,
+                    reduce_only=reduce_only,
+                )
             return int(existing["id"])
 
     conn = get_connection()
@@ -4832,13 +4873,13 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     quantity, price, stop_price, status,
                     exchange_order_id, client_order_id,
                     filled_qty, avg_price, filled_at,
-                    trade_direction, position_mode, reduce_only,
+                    trade_direction, position_mode, reduce_only, position_id,
                     order_category, created_at, updated_at)
                    SELECT %s, %s, 'binance', 'external', %s, %s, %s,
                            %s, %s, %s, %s,
                            %s, %s,
                            %s, %s, %s,
-                           %s, %s, %s,
+                           %s, %s, %s, %s,
                            %s, COALESCE(%s, UTC_TIMESTAMP()), COALESCE(%s, UTC_TIMESTAMP())
                    FROM DUAL
                    WHERE NOT EXISTS (
@@ -4851,7 +4892,7 @@ def adopt_external_order(username: str, exchange_order_id: str, ws_event: dict) 
                     quantity, price, stop_price, status,
                     exchange_order_id, client_order_id,
                     filled_qty, avg_price, filled_at,
-                    trade_direction, position_mode, int(reduce_only),
+                    trade_direction, position_mode, int(reduce_only), position_id,
                     order_category, created_at, updated_at,
                     username, exchange_order_id,  # WHERE NOT EXISTS params
                 ),
@@ -4924,6 +4965,42 @@ def get_position(
                 params.append(normalized_status)
             sql += " ORDER BY id DESC LIMIT 1"
             cur.execute(sql, params)
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position_for_close_fill(
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    occurred_at=None,
+    exchange: str = "binance",
+) -> Optional[dict]:
+    """Find the position cycle that existed when an external close was received.
+
+    The timestamp bound prevents a delayed historical WebSocket/REST event from
+    being attached to a newer position opened later on the same symbol and side.
+    """
+    normalized_at = _coerce_utc_naive_datetime(occurred_at) or _utc_now_naive()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT * FROM positions
+                    WHERE user_id = %s AND exchange = %s AND symbol = %s
+                      AND position_side = %s
+                      AND (opened_at IS NULL OR opened_at <= %s)
+                    ORDER BY (opened_at IS NULL), opened_at DESC, id DESC
+                    LIMIT 1""",
+                (
+                    int(user_id),
+                    str(exchange or "binance"),
+                    str(symbol or ""),
+                    str(position_side or "").upper(),
+                    normalized_at,
+                ),
+            )
             return cur.fetchone()
     finally:
         conn.close()
@@ -5533,6 +5610,7 @@ def get_unlinked_position_history_for_close_orders(
     symbol: str,
     side: str,
     close_order_ids: list[int],
+    position_id: int | None = None,
 ) -> list:
     normalized_ids = sorted({int(value) for value in close_order_ids if int(value) > 0})
     if not normalized_ids:
@@ -5541,13 +5619,21 @@ def get_unlinked_position_history_for_close_orders(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            position_filter = (
+                " AND (position_id IS NULL OR position_id = %s)"
+                if position_id is not None
+                else " AND position_id IS NULL"
+            )
+            params = [int(user_id), str(symbol), str(side).upper(), *normalized_ids]
+            if position_id is not None:
+                params.append(int(position_id))
             cur.execute(
                 f"""SELECT * FROM position_history
                       WHERE user_id = %s AND symbol = %s AND UPPER(side) = %s
-                        AND position_id IS NULL
                         AND close_order_id IN ({placeholders})
+                        {position_filter}
                       ORDER BY created_at, id""",
-                [int(user_id), str(symbol), str(side).upper(), *normalized_ids],
+                params,
             )
             return cur.fetchall()
     finally:
@@ -5688,6 +5774,106 @@ def promote_unlinked_position_cycle(
                 _refresh_daily_profile_for_user_date(cur, user_id, username, trade_date)
             conn.commit()
             return position_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def attach_unlinked_position_cycle(
+    position_id: int,
+    history_ids: list[int],
+    order_ids: list[int],
+) -> bool:
+    """Attach only NULL members of a validated cycle to one existing position.
+
+    Rows already assigned to a different position make the whole transaction fail;
+    this prevents a historical repair from merging independent position cycles.
+    """
+    normalized_history_ids = sorted({int(value) for value in history_ids if int(value) > 0})
+    normalized_order_ids = sorted({int(value) for value in order_ids if int(value) > 0})
+    if not normalized_history_ids or not normalized_order_ids:
+        raise ValueError("A position cycle requires history rows and filled orders")
+
+    history_placeholders = ", ".join(["%s"] * len(normalized_history_ids))
+    order_placeholders = ", ".join(["%s"] * len(normalized_order_ids))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM positions WHERE id = %s FOR UPDATE", (int(position_id),))
+            position = cur.fetchone()
+            if not position:
+                return False
+
+            cur.execute(
+                f"SELECT * FROM position_history WHERE id IN ({history_placeholders}) ORDER BY created_at, id FOR UPDATE",
+                normalized_history_ids,
+            )
+            histories = cur.fetchall()
+            cur.execute(
+                f"SELECT * FROM orders WHERE id IN ({order_placeholders}) ORDER BY COALESCE(filled_at, updated_at, created_at), id FOR UPDATE",
+                normalized_order_ids,
+            )
+            orders = cur.fetchall()
+            if len(histories) != len(normalized_history_ids) or len(orders) != len(normalized_order_ids):
+                return False
+            if any(row.get("position_id") not in (None, int(position_id)) for row in histories):
+                raise ValueError("Position history belongs to another position")
+            if any(row.get("position_id") not in (None, int(position_id)) for row in orders):
+                raise ValueError("Filled order belongs to another position")
+            if any(str(row.get("status") or "").upper() != "FILLED" for row in orders):
+                raise ValueError("Position cycle contains a non-filled order")
+
+            expected_user_id = int(position["user_id"])
+            expected_symbol = str(position.get("symbol") or "")
+            expected_side = str(position.get("position_side") or "").upper()
+            expected_exchange = str(position.get("exchange") or "binance")
+            if any(
+                int(row.get("user_id") or 0) != expected_user_id
+                or str(row.get("symbol") or "") != expected_symbol
+                or str(row.get("side") or "").upper() != expected_side
+                for row in histories
+            ):
+                raise ValueError("Position history does not match the target position")
+            if any(
+                int(row.get("user_id") or 0) != expected_user_id
+                or str(row.get("symbol") or "") != expected_symbol
+                or str(row.get("exchange") or "binance") != expected_exchange
+                for row in orders
+            ):
+                raise ValueError("Filled orders do not match the target position")
+
+            cur.execute(
+                f"UPDATE orders SET position_id = %s WHERE id IN ({order_placeholders}) AND position_id IS NULL",
+                [int(position_id), *normalized_order_ids],
+            )
+            cur.execute(
+                f"UPDATE position_history SET position_id = %s WHERE id IN ({history_placeholders}) AND position_id IS NULL",
+                [int(position_id), *normalized_history_ids],
+            )
+            _refresh_position_realized_pnl(cur, int(position_id))
+            cur.execute(
+                """UPDATE positions
+                      SET excursion_status = 'PENDING', excursion_attempts = 0,
+                          excursion_next_retry_at = UTC_TIMESTAMP(3),
+                          excursion_last_error = NULL
+                    WHERE id = %s AND UPPER(COALESCE(status, 'OPEN')) = 'CLOSE'""",
+                (int(position_id),),
+            )
+            _upsert_position_history_final_from_position_cursor(cur, int(position_id))
+            _delete_linked_legacy_position_finals_cursor(cur, int(position_id))
+            affected_dates = {
+                value.date()
+                for row in histories
+                if (value := row.get("created_at")) is not None and hasattr(value, "date")
+            }
+            for trade_date in affected_dates:
+                _refresh_daily_profile_for_user_date(
+                    cur, expected_user_id, str(position.get("username") or ""), trade_date
+                )
+            conn.commit()
+            return True
     except Exception:
         conn.rollback()
         raise

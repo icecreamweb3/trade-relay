@@ -975,6 +975,7 @@ def _record_close_fill_history_from_conditional(row: dict, filled_qty: float, av
         realized_pnl=realized_pnl,
         commission=0.0,
         position_id=position_id,
+        close_order_id=int(row["id"]) if row.get("id") else None,
         position_mode=str(row.get("position_mode") or "UNKNOWN").upper(),
     )
     _log.info(

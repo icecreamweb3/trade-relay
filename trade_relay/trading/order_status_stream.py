@@ -1569,6 +1569,50 @@ class UserOrderStatusStream:
                 )
             return
 
+        # External orders adopted by an older version or by the bootstrap path
+        # may still lack position_id. Resolve it against the position cycle that
+        # existed at the exchange event time, before downstream history/MFE work.
+        if (
+            str(db_order.get("source") or "").lower() == "external"
+            and db_order.get("position_id") is None
+            and str(db_order.get("trade_direction") or "").upper() == "CLOSE"
+            and db_order.get("id")
+        ):
+            raw_position_side = str(
+                order.get("ps") or order.get("positionSide") or "BOTH"
+            ).upper()
+            close_position_side = (
+                raw_position_side
+                if raw_position_side in ("LONG", "SHORT")
+                else "BOTH"
+            )
+            try:
+                matched_position = db.get_position_for_close_fill(
+                    int(db_order["user_id"]),
+                    str(order.get("s") or order.get("symbol") or db_order.get("symbol") or ""),
+                    close_position_side,
+                    order.get("T") or order.get("updateTime") or db_order.get("updated_at"),
+                )
+                if matched_position and matched_position.get("id") is not None:
+                    position_id = int(matched_position["id"])
+                    db.update_order_metadata(
+                        int(db_order["id"]),
+                        position_id=position_id,
+                        position_mode=(
+                            "DUAL" if close_position_side in ("LONG", "SHORT") else "SINGLE"
+                        ),
+                    )
+                    db_order = {**db_order, "position_id": position_id}
+            except Exception:
+                logger.warning(
+                    "Failed to backfill external close position: user=%s order=%s symbol=%s side=%s",
+                    self.username,
+                    exchange_order_id,
+                    db_order.get("symbol"),
+                    close_position_side,
+                    exc_info=True,
+                )
+
         updated = db.update_order_status_by_exchange_id(
             username=self.username,
             exchange_order_id=exchange_order_id,

@@ -182,3 +182,52 @@ def test_ambiguous_timeout_is_persisted_as_pending(monkeypatch):
     assert captured["created"]["status"] == "PENDING"
     assert captured["created"]["client_order_id"] == "tr_timeout"
     assert captured["confirmation"][-1] == "tr_timeout"
+
+
+def test_reclaimed_fast_fill_close_order_keeps_position_link(monkeypatch):
+    captured = {}
+    result = trading_client.BinanceOrderResult(
+        success=True,
+        order_id="76217652789",
+        client_order_id="tr_close",
+        status="FILLED",
+    )
+    _patch_order_manager_dependencies(monkeypatch, result, captured)
+    monkeypatch.setattr(
+        order_manager.db,
+        "get_position",
+        lambda *args, **kwargs: {"id": 6250, "position_mode": "DUAL"},
+    )
+    monkeypatch.setattr(
+        order_manager.db,
+        "get_order_by_exchange_id",
+        lambda *args, **kwargs: {"id": 8331, "source": "external"},
+    )
+    metadata_updates = []
+    monkeypatch.setattr(
+        order_manager.db,
+        "update_order_metadata",
+        lambda order_id, **fields: metadata_updates.append((order_id, fields)) or True,
+    )
+    monkeypatch.setattr(order_manager.db, "update_order_source", lambda *args, **kwargs: True)
+    monkeypatch.setattr(order_manager, "_schedule_post_submit_sync", lambda *args: None)
+
+    response = asyncio.run(order_manager.submit_order(
+        Session(5, "simba", "user"),
+        "BTCUSDC",
+        "BUY",
+        "MARKET",
+        0.01,
+        leverage=20,
+        position_direction="CLOSE",
+        position_mode="DUAL",
+    ))
+
+    assert response.success is True
+    assert metadata_updates == [(8331, {
+        "trade_direction": "CLOSE",
+        "position_id": 6250,
+        "position_mode": "DUAL",
+        "reduce_only": True,
+    })]
+    assert "created" not in captured

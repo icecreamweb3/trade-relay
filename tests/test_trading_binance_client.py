@@ -3257,6 +3257,11 @@ def test_get_conditional_orders_finalizes_stale_finished_algo_order(monkeypatch)
 def test_get_conditional_orders_creates_position_history_for_filled_close_algo_order(monkeypatch):
     from backend.routers import orders as orders_router
 
+    orders_router._client_cache.clear()
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+    monkeypatch.setattr(orders_router.asyncio, "to_thread", run_inline)
+
     db_row = {
         "id": 88,
         "user_id": 1,
@@ -3314,6 +3319,7 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
         "avg_entry_price": 78000.0,
     }])
     monkeypatch.setattr(orders_router.db_module, "add_position_history", lambda **kwargs: history_calls.append(kwargs) or 123)
+    monkeypatch.setattr(orders_router, "sync_filled_order_trade_details", lambda **kwargs: None)
     monkeypatch.setattr(orders_router, "FuturesBinanceClient", StubClient)
 
     result = asyncio.run(orders_router.get_conditional_orders({"username": "Will", "sub": "1", "role": "user"}))
@@ -3332,8 +3338,152 @@ def test_get_conditional_orders_creates_position_history_for_filled_close_algo_o
         "realized_pnl": (78556.2 - 78000.0) * 0.012,
         "commission": 0.0,
         "position_id": 9,
+        "close_order_id": 88,
         "position_mode": "UNKNOWN",
     }]
+
+
+def test_conditional_close_history_keeps_close_order_link(monkeypatch):
+    from backend.routers import orders as orders_router
+
+    history_calls = []
+    monkeypatch.setattr(
+        orders_router,
+        "_resolve_close_fill_entry_context",
+        lambda row: (6250, 76905.6, "SHORT"),
+    )
+    monkeypatch.setattr(
+        orders_router.db_module,
+        "add_position_history",
+        lambda **kwargs: history_calls.append(kwargs) or 1922,
+    )
+
+    orders_router._record_close_fill_history_from_conditional({
+        "id": 8331,
+        "user_id": 5,
+        "username": "simba",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "trade_direction": "CLOSE",
+        "position_mode": "DUAL",
+    }, 0.01, 77006.5)
+
+    assert history_calls[0]["position_id"] == 6250
+    assert history_calls[0]["close_order_id"] == 8331
+
+
+def test_adopt_external_close_order_persists_position_id_on_first_insert(monkeypatch):
+    from trade_relay import database as db_module
+
+    executions = []
+
+    class StubCursor:
+        lastrowid = 8331
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params):
+            executions.append((sql, params))
+
+    class StubConnection:
+        def cursor(self):
+            return StubCursor()
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(db_module, "get_user_by_username", lambda username: {"id": 5})
+    monkeypatch.setattr(
+        db_module,
+        "get_position_for_close_fill",
+        lambda *args, **kwargs: {"id": 6250},
+    )
+    monkeypatch.setattr(db_module, "get_order_by_exchange_id", lambda *args: None)
+    monkeypatch.setattr(db_module, "get_order_by_client_order_id", lambda *args: None)
+    monkeypatch.setattr(db_module, "get_connection", lambda: StubConnection())
+
+    order_id = db_module.adopt_external_order("simba", "76217652789", {
+        "i": "76217652789",
+        "s": "BTCUSDC",
+        "S": "BUY",
+        "o": "MARKET",
+        "q": "0.01",
+        "X": "FILLED",
+        "z": "0.01",
+        "ap": "77006.5",
+        "R": False,
+        "ps": "SHORT",
+        "O": 1789481246000,
+        "T": 1789481825000,
+    })
+
+    assert order_id == 8331
+    sql, params = executions[0]
+    assert "reduce_only, position_id" in sql
+    assert params[14:18] == ("CLOSE", "DUAL", 0, 6250)
+
+
+def test_existing_external_close_order_is_backfilled_on_ws_update(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    class StubClient:
+        proxy_config = None
+
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(order_status_stream, "BinanceClient", StubClient)
+    stream = order_status_stream.UserOrderStatusStream("simba", "key", "secret", False)
+    metadata_updates = []
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_order_by_exchange_id",
+        lambda *args: {
+            "id": 8331,
+            "user_id": 5,
+            "symbol": "BTCUSDC",
+            "source": "external",
+            "trade_direction": "CLOSE",
+            "position_id": None,
+        },
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position_for_close_fill",
+        lambda *args, **kwargs: {"id": 6250},
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_metadata",
+        lambda order_id, **kwargs: metadata_updates.append((order_id, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "update_order_status_by_exchange_id",
+        lambda **kwargs: True,
+    )
+
+    stream._persist_status({
+        "i": "76217652789",
+        "s": "BTCUSDC",
+        "X": "FILLED",
+        "z": "0.01",
+        "ap": "77006.5",
+        "ps": "SHORT",
+        "T": 1789481825000,
+    })
+
+    assert metadata_updates == [(8331, {
+        "position_id": 6250,
+        "position_mode": "DUAL",
+    })]
 
 
 def test_create_order_stores_conditional_algo_id_separately(monkeypatch):

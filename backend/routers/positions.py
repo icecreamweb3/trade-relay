@@ -18,6 +18,7 @@ from trade_relay import config as cfg_module
 from trade_relay.trading.order_status_stream import ensure_user_order_status_stream, register_user_stream_listener, unregister_user_stream_listener, sync_initial_positions_for_user
 from trade_relay.trading.tpsl_service import place_tp_sl_orders, validate_tpsl_prices
 from trade_relay.trading.excursion_retry_worker import _repair_missing_order_links
+from trade_relay.trading.position_id_backfill import backfill_missing_position_ids
 from task.recalculate_historical_excursion_metrics import recalculate_missing_metrics
 from backend.routers.auth import decode_token, get_current_user
 from backend.logger import get_logger
@@ -782,10 +783,18 @@ async def recalculate_position_mfe(
 ):
     """Recalculate closed positions whose excursion metrics are not current."""
     user_id = _resolve_maintenance_user_id(user, body.username)
+
+    def operation():
+        # A legacy close may be absent from the MFE candidate query precisely
+        # because its order/history position_id is NULL. Repair unambiguous
+        # cycles first so the same maintenance action can then calculate them.
+        backfill_missing_position_ids(user_id=user_id, dry_run=False)
+        return recalculate_missing_metrics(user_id=user_id, dry_run=False)
+
     return await _run_position_maintenance(
         "recalculate-mfe",
         user_id,
-        lambda: recalculate_missing_metrics(user_id=user_id, dry_run=False),
+        operation,
     )
 
 

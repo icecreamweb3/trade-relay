@@ -79,17 +79,33 @@ def backfill_missing_position_ids(
             if promoted_order_ids.intersection(order_ids):
                 skipped += 1
                 continue
-            if any(item.get("position_id") is not None for item in cycle):
-                raise ExcursionCalculationError("成交周期已部分关联其他 Position ID")
+            linked_position_ids = {
+                int(item["position_id"])
+                for item in cycle
+                if item.get("position_id") not in (None, "")
+            }
+            if len(linked_position_ids) > 1:
+                raise ExcursionCalculationError("成交周期跨越多个 Position ID")
+            existing_position_id = next(iter(linked_position_ids), None)
 
-            _validate_cycle_identity({**row, "id": 0}, cycle)
+            _validate_cycle_identity(
+                {**row, "id": existing_position_id or 0},
+                cycle,
+            )
             entry_avg_price, _ = calculate_cycle_entry_average(cycle)
             close_order_ids = _cycle_order_ids(cycle, "CLOSE")
-            histories = db.get_unlinked_position_history_for_close_orders(
+            history_args = (
                 int(row["user_id"]),
                 str(row.get("symbol") or ""),
                 str(row.get("side") or ""),
                 close_order_ids,
+            )
+            histories = (
+                db.get_unlinked_position_history_for_close_orders(
+                    *history_args, position_id=existing_position_id
+                )
+                if existing_position_id is not None
+                else db.get_unlinked_position_history_for_close_orders(*history_args)
             )
             _validate_history_coverage(row, cycle, histories)
 
@@ -98,12 +114,20 @@ def backfill_missing_position_ids(
                 promoted_order_ids.update(order_ids)
                 continue
 
-            position_id = db.promote_unlinked_position_cycle(
-                [int(item["id"]) for item in histories],
-                order_ids,
-                entry_avg_price=entry_avg_price,
-                opened_at=order_time(cycle[0]),
-            )
+            if existing_position_id is not None:
+                attached = db.attach_unlinked_position_cycle(
+                    existing_position_id,
+                    [int(item["id"]) for item in histories],
+                    order_ids,
+                )
+                position_id = existing_position_id if attached else None
+            else:
+                position_id = db.promote_unlinked_position_cycle(
+                    [int(item["id"]) for item in histories],
+                    order_ids,
+                    entry_avg_price=entry_avg_price,
+                    opened_at=order_time(cycle[0]),
+                )
             if position_id is None:
                 skipped += 1
                 continue

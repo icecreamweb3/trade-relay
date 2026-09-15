@@ -332,6 +332,9 @@ async def submit_order(
             db.update_order_metadata(
                 order_db_id,
                 trade_direction=position_direction.upper() if position_direction else None,
+                position_id=position_id,
+                position_mode=normalized_position_mode or "UNKNOWN",
+                reduce_only=(position_direction or "").upper() == "CLOSE",
             )
             db.update_order_source(order_db_id, source="trade_relay")
             _log.info(

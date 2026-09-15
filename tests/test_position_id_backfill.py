@@ -94,6 +94,43 @@ def test_backfill_skips_cycle_with_incomplete_close_history(monkeypatch):
     assert "平仓历史不齐全" in result["warnings"][0]
 
 
+def test_backfill_attaches_unlinked_close_to_the_single_existing_position(monkeypatch):
+    opened_at = datetime(2026, 9, 15, 16, 47, 26)
+    candidate = {
+        "id": 1922,
+        "user_id": 5,
+        "username": "simba",
+        "exchange": "binance",
+        "symbol": "BTCUSDC",
+        "side": "SHORT",
+        "avg_entry_price": 76905.6,
+        "target_close_order_ids": "8331",
+        "final_close_time": opened_at + timedelta(hours=1, minutes=7),
+    }
+    cycle = [
+        {**_order(8200, opened_at, "OPEN", "SELL", 0.01, 76905.6), "position_id": 6250},
+        _order(8331, opened_at + timedelta(hours=1, minutes=7), "CLOSE", "BUY", 0.01, 77006.5, -1.009),
+    ]
+    histories = [{"id": 1922, "close_order_id": 8331, "realized_pnl": -1.009}]
+    attached = []
+    monkeypatch.setattr(task.db, "get_unlinked_position_cycle_candidates", lambda **kwargs: [candidate])
+    monkeypatch.setattr(task.db, "get_filled_orders_for_position_excursion", lambda row: cycle)
+    monkeypatch.setattr(task.db, "get_unlinked_position_history_for_close_orders", lambda *args, **kwargs: histories)
+    monkeypatch.setattr(
+        task.db,
+        "attach_unlinked_position_cycle",
+        lambda position_id, history_ids, order_ids: attached.append(
+            (position_id, history_ids, order_ids)
+        ) or True,
+    )
+
+    result = task.backfill_missing_position_ids(user_id=5)
+
+    assert result["repaired"] == 1
+    assert result["failed"] == 0
+    assert attached == [(6250, [1922], [8200, 8331])]
+
+
 def test_orders_endpoint_scopes_backfill_to_current_user(monkeypatch):
     calls = []
 
