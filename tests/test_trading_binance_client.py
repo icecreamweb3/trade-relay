@@ -3504,7 +3504,7 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "pr.signal_candle_number AS review_signal_candle_number" in sql
     assert "pr.final_exit_reason AS review_final_exit_reason" in sql
     assert "LEFT JOIN position_reviews pr" in sql
-    assert "pr.position_id = f.position_id AND pr.user_id = f.user_id" in sql
+    assert "pr.position_history_final_id = f.id AND pr.user_id = f.user_id" in sql
     assert "f.position_id IS NULL" in sql
     assert "BETWEEN canonical.open_time AND canonical.close_time" in sql
     assert "f.user_id = %s" in sql
@@ -3601,7 +3601,12 @@ def test_bulk_legacy_cleanup_accepts_position_link_inherited_from_close_order():
 
     db_module._delete_linked_legacy_position_finals_cursor(_StubCursor(), 1271)
 
-    sql, params = queries[0]
+    review_sql, review_params = queries[0]
+    assert "UPDATE position_reviews pr" in review_sql
+    assert "pr.position_history_final_id = canonical.id" in review_sql
+    assert review_params == (1271,)
+
+    sql, params = queries[1]
     assert "LEFT JOIN orders o ON o.id = ph.close_order_id" in sql
     assert "canonical.position_id = COALESCE(ph.position_id, o.position_id)" in sql
     assert "COALESCE(ph.position_id, o.position_id) = %s" in sql

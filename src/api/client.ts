@@ -273,7 +273,8 @@ export interface ApiPositionRecord {
 
 export interface ApiPositionReview {
   id: number
-  position_id: number
+  position_id: number | null
+  position_history_final_id?: number | null
   user_id: number
   market_state: 'TREND' | 'RANGE' | 'CLIMAX_REVERSAL' | null
   setup_name: string | null
@@ -668,6 +669,14 @@ export const api = {
 
   async savePositionReview(positionId: number, body: ApiPositionReviewInput): Promise<ApiPositionReview> {
     return request<ApiPositionReview>('PUT', `/api/positions/${positionId}/review`, { body })
+  },
+
+  async getPositionRecordReview(recordId: number): Promise<ApiPositionReview | null> {
+    return request<ApiPositionReview | null>('GET', `/api/positions/records/${recordId}/review`)
+  },
+
+  async savePositionRecordReview(recordId: number, body: ApiPositionReviewInput): Promise<ApiPositionReview> {
+    return request<ApiPositionReview>('PUT', `/api/positions/records/${recordId}/review`, { body })
   },
 
   async getRecentFills(): Promise<ApiTrade[]> {

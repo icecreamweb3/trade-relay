@@ -147,7 +147,7 @@ export function OrderKlineLoadingModal({ symbol, onClose }: { symbol: string; on
   )
 }
 
-export function OrderKlineModal({ position, onClose, onReviewSaved, standalone = false }: { position: PositionWindow; onClose: () => void; onReviewSaved?: (positionId: number) => void; standalone?: boolean }) {
+export function OrderKlineModal({ position, onClose, onReviewSaved, standalone = false }: { position: PositionWindow; onClose: () => void; onReviewSaved?: (recordId: number) => void; standalone?: boolean }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const [interval, setInterval] = useState('5m')
@@ -398,7 +398,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionId != null && <PositionReviewForm positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} onReviewSaved={onReviewSaved} t={t} />}
+        {position.positionRecordId != null && <PositionReviewForm recordId={position.positionRecordId} positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} onReviewSaved={onReviewSaved} t={t} />}
       </section>,
     document.body,
   )
@@ -501,14 +501,15 @@ function formatOpportunityScore(result: OpportunityScoreResult, t: (key: string)
   return `${grade} · ${(result.score ?? 0).toFixed(0)}/100 · RR ${(result.rewardRisk ?? 0).toFixed(2)} · EV ${expectedValue >= 0 ? '+' : ''}${expectedValue.toFixed(2)}R`
 }
 
-function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, onReviewSaved, t }: {
-  positionId: number
+function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, onReviewSaved, t }: {
+  recordId: number
+  positionId?: number
   entryPrice?: number | null
   positionSide: PositionWindow['positionSide']
   plannedStopPrice?: number | null
   signalCandle: SignalCandleSelection | null
   onSignalCandleLoaded: (selection: SignalCandleSelection | null) => void
-  onReviewSaved?: (positionId: number) => void
+  onReviewSaved?: (recordId: number) => void
   t: (key: string, vars?: Record<string, string | number>) => string
 }) {
   const [draft, setDraft] = useState<ReviewDraft>(EMPTY_REVIEW)
@@ -523,7 +524,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
     setDraft({ ...EMPTY_REVIEW, planned_stop_price: authoritativePlannedStop })
     setLoading(true)
     setStatus('idle')
-    api.getPositionReview(positionId).then((review) => {
+    api.getPositionRecordReview(recordId).then((review) => {
       if (!active || !review) return
       const effectivePlannedStop = authoritativePlannedStop || review.planned_stop_price?.toString() || ''
       const savedSignalCandleOpenTime = parseUtcTimestamp(review.signal_candle_open_time)
@@ -562,7 +563,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       if (active) setLoading(false)
     })
     return () => { active = false }
-  }, [plannedStopPrice, positionId])
+  }, [onSignalCandleLoaded, plannedStopPrice, recordId])
 
   useEffect(() => {
     if (!signalCandle) return
@@ -652,9 +653,9 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
       return
     }
     try {
-      await api.savePositionReview(positionId, body)
+      await api.savePositionRecordReview(recordId, body)
       setStatus('saved')
-      onReviewSaved?.(positionId)
+      onReviewSaved?.(recordId)
     } catch {
       setStatus('error')
     } finally {
@@ -669,7 +670,7 @@ function PositionReviewForm({ positionId, entryPrice, positionSide, plannedStopP
   return (
     <section className="max-h-[285px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
       <div className="mb-2 flex items-center justify-between">
-        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold text-[#dce2ea]">{t('review.title')}</h3><span className="text-[10px] text-[#697382]">Position #{positionId}</span></div>
+        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold text-[#dce2ea]">{t('review.title')}</h3><span className="text-[10px] text-[#697382]">{positionId != null ? `Position #${positionId}` : `Record #${recordId}`}</span></div>
         <div className="flex items-center gap-2">
           {loading && <span className="text-[11px] text-[#8f99a8]">{t('review.loading')}</span>}
           {status === 'saved' && <span className="text-[11px] text-[#0ecb81]">{t('review.saved')}</span>}

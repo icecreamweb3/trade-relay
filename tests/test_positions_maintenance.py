@@ -133,6 +133,78 @@ def test_position_review_is_loaded_for_position_owner(monkeypatch):
     assert result.signal_candle_open_time == "2026-09-11T08:50:00Z"
 
 
+def test_legacy_position_record_review_is_loaded_without_position_id(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_record_by_id",
+        lambda record_id: {"id": record_id, "position_id": None, "user_id": 5},
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_record_review",
+        lambda record_id, user_id: {
+            "id": 12,
+            "position_id": None,
+            "position_history_final_id": record_id,
+            "user_id": user_id,
+            "market_state": "RANGE",
+            "created_at": datetime(2026, 9, 15, 8, 0),
+            "updated_at": datetime(2026, 9, 15, 8, 1),
+        },
+    )
+
+    result = positions_router.get_position_record_review(
+        73,
+        {"sub": "5", "username": "Will", "role": "user"},
+    )
+
+    assert result.position_id is None
+    assert result.position_history_final_id == 73
+    assert result.market_state == "RANGE"
+
+
+def test_legacy_position_record_review_can_be_saved_without_initial_risk(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_record_by_id",
+        lambda record_id: {"id": record_id, "position_id": None, "user_id": 5},
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_record_review_scoring_context",
+        lambda record_id, user_id: {
+            "entry_price": 77017.1,
+            "planned_stop_price": None,
+            "side": "SHORT",
+        },
+    )
+    saved = {}
+
+    def upsert(record_id, user_id, values):
+        saved.update(values)
+        return {
+            "id": 13,
+            "position_id": None,
+            "position_history_final_id": record_id,
+            "user_id": user_id,
+            **values,
+            "created_at": datetime(2026, 9, 15, 8, 0),
+            "updated_at": datetime(2026, 9, 15, 8, 1),
+        }
+
+    monkeypatch.setattr(positions_router.db_module, "upsert_position_record_review", upsert)
+
+    result = positions_router.save_position_record_review(
+        73,
+        positions_router.PositionReviewIn(entry_rationale="breakdown"),
+        {"sub": "5", "username": "Will", "role": "user"},
+    )
+
+    assert result.position_history_final_id == 73
+    assert saved["entry_rationale"] == "breakdown"
+    assert saved["planned_reward_risk"] is None
+
+
 def test_position_review_cannot_be_accessed_by_another_user(monkeypatch):
     monkeypatch.setattr(
         positions_router.db_module,

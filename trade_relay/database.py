@@ -1457,6 +1457,20 @@ def _delete_linked_legacy_position_finals_cursor(
     )
     params = (int(position_id),) if position_id is not None else ()
     cur.execute(
+        f"""UPDATE position_reviews pr
+               JOIN position_history_final legacy
+                 ON legacy.id = pr.position_history_final_id
+               JOIN position_history ph ON ph.id = legacy.source_history_id
+               LEFT JOIN orders o ON o.id = ph.close_order_id
+               JOIN position_history_final canonical
+                 ON canonical.position_id = COALESCE(ph.position_id, o.position_id)
+                SET pr.position_id = canonical.position_id,
+                    pr.position_history_final_id = canonical.id
+              WHERE legacy.position_id IS NULL
+                AND COALESCE(ph.position_id, o.position_id) IS NOT NULL{position_filter}""",
+        params,
+    )
+    cur.execute(
         f"""DELETE legacy
                FROM position_history_final legacy
                JOIN position_history ph ON ph.id = legacy.source_history_id
@@ -1744,7 +1758,8 @@ def init_db() -> None:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS position_reviews (
                     id                     BIGINT       NOT NULL AUTO_INCREMENT,
-                    position_id            BIGINT       NOT NULL COMMENT '关联 positions.id',
+                    position_id            BIGINT       DEFAULT NULL COMMENT '关联 positions.id；旧记录可为空',
+                    position_history_final_id BIGINT    DEFAULT NULL COMMENT '关联 position_history_final.id',
                     user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
                     market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
                     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
@@ -1773,6 +1788,7 @@ def init_db() -> None:
                                              ON UPDATE CURRENT_TIMESTAMP(3),
                     PRIMARY KEY (id),
                     UNIQUE KEY uk_position_review (position_id, user_id),
+                    UNIQUE KEY uk_position_review_final (position_history_final_id, user_id),
                     KEY idx_position_reviews_user (user_id, updated_at),
                     CONSTRAINT fk_position_reviews_position FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE,
                     CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
@@ -1793,6 +1809,13 @@ def init_db() -> None:
                     cur.execute(_ddl)
                 except pymysql.err.OperationalError:
                     pass
+            try:
+                cur.execute(
+                    "ALTER TABLE position_reviews MODIFY COLUMN position_id BIGINT DEFAULT NULL "
+                    "COMMENT '关联 positions.id；旧记录可为空'"
+                )
+            except pymysql.err.OperationalError:
+                pass
 
             # ── operation_logs（操作日志）─────────────────────────────────
             cur.execute("""
@@ -1934,9 +1957,29 @@ def init_db() -> None:
                     "ALTER TABLE position_history_final ADD COLUMN open_orders_id LONGTEXT "
                     "COMMENT '周期 OPEN 订单ID，逗号分隔' AFTER net_pnl"
                 )
+            try:
+                cur.execute(
+                    "ALTER TABLE position_reviews ADD COLUMN position_history_final_id BIGINT DEFAULT NULL "
+                    "COMMENT '关联 position_history_final.id' AFTER position_id"
+                )
+            except pymysql.err.OperationalError:
+                pass
+            try:
+                cur.execute(
+                    "ALTER TABLE position_reviews ADD UNIQUE KEY uk_position_review_final "
+                    "(position_history_final_id, user_id)"
+                )
+            except pymysql.err.OperationalError:
+                pass
             _upsert_position_history_final_from_position_cursor(cur)
             _delete_linked_legacy_position_finals_cursor(cur)
             _backfill_unlinked_position_history_final(cur)
+            cur.execute(
+                """UPDATE position_reviews pr
+                     JOIN position_history_final f ON f.position_id = pr.position_id
+                      SET pr.position_history_final_id = f.id
+                    WHERE pr.position_history_final_id IS NULL"""
+            )
             _rebuild_positions_realized_pnl(cur)
 
             cur.execute("""
@@ -4897,6 +4940,20 @@ def get_position_by_id(position_id: int) -> Optional[dict]:
         conn.close()
 
 
+def get_position_record_by_id(record_id: int) -> Optional[dict]:
+    """Return one final position record, including its optional canonical position id."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM position_history_final WHERE id = %s LIMIT 1",
+                (int(record_id),),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def get_position_review(position_id: int, user_id: int) -> Optional[dict]:
     conn = get_connection()
     try:
@@ -4904,6 +4961,29 @@ def get_position_review(position_id: int, user_id: int) -> Optional[dict]:
             cur.execute(
                 "SELECT * FROM position_reviews WHERE position_id = %s AND user_id = %s LIMIT 1",
                 (int(position_id), int(user_id)),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_position_record_review(record_id: int, user_id: int) -> Optional[dict]:
+    """Load a review through its durable final-record id, including migrated reviews."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT pr.*
+                     FROM position_history_final f
+                     JOIN position_reviews pr
+                       ON pr.position_history_final_id = f.id
+                       OR (pr.position_history_final_id IS NULL
+                           AND f.position_id IS NOT NULL
+                           AND pr.position_id = f.position_id)
+                    WHERE f.id = %s AND f.user_id = %s
+                    ORDER BY pr.id DESC
+                    LIMIT 1""",
+                (int(record_id), int(user_id)),
             )
             return cur.fetchone()
     finally:
@@ -4931,17 +5011,41 @@ def get_position_review_scoring_context(position_id: int, user_id: int) -> Optio
         conn.close()
 
 
+def get_position_record_review_scoring_context(record_id: int, user_id: int) -> Optional[dict]:
+    """Return review scoring inputs even when a legacy record has no position row."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT f.id AS position_history_final_id, f.position_id, f.user_id,
+                          COALESCE(f.entry_avg_price, p.avg_entry_price) AS entry_price,
+                          COALESCE(NULLIF(UPPER(f.side), ''), UPPER(p.position_side)) AS side,
+                          COALESCE(p.planned_stop_price, f.planned_stop_price) AS planned_stop_price
+                     FROM position_history_final f
+                     LEFT JOIN positions p ON p.id = f.position_id
+                    WHERE f.id = %s AND f.user_id = %s
+                    LIMIT 1""",
+                (int(record_id), int(user_id)),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+_POSITION_REVIEW_FIELDS = (
+    "market_state", "setup_name", "setup_variant", "entry_rationale", "signal_candle_trigger",
+    "signal_candle_interval", "signal_candle_open_time", "signal_candle_number",
+    "opportunity_grade", "estimated_win_probability", "first_target_price",
+    "planned_reward_risk", "expected_value_r", "opportunity_score",
+    "is_planned_trade", "first_entry_pnl_state",
+    "planned_stop_price", "actual_stop_fill_price", "first_target",
+    "structural_target", "final_exit_reason", "discipline_trigger",
+)
+
+
 def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict:
     """Create or replace the editable review attached to one position cycle."""
-    fields = (
-        "market_state", "setup_name", "setup_variant", "entry_rationale", "signal_candle_trigger",
-        "signal_candle_interval", "signal_candle_open_time", "signal_candle_number",
-        "opportunity_grade", "estimated_win_probability", "first_target_price",
-        "planned_reward_risk", "expected_value_r", "opportunity_score",
-        "is_planned_trade", "first_entry_pnl_state",
-        "planned_stop_price", "actual_stop_fill_price", "first_target",
-        "structural_target", "final_exit_reason", "discipline_trigger",
-    )
+    fields = _POSITION_REVIEW_FIELDS
     payload = {field: values.get(field) for field in fields}
     _log_db_write(
         "upsert", "position_reviews",
@@ -4965,6 +5069,56 @@ def upsert_position_review(position_id: int, user_id: int, values: dict) -> dict
             raise RuntimeError("Position review upsert did not produce a row")
         _log_db_write_result(
             "upsert", "position_reviews", position_id=position_id, user_id=user_id, success=True,
+        )
+        return result
+    finally:
+        conn.close()
+
+
+def upsert_position_record_review(record_id: int, user_id: int, values: dict) -> dict:
+    """Create or replace a review for canonical and legacy final position records."""
+    context = get_position_record_review_scoring_context(record_id, user_id)
+    if context is None:
+        raise ValueError("Position record not found")
+    fields = _POSITION_REVIEW_FIELDS
+    payload = {field: values.get(field) for field in fields}
+    position_id = context.get("position_id")
+    _log_db_write(
+        "upsert", "position_reviews",
+        {
+            "position_id": position_id,
+            "position_history_final_id": record_id,
+            "user_id": user_id,
+            **payload,
+        },
+    )
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            columns = ", ".join(fields)
+            placeholders = ", ".join(["%s"] * len(fields))
+            updates = ", ".join(f"{field} = VALUES({field})" for field in fields)
+            cur.execute(
+                f"""INSERT INTO position_reviews
+                        (position_id, position_history_final_id, user_id, {columns})
+                    VALUES (%s, %s, %s, {placeholders})
+                    ON DUPLICATE KEY UPDATE
+                        position_id = COALESCE(VALUES(position_id), position_id),
+                        position_history_final_id = VALUES(position_history_final_id),
+                        {updates}, updated_at = CURRENT_TIMESTAMP(3)""",
+                (
+                    int(position_id) if position_id is not None else None,
+                    int(record_id),
+                    int(user_id),
+                    *(payload[field] for field in fields),
+                ),
+            )
+            conn.commit()
+        result = get_position_record_review(record_id, user_id)
+        if result is None:
+            raise RuntimeError("Position record review upsert did not produce a row")
+        _log_db_write_result(
+            "upsert", "position_reviews", record_id=record_id, user_id=user_id, success=True,
         )
         return result
     finally:
@@ -5080,7 +5234,7 @@ def query_position_records(
                FROM position_history_final f
                LEFT JOIN positions p ON p.id = f.position_id
                LEFT JOIN position_reviews pr
-                 ON pr.position_id = f.position_id AND pr.user_id = f.user_id
+                 ON pr.position_history_final_id = f.id AND pr.user_id = f.user_id
               WHERE 1 = 1"""
     # A legacy row has no open time.  If its close falls inside a canonical
     # cycle for the same position identity, it is a partial-close shadow, not a

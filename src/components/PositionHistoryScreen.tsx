@@ -404,8 +404,8 @@ export function PositionHistoryScreen() {
     setChartPosition(null)
   }
 
-  const handleReviewSaved = useCallback((positionId: number) => {
-    setRows((current) => current.map((row) => row.position_id === positionId ? { ...row, reviewed: true } : row))
+  const handleReviewSaved = useCallback((recordId: number) => {
+    setRows((current) => current.map((row) => row.id === recordId ? { ...row, reviewed: true } : row))
   }, [])
 
   useEffect(() => window.electronAPI?.onPositionReviewSaved?.(handleReviewSaved), [handleReviewSaved])

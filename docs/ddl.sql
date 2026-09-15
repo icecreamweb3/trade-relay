@@ -116,7 +116,8 @@ CREATE TABLE positions (
 -- 逐笔交易复盘：每个用户的每个持仓周期最多一条，可重复保存更新。
 CREATE TABLE IF NOT EXISTS position_reviews (
     id                     BIGINT       NOT NULL AUTO_INCREMENT,
-    position_id            BIGINT       NOT NULL COMMENT '关联 positions.id',
+    position_id            BIGINT       DEFAULT NULL COMMENT '关联 positions.id；旧记录可为空',
+    position_history_final_id BIGINT    DEFAULT NULL COMMENT '关联 position_history_final.id',
     user_id                BIGINT       NOT NULL COMMENT '持仓所属用户',
     market_state           VARCHAR(32)  DEFAULT NULL COMMENT '市场状态',
     setup_name             VARCHAR(255) DEFAULT NULL COMMENT 'Setup 名称',
@@ -144,6 +145,7 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     UNIQUE KEY uk_position_review (position_id, user_id),
+    UNIQUE KEY uk_position_review_final (position_history_final_id, user_id),
     KEY idx_position_reviews_user (user_id, updated_at),
     CONSTRAINT fk_position_reviews_position FOREIGN KEY (position_id) REFERENCES positions (id) ON DELETE CASCADE,
     CONSTRAINT fk_position_reviews_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
@@ -151,6 +153,13 @@ CREATE TABLE IF NOT EXISTS position_reviews (
 
 ALTER TABLE position_reviews
     ADD COLUMN IF NOT EXISTS setup_variant VARCHAR(64) DEFAULT NULL COMMENT 'Setup 情景分支' AFTER setup_name;
+
+ALTER TABLE position_reviews
+    MODIFY COLUMN position_id BIGINT DEFAULT NULL COMMENT '关联 positions.id；旧记录可为空',
+    ADD COLUMN IF NOT EXISTS position_history_final_id BIGINT DEFAULT NULL COMMENT '关联 position_history_final.id' AFTER position_id;
+
+ALTER TABLE position_reviews
+    ADD UNIQUE KEY uk_position_review_final (position_history_final_id, user_id);
 
 ALTER TABLE position_reviews
     ADD COLUMN IF NOT EXISTS signal_candle_interval VARCHAR(8) DEFAULT NULL COMMENT '信号 K 周期' AFTER signal_candle_trigger,

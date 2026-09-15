@@ -147,7 +147,8 @@ class PositionReviewIn(BaseModel):
 class PositionReviewOut(PositionReviewIn):
     signal_candle_open_time: Optional[str] = None
     id: int
-    position_id: int
+    position_id: Optional[int] = None
+    position_history_final_id: Optional[int] = None
     user_id: int
     created_at: str
     updated_at: str
@@ -1122,10 +1123,24 @@ def _review_owner(position_id: int, user: dict) -> int:
     return owner_id
 
 
+def _position_record_review_owner(record_id: int, user: dict) -> int:
+    record = db_module.get_position_record_by_id(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Position record not found")
+    owner_id = int(record["user_id"])
+    if user.get("role") != "admin" and owner_id != int(user["sub"]):
+        raise HTTPException(status_code=403, detail="Cannot access another user's position review")
+    return owner_id
+
+
 def _position_review_out(row: dict) -> PositionReviewOut:
     return PositionReviewOut(
         id=int(row["id"]),
-        position_id=int(row["position_id"]),
+        position_id=int(row["position_id"]) if row.get("position_id") is not None else None,
+        position_history_final_id=(
+            int(row["position_history_final_id"])
+            if row.get("position_history_final_id") is not None else None
+        ),
         user_id=int(row["user_id"]),
         market_state=row.get("market_state"),
         setup_name=row.get("setup_name"),
@@ -1152,6 +1167,39 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         created_at=serialize_utc_timestamp_required(row.get("created_at")),
         updated_at=serialize_utc_timestamp_required(row.get("updated_at")),
     )
+
+
+@router.get("/records/{record_id}/review", response_model=Optional[PositionReviewOut])
+def get_position_record_review(record_id: int, user: dict = Depends(get_current_user)):
+    owner_id = _position_record_review_owner(record_id, user)
+    row = db_module.get_position_record_review(record_id, owner_id)
+    return _position_review_out(row) if row is not None else None
+
+
+@router.put("/records/{record_id}/review", response_model=PositionReviewOut)
+def save_position_record_review(
+    record_id: int,
+    body: PositionReviewIn,
+    user: dict = Depends(get_current_user),
+):
+    owner_id = _position_record_review_owner(record_id, user)
+    values = body.model_dump()
+    for field, value in values.items():
+        if isinstance(value, str):
+            values[field] = value.strip() or None
+    context = db_module.get_position_record_review_scoring_context(record_id, owner_id) or {}
+    authoritative_stop = context.get("planned_stop_price")
+    if authoritative_stop is not None:
+        values["planned_stop_price"] = float(authoritative_stop)
+    values.update(_calculate_opportunity_score(
+        float(context["entry_price"]) if context.get("entry_price") is not None else None,
+        values["planned_stop_price"],
+        values.get("first_target_price"),
+        values.get("estimated_win_probability"),
+        str(context.get("side") or ""),
+    ))
+    row = db_module.upsert_position_record_review(record_id, owner_id, values)
+    return _position_review_out(row)
 
 
 @router.get("/{position_id}/review", response_model=Optional[PositionReviewOut])

@@ -26,8 +26,8 @@ interface ElectronAPI {
   openOrderKlineWindow?: (payload: import('../utils/orderChart').PositionWindow) => Promise<{ ok: boolean }>
   getOrderKlinePayload?: () => Promise<import('../utils/orderChart').PositionWindow | null>
   closeOrderKlineWindow?: () => Promise<void>
-  notifyPositionReviewSaved?: (positionId: number) => Promise<{ ok: boolean }>
-  onPositionReviewSaved?: (callback: (positionId: number) => void) => () => void
+  notifyPositionReviewSaved?: (recordId: number) => Promise<{ ok: boolean }>
+  onPositionReviewSaved?: (callback: (recordId: number) => void) => () => void
   onOrderKlinePayload?: (callback: (payload: import('../utils/orderChart').PositionWindow) => void) => () => void
 
   // Binance

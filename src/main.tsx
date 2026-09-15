@@ -32,7 +32,7 @@ function OrderKlineWindowApp() {
       position={position}
       standalone
       onClose={() => void window.electronAPI?.closeOrderKlineWindow?.()}
-      onReviewSaved={(positionId) => void window.electronAPI?.notifyPositionReviewSaved?.(positionId)}
+      onReviewSaved={(recordId) => void window.electronAPI?.notifyPositionReviewSaved?.(recordId)}
     />
   )
 }
