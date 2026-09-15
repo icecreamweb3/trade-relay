@@ -1,6 +1,6 @@
 //@version=6
 indicator(
-     "美国早盘区间 21:30–23:00",
+     "美股早盘区间 09:30–11:00 ET",
      shorttitle = "US Opening Range",
      overlay = true,
      max_lines_count = 300,
@@ -15,23 +15,23 @@ indicator(
 //
 // 显示规则：
 //   1. 为屏幕内每个交易日绘制独立的水平区间，不连接相邻两天。
-//   2. 21:30–23:00 使用该时段最终 ORH/ORL 绘制完整矩形。
-//   3. 23:00 后把水平区间延续到下一个早盘区间开始。
+//   2. 纽约时间 09:30–11:00 使用该时段最终 ORH/ORL 绘制完整矩形。
+//   3. 11:00 ET 后把水平区间延续到下一个美股早盘区间开始。
 //   4. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
 
 string GROUP_SESSION = "早盘区间"
 string GROUP_DISPLAY = "显示设置"
 
 string sessionInput = input.session(
-     "2130-2300",
-     "统计时段（北京时间）",
+     "0930-1100",
+     "统计时段（纽约时间）",
      group = GROUP_SESSION
 )
 
 string activeDays = input.string(
-     "1234567",
+     "23456",
      "有效星期",
-     tooltip = "1=周日，2=周一，…，7=周六；仅显示美股交易日可改为 23456",
+     tooltip = "1=周日，2=周一，…，7=周六；默认周一至周五。若用于全天候市场可改为 1234567",
      group = GROUP_SESSION
 )
 
@@ -59,11 +59,11 @@ bool showLabels = input.bool(
      group = GROUP_DISPLAY
 )
 
-// 固定使用北京时间，不受图表时区和交易所时区影响。
-// 如需随美国夏令时自动切换：
-//   1. 将时区改为 "America/New_York"；
-//   2. 将默认统计时段改为 "0930-1100"。
-string SESSION_TIMEZONE = "Asia/Shanghai"
+// 使用纽约交易所当地时间，TradingView 会自动处理 EDT/EST 切换：
+//   - 美国夏令时对应北京时间 21:30–23:00；
+//   - 美国冬令时对应北京时间 22:30–次日 00:00。
+// 此设置不受图表显示时区和品种交易所时区影响。
+string SESSION_TIMEZONE = "America/New_York"
 string sessionSpec = sessionInput + ":" + activeDays
 
 bool inOpeningRange = not na(
@@ -113,7 +113,7 @@ if barstate.islast
     int firstVisibleIndex = na
     int lastVisibleIndex = na
 
-    // 一个区间从当天 21:30 生效，到下一次 21:30 之前结束。
+    // 一个区间从当天 09:30 ET 生效，到下一次 09:30 ET 之前结束。
     // 这样跨日时是两段独立横线，不会产生连接高低点的竖线。
     if storedCount > 0
         for index = 0 to storedCount - 1
