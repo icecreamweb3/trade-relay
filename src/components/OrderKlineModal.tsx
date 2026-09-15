@@ -81,7 +81,7 @@ const KLINE_CACHE_TTL = 5 * 60_000
 const klineCache = new Map<string, { expiresAt: number; data: ApiKline[] }>()
 const BEIJING_OFFSET_MS = 8 * 60 * 60_000
 const US_OPENING_RANGE_START_MINUTE = 21 * 60 + 30
-const US_OPENING_RANGE_DURATION_MS = 30 * 60_000
+const US_OPENING_RANGE_DURATION_MS = 90 * 60_000
 const BEIJING_EVENING_SESSION_END_MINUTE = 6 * 60
 
 interface OpeningRange {
@@ -97,7 +97,7 @@ interface SignalCandleSelection {
   number: number
 }
 
-/** Most recent Beijing-time [21:30, 22:00) window at the position entry. */
+/** Most recent Beijing-time [21:30, 23:00) window at the position entry. */
 export function buildBeijingUsOpeningRangeWindow(referenceTime: number): { start: number; end: number } {
   const beijingDate = new Date(referenceTime + BEIJING_OFFSET_MS)
   const beijingDayStartAsUtc = Date.UTC(
