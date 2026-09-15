@@ -1,0 +1,360 @@
+//@version=6
+indicator(
+     "美国早盘区间 21:30–23:00",
+     shorttitle = "US Opening Range",
+     overlay = true,
+     max_lines_count = 300,
+     max_boxes_count = 300,
+     max_labels_count = 20
+)
+
+// 与 Trade Relay K 线窗口保持一致：
+//   TR = 早盘区间高度（ORH - ORL），不是 Pine 内置的 True Range。
+//   上方目标 = ORH + 1×/2×TR。
+//   下方目标 = ORL - 1×/2×TR。
+//
+// 显示规则：
+//   1. 为屏幕内每个交易日绘制独立的水平区间，不连接相邻两天。
+//   2. 21:30–23:00 使用该时段最终 ORH/ORL 绘制完整矩形。
+//   3. 23:00 后把水平区间延续到下一个早盘区间开始。
+//   4. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
+
+string GROUP_SESSION = "早盘区间"
+string GROUP_DISPLAY = "显示设置"
+
+string sessionInput = input.session(
+     "2130-2300",
+     "统计时段（北京时间）",
+     group = GROUP_SESSION
+)
+
+string activeDays = input.string(
+     "1234567",
+     "有效星期",
+     tooltip = "1=周日，2=周一，…，7=周六；仅显示美股交易日可改为 23456",
+     group = GROUP_SESSION
+)
+
+bool showOpeningRange = input.bool(
+     true,
+     "显示早盘高低点",
+     group = GROUP_DISPLAY
+)
+
+bool showUpperTargets = input.bool(
+     false,
+     "显示上方 1×/2× TR",
+     group = GROUP_DISPLAY
+)
+
+bool showLowerTargets = input.bool(
+     false,
+     "显示下方 1×/2× TR",
+     group = GROUP_DISPLAY
+)
+
+bool showLabels = input.bool(
+     true,
+     "显示最新区间价格标签",
+     group = GROUP_DISPLAY
+)
+
+// 固定使用北京时间，不受图表时区和交易所时区影响。
+// 如需随美国夏令时自动切换：
+//   1. 将时区改为 "America/New_York"；
+//   2. 将默认统计时段改为 "0930-1100"。
+string SESSION_TIMEZONE = "Asia/Shanghai"
+string sessionSpec = sessionInput + ":" + activeDays
+
+bool inOpeningRange = not na(
+     time(timeframe.period, sessionSpec, SESSION_TIMEZONE)
+)
+bool openingRangeStarted = inOpeningRange and not inOpeningRange[1]
+
+// 保存最近一段历史中的每日早盘区间。
+var array<int> sessionStarts = array.new<int>()
+var array<int> sessionEnds = array.new<int>()
+var array<float> sessionHighs = array.new<float>()
+var array<float> sessionLows = array.new<float>()
+int maxStoredSessions = 500
+int maxVisibleSessions = 20
+
+if openingRangeStarted
+    array.push(sessionStarts, time)
+    array.push(sessionEnds, time_close)
+    array.push(sessionHighs, high)
+    array.push(sessionLows, low)
+
+    if array.size(sessionStarts) > maxStoredSessions
+        array.shift(sessionStarts)
+        array.shift(sessionEnds)
+        array.shift(sessionHighs)
+        array.shift(sessionLows)
+else if inOpeningRange and array.size(sessionStarts) > 0
+    int lastIndex = array.size(sessionStarts) - 1
+    array.set(sessionEnds, lastIndex, time_close)
+    array.set(sessionHighs, lastIndex, math.max(array.get(sessionHighs, lastIndex), high))
+    array.set(sessionLows, lastIndex, math.min(array.get(sessionLows, lastIndex), low))
+
+// 每次缩放或左右拖动图表后，删除旧对象并按当前视口重画。
+var array<line> drawnLines = array.new<line>()
+var array<box> drawnBoxes = array.new<box>()
+var array<label> drawnLabels = array.new<label>()
+
+if barstate.islast
+    while array.size(drawnLines) > 0
+        line.delete(array.pop(drawnLines))
+    while array.size(drawnBoxes) > 0
+        box.delete(array.pop(drawnBoxes))
+    while array.size(drawnLabels) > 0
+        label.delete(array.pop(drawnLabels))
+
+    int storedCount = array.size(sessionStarts)
+    int firstVisibleIndex = na
+    int lastVisibleIndex = na
+
+    // 一个区间从当天 21:30 生效，到下一次 21:30 之前结束。
+    // 这样跨日时是两段独立横线，不会产生连接高低点的竖线。
+    if storedCount > 0
+        for index = 0 to storedCount - 1
+            int candidateStart = array.get(sessionStarts, index)
+            int candidateRight = index + 1 < storedCount
+                 ? array.get(sessionStarts, index + 1)
+                 : chart.right_visible_bar_time
+            bool overlapsViewport = candidateStart <= chart.right_visible_bar_time
+                 and candidateRight >= chart.left_visible_bar_time
+            if overlapsViewport
+                if na(firstVisibleIndex)
+                    firstVisibleIndex := index
+                lastVisibleIndex := index
+
+    if not na(firstVisibleIndex) and not na(lastVisibleIndex)
+        firstVisibleIndex := math.max(firstVisibleIndex, lastVisibleIndex - maxVisibleSessions + 1)
+
+        for index = firstVisibleIndex to lastVisibleIndex
+            int selectedStart = array.get(sessionStarts, index)
+            int selectedEnd = array.get(sessionEnds, index)
+            int nextSessionStart = index + 1 < storedCount
+                 ? array.get(sessionStarts, index + 1)
+                 : chart.right_visible_bar_time
+            int segmentRight = math.min(nextSessionStart, chart.right_visible_bar_time)
+            float selectedHigh = array.get(sessionHighs, index)
+            float selectedLow = array.get(sessionLows, index)
+            float rangeHeight = selectedHigh - selectedLow
+            bool hasHorizontalSpace = segmentRight > selectedStart
+            bool canExtend = segmentRight > selectedEnd and rangeHeight > 0
+            bool isLatestVisible = index == lastVisibleIndex
+
+            color rangeColor = color.rgb(245, 158, 11)
+            color upperColor = color.rgb(239, 107, 127)
+            color lowerColor = color.rgb(75, 155, 216)
+
+            if showOpeningRange and hasHorizontalSpace
+                // 完整早盘矩形使用最终高低点，不随盘中高点形成阶梯或曲线。
+                box openingBox = box.new(
+                     left = selectedStart,
+                     top = selectedHigh,
+                     right = selectedEnd,
+                     bottom = selectedLow,
+                     xloc = xloc.bar_time,
+                     border_color = rangeColor,
+                     border_width = 1,
+                     bgcolor = color.new(rangeColor, 82)
+                )
+                array.push(drawnBoxes, openingBox)
+
+                if canExtend
+                    box continuationBox = box.new(
+                         left = selectedEnd,
+                         top = selectedHigh,
+                         right = segmentRight,
+                         bottom = selectedLow,
+                         xloc = xloc.bar_time,
+                         border_color = na,
+                         bgcolor = color.new(rangeColor, 95)
+                    )
+                    array.push(drawnBoxes, continuationBox)
+
+                // 每天使用独立 line 对象，所以新旧区间之间不会出现竖向连接。
+                line highLine = line.new(
+                     x1 = selectedStart,
+                     y1 = selectedHigh,
+                     x2 = segmentRight,
+                     y2 = selectedHigh,
+                     xloc = xloc.bar_time,
+                     color = rangeColor,
+                     width = 1
+                )
+                line lowLine = line.new(
+                     x1 = selectedStart,
+                     y1 = selectedLow,
+                     x2 = segmentRight,
+                     y2 = selectedLow,
+                     xloc = xloc.bar_time,
+                     color = rangeColor,
+                     width = 1
+                )
+                array.push(drawnLines, highLine)
+                array.push(drawnLines, lowLine)
+
+                if showLabels and isLatestVisible
+                    label highLabel = label.new(
+                         x = segmentRight,
+                         y = selectedHigh,
+                         text = "ORH  " + str.tostring(selectedHigh, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = rangeColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    label lowLabel = label.new(
+                         x = segmentRight,
+                         y = selectedLow,
+                         text = "ORL  " + str.tostring(selectedLow, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = rangeColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    array.push(drawnLabels, highLabel)
+                    array.push(drawnLabels, lowLabel)
+
+            if showUpperTargets and canExtend
+                float upper1 = selectedHigh + rangeHeight
+                float upper2 = selectedHigh + rangeHeight * 2.0
+
+                box upperBand1 = box.new(
+                     left = selectedEnd,
+                     top = upper1,
+                     right = segmentRight,
+                     bottom = selectedHigh,
+                     xloc = xloc.bar_time,
+                     border_color = na,
+                     bgcolor = color.new(upperColor, 95)
+                )
+                box upperBand2 = box.new(
+                     left = selectedEnd,
+                     top = upper2,
+                     right = segmentRight,
+                     bottom = upper1,
+                     xloc = xloc.bar_time,
+                     border_color = na,
+                     bgcolor = color.new(upperColor, 97)
+                )
+                line upperLine1 = line.new(
+                     x1 = selectedEnd,
+                     y1 = upper1,
+                     x2 = segmentRight,
+                     y2 = upper1,
+                     xloc = xloc.bar_time,
+                     color = upperColor,
+                     style = line.style_dashed
+                )
+                line upperLine2 = line.new(
+                     x1 = selectedEnd,
+                     y1 = upper2,
+                     x2 = segmentRight,
+                     y2 = upper2,
+                     xloc = xloc.bar_time,
+                     color = upperColor,
+                     style = line.style_dashed
+                )
+                array.push(drawnBoxes, upperBand1)
+                array.push(drawnBoxes, upperBand2)
+                array.push(drawnLines, upperLine1)
+                array.push(drawnLines, upperLine2)
+
+                if showLabels and isLatestVisible
+                    label upperLabel1 = label.new(
+                         x = segmentRight,
+                         y = upper1,
+                         text = "+1×TR  " + str.tostring(upper1, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = upperColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    label upperLabel2 = label.new(
+                         x = segmentRight,
+                         y = upper2,
+                         text = "+2×TR  " + str.tostring(upper2, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = upperColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    array.push(drawnLabels, upperLabel1)
+                    array.push(drawnLabels, upperLabel2)
+
+            if showLowerTargets and canExtend
+                float lower1 = selectedLow - rangeHeight
+                float lower2 = selectedLow - rangeHeight * 2.0
+
+                box lowerBand1 = box.new(
+                     left = selectedEnd,
+                     top = selectedLow,
+                     right = segmentRight,
+                     bottom = lower1,
+                     xloc = xloc.bar_time,
+                     border_color = na,
+                     bgcolor = color.new(lowerColor, 95)
+                )
+                box lowerBand2 = box.new(
+                     left = selectedEnd,
+                     top = lower1,
+                     right = segmentRight,
+                     bottom = lower2,
+                     xloc = xloc.bar_time,
+                     border_color = na,
+                     bgcolor = color.new(lowerColor, 97)
+                )
+                line lowerLine1 = line.new(
+                     x1 = selectedEnd,
+                     y1 = lower1,
+                     x2 = segmentRight,
+                     y2 = lower1,
+                     xloc = xloc.bar_time,
+                     color = lowerColor,
+                     style = line.style_dashed
+                )
+                line lowerLine2 = line.new(
+                     x1 = selectedEnd,
+                     y1 = lower2,
+                     x2 = segmentRight,
+                     y2 = lower2,
+                     xloc = xloc.bar_time,
+                     color = lowerColor,
+                     style = line.style_dashed
+                )
+                array.push(drawnBoxes, lowerBand1)
+                array.push(drawnBoxes, lowerBand2)
+                array.push(drawnLines, lowerLine1)
+                array.push(drawnLines, lowerLine2)
+
+                if showLabels and isLatestVisible
+                    label lowerLabel1 = label.new(
+                         x = segmentRight,
+                         y = lower1,
+                         text = "-1×TR  " + str.tostring(lower1, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = lowerColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    label lowerLabel2 = label.new(
+                         x = segmentRight,
+                         y = lower2,
+                         text = "-2×TR  " + str.tostring(lower2, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_label_left,
+                         color = lowerColor,
+                         textcolor = color.white,
+                         size = size.tiny
+                    )
+                    array.push(drawnLabels, lowerLabel1)
+                    array.push(drawnLabels, lowerLabel2)
