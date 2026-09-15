@@ -5,7 +5,7 @@ indicator(
      overlay = true,
      max_lines_count = 300,
      max_boxes_count = 300,
-     max_labels_count = 20
+     max_labels_count = 100
 )
 
 // 与 Trade Relay K 线窗口保持一致：
@@ -17,8 +17,10 @@ indicator(
 //   1. 默认只绘制纽约当地今日的区间；可在设置中切换为全部交易日。
 //      每个交易日使用独立的水平区间，不连接相邻两天。
 //   2. 纽约时间 09:30–11:00 使用该时段最终 ORH/ORL 绘制完整矩形。
-//   3. 11:00 ET 后把水平区间延续到下一个美股早盘区间开始。
-//   4. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
+//   3. 区间从美盘早盘开始延续到北京时间次日 12:00。
+//   4. 在 ORH 上边界下方显示 ORH - ORL 的区间振幅。
+//   5. 在其下方显示美盘开盘当日北京时间 08:00 至当前（最晚次日 12:00）的今日振幅。
+//   6. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
 
 string GROUP_SESSION = "早盘区间"
 string GROUP_DISPLAY = "显示设置"
@@ -67,26 +69,90 @@ bool showLabels = input.bool(
      group = GROUP_DISPLAY
 )
 
+bool showRangeDifference = input.bool(
+     true,
+     "显示区间振幅",
+     tooltip = "在 ORH 上边界下方显示 ORH - ORL 的区间振幅。",
+     group = GROUP_DISPLAY
+)
+
+bool showMorningDifference = input.bool(
+     true,
+     "显示今日振幅",
+     tooltip = "显示美盘开盘当日北京时间 08:00 至当前的最高价与最低价差值，统计最晚到次日 12:00。",
+     group = GROUP_DISPLAY
+)
+
 // 使用纽约交易所当地时间，TradingView 会自动处理 EDT/EST 切换：
 //   - 美国夏令时对应北京时间 21:30–23:00；
 //   - 美国冬令时对应北京时间 22:30–次日 00:00。
 // 此设置不受图表显示时区和品种交易所时区影响。
 string SESSION_TIMEZONE = "America/New_York"
+string DISPLAY_END_TIMEZONE = "Asia/Shanghai"
 string sessionSpec = sessionInput + ":" + activeDays
 int todaySessionDate = year(timenow, SESSION_TIMEZONE) * 10000
      + month(timenow, SESSION_TIMEZONE) * 100
      + dayofmonth(timenow, SESSION_TIMEZONE)
+
+// 每个美盘区间固定显示到其北京时间日期的次日 12:00。
+sessionDisplayEnd(int sessionStart) =>
+    timestamp(
+         DISPLAY_END_TIMEZONE,
+         year(sessionStart, DISPLAY_END_TIMEZONE),
+         month(sessionStart, DISPLAY_END_TIMEZONE),
+         dayofmonth(sessionStart, DISPLAY_END_TIMEZONE) + 1,
+         12,
+         0
+    )
+
+// 区块开始日期当天的北京时间 08:00，是高低差统计的起点。
+sessionMorningStart(int sessionStart) =>
+    timestamp(
+         DISPLAY_END_TIMEZONE,
+         year(sessionStart, DISPLAY_END_TIMEZONE),
+         month(sessionStart, DISPLAY_END_TIMEZONE),
+         dayofmonth(sessionStart, DISPLAY_END_TIMEZONE),
+         8,
+         0
+    )
 
 bool inOpeningRange = not na(
      time(timeframe.period, sessionSpec, SESSION_TIMEZONE)
 )
 bool openingRangeStarted = inOpeningRange and not inOpeningRange[1]
 
+// 独立累计北京时间每日 08:00 起的高低点，使美盘区块在 21:30/22:30
+// 创建时能够带入当天 08:00 至开盘前已经形成的行情范围。
+int currentBeijingEight = timestamp(
+     DISPLAY_END_TIMEZONE,
+     year(time, DISPLAY_END_TIMEZONE),
+     month(time, DISPLAY_END_TIMEZONE),
+     dayofmonth(time, DISPLAY_END_TIMEZONE),
+     8,
+     0
+)
+int activeMeasurementStart = time >= currentBeijingEight
+     ? currentBeijingEight
+     : currentBeijingEight - 24 * 60 * 60 * 1000
+var int trackedMeasurementStart = na
+var float trackedMeasurementHigh = na
+var float trackedMeasurementLow = na
+
+if na(trackedMeasurementStart) or activeMeasurementStart != trackedMeasurementStart
+    trackedMeasurementStart := activeMeasurementStart
+    trackedMeasurementHigh := high
+    trackedMeasurementLow := low
+else
+    trackedMeasurementHigh := math.max(trackedMeasurementHigh, high)
+    trackedMeasurementLow := math.min(trackedMeasurementLow, low)
+
 // 保存最近一段历史中的每日早盘区间。
 var array<int> sessionStarts = array.new<int>()
 var array<int> sessionEnds = array.new<int>()
 var array<float> sessionHighs = array.new<float>()
 var array<float> sessionLows = array.new<float>()
+var array<float> sessionMorningHighs = array.new<float>()
+var array<float> sessionMorningLows = array.new<float>()
 int maxStoredSessions = 500
 int maxVisibleSessions = 20
 
@@ -95,17 +161,43 @@ if openingRangeStarted
     array.push(sessionEnds, time_close)
     array.push(sessionHighs, high)
     array.push(sessionLows, low)
+    array.push(sessionMorningHighs, trackedMeasurementHigh)
+    array.push(sessionMorningLows, trackedMeasurementLow)
 
     if array.size(sessionStarts) > maxStoredSessions
         array.shift(sessionStarts)
         array.shift(sessionEnds)
         array.shift(sessionHighs)
         array.shift(sessionLows)
+        array.shift(sessionMorningHighs)
+        array.shift(sessionMorningLows)
 else if inOpeningRange and array.size(sessionStarts) > 0
     int lastIndex = array.size(sessionStarts) - 1
     array.set(sessionEnds, lastIndex, time_close)
     array.set(sessionHighs, lastIndex, math.max(array.get(sessionHighs, lastIndex), high))
     array.set(sessionLows, lastIndex, math.min(array.get(sessionLows, lastIndex), low))
+
+// 美盘区块创建后，继续累计至北京时间次日 12:00。
+// 初始值已经包含美盘开盘当日 08:00 至开盘时刻的行情。
+if array.size(sessionStarts) > 0
+    int latestSessionIndex = array.size(sessionStarts) - 1
+    int latestSessionStart = array.get(sessionStarts, latestSessionIndex)
+    int latestMorningStart = sessionMorningStart(latestSessionStart)
+    int latestDisplayEnd = sessionDisplayEnd(latestSessionStart)
+    bool inMorningMeasurement = time >= latestMorningStart and time < latestDisplayEnd
+    if inMorningMeasurement
+        float storedMorningHigh = array.get(sessionMorningHighs, latestSessionIndex)
+        float storedMorningLow = array.get(sessionMorningLows, latestSessionIndex)
+        array.set(
+             sessionMorningHighs,
+             latestSessionIndex,
+             na(storedMorningHigh) ? high : math.max(storedMorningHigh, high)
+        )
+        array.set(
+             sessionMorningLows,
+             latestSessionIndex,
+             na(storedMorningLow) ? low : math.min(storedMorningLow, low)
+        )
 
 // 每次缩放或左右拖动图表后，删除旧对象并按当前视口重画。
 var array<line> drawnLines = array.new<line>()
@@ -124,14 +216,12 @@ if barstate.islast
     int firstVisibleIndex = na
     int lastVisibleIndex = na
 
-    // 一个区间从当天 09:30 ET 生效，到下一次 09:30 ET 之前结束。
+    // 一个区间从当天 09:30 ET 生效，到北京时间次日 12:00 结束。
     // 这样跨日时是两段独立横线，不会产生连接高低点的竖线。
     if storedCount > 0
         for index = 0 to storedCount - 1
             int candidateStart = array.get(sessionStarts, index)
-            int candidateRight = index + 1 < storedCount
-                 ? array.get(sessionStarts, index + 1)
-                 : chart.right_visible_bar_time
+            int candidateRight = sessionDisplayEnd(candidateStart)
             int candidateSessionDate = year(candidateStart, SESSION_TIMEZONE) * 10000
                  + month(candidateStart, SESSION_TIMEZONE) * 100
                  + dayofmonth(candidateStart, SESSION_TIMEZONE)
@@ -150,18 +240,21 @@ if barstate.islast
         for index = firstVisibleIndex to lastVisibleIndex
             int selectedStart = array.get(sessionStarts, index)
             int selectedEnd = array.get(sessionEnds, index)
-            int nextSessionStart = index + 1 < storedCount
-                 ? array.get(sessionStarts, index + 1)
-                 : chart.right_visible_bar_time
-            int segmentRight = math.min(nextSessionStart, chart.right_visible_bar_time)
+            int selectedDisplayEnd = sessionDisplayEnd(selectedStart)
+            int segmentRight = math.min(selectedDisplayEnd, chart.right_visible_bar_time)
             float selectedHigh = array.get(sessionHighs, index)
             float selectedLow = array.get(sessionLows, index)
             float rangeHeight = selectedHigh - selectedLow
+            float selectedMorningHigh = array.get(sessionMorningHighs, index)
+            float selectedMorningLow = array.get(sessionMorningLows, index)
+            float morningRangeHeight = selectedMorningHigh - selectedMorningLow
             bool hasHorizontalSpace = segmentRight > selectedStart
             bool canExtend = segmentRight > selectedEnd and rangeHeight > 0
             bool isLatestVisible = index == lastVisibleIndex
             int visibleLineLeft = math.max(selectedStart, chart.left_visible_bar_time)
             int mainLabelX = visibleLineLeft + int(math.round((segmentRight - visibleLineLeft) / 2.0))
+            float rangeLabelY = selectedHigh - rangeHeight * 0.03
+            float morningRangeLabelY = selectedHigh - rangeHeight * 0.06
             int visibleExtensionLeft = math.max(selectedEnd, chart.left_visible_bar_time)
             int extensionLabelX = visibleExtensionLeft + int(math.round((segmentRight - visibleExtensionLeft) / 2.0))
 
@@ -216,6 +309,32 @@ if barstate.islast
                 )
                 array.push(drawnLines, highLine)
                 array.push(drawnLines, lowLine)
+
+                if showRangeDifference and rangeHeight > 0
+                    label rangeDifferenceLabel = label.new(
+                         x = mainLabelX,
+                         y = rangeLabelY,
+                         text = "区间振幅：" + str.tostring(rangeHeight, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_none,
+                         textcolor = color.white,
+                         textalign = text.align_center,
+                         size = size.small
+                    )
+                    array.push(drawnLabels, rangeDifferenceLabel)
+
+                if showMorningDifference and not na(morningRangeHeight)
+                    label morningDifferenceLabel = label.new(
+                         x = mainLabelX,
+                         y = morningRangeLabelY,
+                         text = "今日振幅：" + str.tostring(morningRangeHeight, format.mintick),
+                         xloc = xloc.bar_time,
+                         style = label.style_none,
+                         textcolor = color.white,
+                         textalign = text.align_center,
+                         size = size.small
+                    )
+                    array.push(drawnLabels, morningDifferenceLabel)
 
                 if showLabels and isLatestVisible
                     label highLabel = label.new(
