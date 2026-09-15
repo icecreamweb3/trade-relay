@@ -7,6 +7,8 @@ import { Locale, useTranslation } from '../i18n/translations'
 import { formatUtcTimestampToUtc8String, parseUtcTimestamp } from '../utils/datetime'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { getUtc8PresetRange, utc8InputToUtcDatabase, type TimeRangePreset } from '../utils/timeRange'
+import { findPositionWindow, type PositionWindow } from '../utils/orderChart'
+import { OrderKlineLoadingModal, OrderKlineModal } from './OrderKlineModal'
 
 interface Order {
   id: number; symbol: string; side: string; order_type: string
@@ -53,6 +55,13 @@ const INITIAL_FILTERS: OrderFilters = {
 
 const STATUS_OPTIONS = ['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED', 'ERROR', 'MOCK', 'PENDING'] as const
 
+function isFilledOpeningOrder(order: Order): boolean {
+  return String(order.trade_direction).toUpperCase() === 'OPEN'
+    && String(order.status).toUpperCase() === 'FILLED'
+    && Number(order.filled_qty ?? 0) > 0
+    && Number(order.avg_price) > 0
+}
+
 export function OrderLogScreen() {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
@@ -67,6 +76,10 @@ export function OrderLogScreen() {
   const [reconciling, setReconciling] = useState(false)
   const [backfillingPositionIds, setBackfillingPositionIds] = useState(false)
   const [reconcileDialog, setReconcileDialog] = useState<{ result?: ApiOrderReconcileResult; error?: string } | null>(null)
+  const [chartPosition, setChartPosition] = useState<PositionWindow | null>(null)
+  const [chartLoadingOrderId, setChartLoadingOrderId] = useState<number | null>(null)
+  const [chartPendingOrder, setChartPendingOrder] = useState<Order | null>(null)
+  const chartRequestRef = useRef(0)
   const { user } = useAuthStore()
 
   const load = async (nextFilters: OrderFilters = filters) => {
@@ -250,6 +263,56 @@ export function OrderLogScreen() {
     }
   }
 
+  const handleOrderDoubleClick = async (order: Order) => {
+    if (String(order.trade_direction).toUpperCase() !== 'OPEN') return
+    if (!isFilledOpeningOrder(order)) {
+      showToast('info', t('log.chart.notFilled'))
+      return
+    }
+    if (chartLoadingOrderId != null) return
+
+    const requestId = ++chartRequestRef.current
+    setChartLoadingOrderId(order.id)
+    setChartPosition(null)
+    setChartPendingOrder(order)
+    try {
+      const context = await api.getOrderPositionContext(order.id)
+      if (requestId !== chartRequestRef.current) return
+      const position = findPositionWindow(context, order.id)
+      const selectedMarker = position?.markers.find((marker) => marker.id === order.id && marker.action === 'ENTRY')
+      if (!position || !selectedMarker) {
+        showToast('info', t('log.chart.noPosition'))
+        return
+      }
+
+      const orderChartPosition: PositionWindow = {
+        ...position,
+        focusTime: selectedMarker.timestamp,
+        markers: [selectedMarker],
+      }
+      setChartPendingOrder(null)
+      if (window.electronAPI?.openOrderKlineWindow) {
+        await window.electronAPI.openOrderKlineWindow(orderChartPosition)
+      } else {
+        setChartPosition(orderChartPosition)
+      }
+    } catch {
+      if (requestId === chartRequestRef.current) showToast('error', t('log.chart.failed'))
+    } finally {
+      if (requestId === chartRequestRef.current) {
+        setChartPendingOrder(null)
+        setChartLoadingOrderId(null)
+      }
+    }
+  }
+
+  const closeOrderChart = () => {
+    chartRequestRef.current += 1
+    setChartPendingOrder(null)
+    setChartLoadingOrderId(null)
+    setChartPosition(null)
+  }
+
   return (
     <div className="relative isolate h-full flex flex-col overflow-hidden bg-[#1e1e1e]">
       <div className="px-4 py-2 border-b border-[#3e3e42] flex items-center gap-3 shrink-0">
@@ -392,8 +455,18 @@ export function OrderLogScreen() {
           <tbody>
             {orders.length === 0 ? (
               <tr><td colSpan={20} className="text-center text-[#858585] py-6">{t('log.empty')}</td></tr>
-            ) : orders.map((o, i) => (
-              <tr key={o.id}>
+            ) : orders.map((o, i) => {
+              const canOpenChart = isFilledOpeningOrder(o)
+              return (
+              <tr
+                key={o.id}
+                onDoubleClick={(event) => {
+                  if ((event.target as HTMLElement).closest('button')) return
+                  void handleOrderDoubleClick(o)
+                }}
+                title={canOpenChart ? t('log.chart.doubleClickHint') : undefined}
+                className={`${canOpenChart ? 'cursor-pointer' : ''} ${chartLoadingOrderId === o.id ? 'opacity-60' : ''}`}
+              >
                 <td className="text-[#858585]">{i + 1}</td>
                 <td className="w-[76px] text-[#cccccc] truncate">{o.username ?? '—'}</td>
                 <td className="font-semibold">
@@ -446,11 +519,14 @@ export function OrderLogScreen() {
                   </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
       {reconcileDialog && <OrderReconcileResultModal dialog={reconcileDialog} onClose={() => setReconcileDialog(null)} t={t} />}
+      {chartPendingOrder && <OrderKlineLoadingModal symbol={chartPendingOrder.symbol} onClose={closeOrderChart} />}
+      {chartPosition && <OrderKlineModal position={chartPosition} onClose={closeOrderChart} />}
     </div>
   )
 }

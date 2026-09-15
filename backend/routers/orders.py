@@ -412,7 +412,12 @@ def get_order_markers(
 
 @router.get("/position-context/{order_id}", response_model=list[OrderOut])
 def get_order_position_context(order_id: int, user: dict = Depends(get_current_user)):
-    rows = db_module.get_filled_order_position_context(order_id=order_id, limit=5000)
+    user_id = int(user["sub"]) if user.get("role") != "admin" else None
+    rows = db_module.get_filled_order_position_context(
+        order_id=order_id,
+        user_id=user_id,
+        limit=5000,
+    )
     return [_row_to_out(r) for r in rows]
 
 

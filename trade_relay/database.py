@@ -3607,7 +3607,11 @@ def get_user_filled_order_markers(
         conn.close()
 
 
-def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
+def get_filled_order_position_context(
+    order_id: int,
+    user_id: Optional[int] = None,
+    limit: int = 5000,
+) -> list:
     """Return indexed filled-order history for the selected order's user+symbol.
 
     This avoids the order-log chart loading path scanning every symbol with a
@@ -3615,6 +3619,8 @@ def get_filled_order_position_context(order_id: int, limit: int = 5000) -> list:
     """
     selected = get_order_by_id(int(order_id))
     if not selected:
+        return []
+    if user_id is not None and int(selected["user_id"]) != int(user_id):
         return []
 
     safe_limit = max(1, min(int(limit), 5000))

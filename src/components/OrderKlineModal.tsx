@@ -1200,7 +1200,7 @@ function CandlestickChart({
           fontSize="9"
           fontWeight="500"
           pointerEvents="none"
-        >#{rangeStart + index + 1}</text>
+        >{rangeStart + index + 1}</text>
       })}
       {emaPoints && <polyline points={emaPoints} fill="none" stroke="#d95b8b" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />}
       <line x1={margin.left} x2={width - margin.right} y1={height - margin.bottom - volumeHeight} y2={height - margin.bottom - volumeHeight} stroke="#303741" />
