@@ -18,9 +18,9 @@ indicator(
 //      每个交易日使用独立的水平区间，不连接相邻两天。
 //   2. 纽约时间 09:30–11:00 使用该时段最终 ORH/ORL 绘制完整矩形。
 //   3. 区间从美盘早盘开始延续到北京时间次日 12:00。
-//   4. 在 ORH 上边界下方显示 ORH - ORL 的区间振幅。
-//   5. 在其下方显示美盘开盘当日北京时间 08:00 至当前（最晚次日 12:00）的今日振幅。
-//   6. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
+//   4. 在 ORH 上边界下方并排显示区间振幅与今日振幅。
+//      今日振幅统计美盘开盘当日北京时间 08:00 至当前（最晚次日 12:00）。
+//   5. 价格标签只显示在屏幕内最近的一组，避免遮挡 K 线。
 
 string GROUP_SESSION = "早盘区间"
 string GROUP_DISPLAY = "显示设置"
@@ -120,6 +120,13 @@ bool inOpeningRange = not na(
      time(timeframe.period, sessionSpec, SESSION_TIMEZONE)
 )
 bool openingRangeStarted = inOpeningRange and not inOpeningRange[1]
+
+// xloc.bar_time 的开盘时间坐标落在 K 线中线上；time_close 则是下一根
+// K 线的中线。左边界从首根中线减去半根，右边界从下一根中线减去
+// 半根，正好落在第一根和最后一根 K 线的外缘，避免遮住其高低点。
+int halfBarDuration = na(time_close)
+     ? 1
+     : math.max(1, int(math.round((time_close - time) / 2.0)))
 
 // 独立累计北京时间每日 08:00 起的高低点，使美盘区块在 21:30/22:30
 // 创建时能够带入当天 08:00 至开盘前已经形成的行情范围。
@@ -240,6 +247,8 @@ if barstate.islast
         for index = firstVisibleIndex to lastVisibleIndex
             int selectedStart = array.get(sessionStarts, index)
             int selectedEnd = array.get(sessionEnds, index)
+            int selectedBoxStart = selectedStart - halfBarDuration
+            int selectedBoxEnd = selectedEnd - halfBarDuration
             int selectedDisplayEnd = sessionDisplayEnd(selectedStart)
             int segmentRight = math.min(selectedDisplayEnd, chart.right_visible_bar_time)
             float selectedHigh = array.get(sessionHighs, index)
@@ -248,14 +257,13 @@ if barstate.islast
             float selectedMorningHigh = array.get(sessionMorningHighs, index)
             float selectedMorningLow = array.get(sessionMorningLows, index)
             float morningRangeHeight = selectedMorningHigh - selectedMorningLow
-            bool hasHorizontalSpace = segmentRight > selectedStart
-            bool canExtend = segmentRight > selectedEnd and rangeHeight > 0
+            bool hasHorizontalSpace = segmentRight > selectedBoxStart
+            bool canExtend = segmentRight > selectedBoxEnd and rangeHeight > 0
             bool isLatestVisible = index == lastVisibleIndex
-            int visibleLineLeft = math.max(selectedStart, chart.left_visible_bar_time)
+            int visibleLineLeft = math.max(selectedBoxStart, chart.left_visible_bar_time)
             int mainLabelX = visibleLineLeft + int(math.round((segmentRight - visibleLineLeft) / 2.0))
-            float rangeLabelY = selectedHigh - rangeHeight * 0.03
-            float morningRangeLabelY = selectedHigh - rangeHeight * 0.06
-            int visibleExtensionLeft = math.max(selectedEnd, chart.left_visible_bar_time)
+            float rangeLabelY = selectedHigh - rangeHeight * 0.04
+            int visibleExtensionLeft = math.max(selectedBoxEnd, chart.left_visible_bar_time)
             int extensionLabelX = visibleExtensionLeft + int(math.round((segmentRight - visibleExtensionLeft) / 2.0))
 
             color rangeColor = color.rgb(245, 158, 11)
@@ -265,9 +273,9 @@ if barstate.islast
             if showOpeningRange and hasHorizontalSpace
                 // 完整早盘矩形使用最终高低点，不随盘中高点形成阶梯或曲线。
                 box openingBox = box.new(
-                     left = selectedStart,
+                     left = selectedBoxStart,
                      top = selectedHigh,
-                     right = selectedEnd,
+                     right = selectedBoxEnd,
                      bottom = selectedLow,
                      xloc = xloc.bar_time,
                      border_color = rangeColor,
@@ -278,7 +286,7 @@ if barstate.islast
 
                 if canExtend
                     box continuationBox = box.new(
-                         left = selectedEnd,
+                         left = selectedBoxEnd,
                          top = selectedHigh,
                          right = segmentRight,
                          bottom = selectedLow,
@@ -290,7 +298,7 @@ if barstate.islast
 
                 // 每天使用独立 line 对象，所以新旧区间之间不会出现竖向连接。
                 line highLine = line.new(
-                     x1 = selectedStart,
+                     x1 = selectedBoxStart,
                      y1 = selectedHigh,
                      x2 = segmentRight,
                      y2 = selectedHigh,
@@ -299,7 +307,7 @@ if barstate.islast
                      width = 1
                 )
                 line lowLine = line.new(
-                     x1 = selectedStart,
+                     x1 = selectedBoxStart,
                      y1 = selectedLow,
                      x2 = segmentRight,
                      y2 = selectedLow,
@@ -310,31 +318,27 @@ if barstate.islast
                 array.push(drawnLines, highLine)
                 array.push(drawnLines, lowLine)
 
-                if showRangeDifference and rangeHeight > 0
-                    label rangeDifferenceLabel = label.new(
+                bool hasRangeDifference = showRangeDifference and rangeHeight > 0
+                bool hasMorningDifference = showMorningDifference and not na(morningRangeHeight)
+                if hasRangeDifference or hasMorningDifference
+                    string differenceText = hasRangeDifference
+                         ? "区间振幅：" + str.tostring(rangeHeight, format.mintick)
+                         : ""
+                    if hasMorningDifference
+                        differenceText += (hasRangeDifference ? "， 今日振幅：" : "今日振幅：")
+                             + str.tostring(morningRangeHeight, format.mintick)
+
+                    label differenceLabel = label.new(
                          x = mainLabelX,
                          y = rangeLabelY,
-                         text = "区间振幅：" + str.tostring(rangeHeight, format.mintick),
+                         text = differenceText,
                          xloc = xloc.bar_time,
                          style = label.style_none,
                          textcolor = color.white,
                          textalign = text.align_center,
                          size = size.small
                     )
-                    array.push(drawnLabels, rangeDifferenceLabel)
-
-                if showMorningDifference and not na(morningRangeHeight)
-                    label morningDifferenceLabel = label.new(
-                         x = mainLabelX,
-                         y = morningRangeLabelY,
-                         text = "今日振幅：" + str.tostring(morningRangeHeight, format.mintick),
-                         xloc = xloc.bar_time,
-                         style = label.style_none,
-                         textcolor = color.white,
-                         textalign = text.align_center,
-                         size = size.small
-                    )
-                    array.push(drawnLabels, morningDifferenceLabel)
+                    array.push(drawnLabels, differenceLabel)
 
                 if showLabels and isLatestVisible
                     label highLabel = label.new(
@@ -365,7 +369,7 @@ if barstate.islast
                 float upper2 = selectedHigh + rangeHeight * 2.0
 
                 box upperBand1 = box.new(
-                     left = selectedEnd,
+                     left = selectedBoxEnd,
                      top = upper1,
                      right = segmentRight,
                      bottom = selectedHigh,
@@ -374,7 +378,7 @@ if barstate.islast
                      bgcolor = color.new(upperColor, 95)
                 )
                 box upperBand2 = box.new(
-                     left = selectedEnd,
+                     left = selectedBoxEnd,
                      top = upper2,
                      right = segmentRight,
                      bottom = upper1,
@@ -383,7 +387,7 @@ if barstate.islast
                      bgcolor = color.new(upperColor, 97)
                 )
                 line upperLine1 = line.new(
-                     x1 = selectedEnd,
+                     x1 = selectedBoxEnd,
                      y1 = upper1,
                      x2 = segmentRight,
                      y2 = upper1,
@@ -392,7 +396,7 @@ if barstate.islast
                      style = line.style_dashed
                 )
                 line upperLine2 = line.new(
-                     x1 = selectedEnd,
+                     x1 = selectedBoxEnd,
                      y1 = upper2,
                      x2 = segmentRight,
                      y2 = upper2,
@@ -434,7 +438,7 @@ if barstate.islast
                 float lower2 = selectedLow - rangeHeight * 2.0
 
                 box lowerBand1 = box.new(
-                     left = selectedEnd,
+                     left = selectedBoxEnd,
                      top = selectedLow,
                      right = segmentRight,
                      bottom = lower1,
@@ -443,7 +447,7 @@ if barstate.islast
                      bgcolor = color.new(lowerColor, 95)
                 )
                 box lowerBand2 = box.new(
-                     left = selectedEnd,
+                     left = selectedBoxEnd,
                      top = lower1,
                      right = segmentRight,
                      bottom = lower2,
@@ -452,7 +456,7 @@ if barstate.islast
                      bgcolor = color.new(lowerColor, 97)
                 )
                 line lowerLine1 = line.new(
-                     x1 = selectedEnd,
+                     x1 = selectedBoxEnd,
                      y1 = lower1,
                      x2 = segmentRight,
                      y2 = lower1,
@@ -461,7 +465,7 @@ if barstate.islast
                      style = line.style_dashed
                 )
                 line lowerLine2 = line.new(
-                     x1 = selectedEnd,
+                     x1 = selectedBoxEnd,
                      y1 = lower2,
                      x2 = segmentRight,
                      y2 = lower2,
