@@ -1938,6 +1938,53 @@ def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
     assert created_orders[1]["order_type"] == "STOP_MARKET"
 
 
+def test_place_tp_sl_orders_can_place_basic_take_profit_limit(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    created_orders = []
+    client_calls = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            pass
+
+        def place_take_profit_limit_order(self, symbol, side, stop_price, price, quantity, position_side):
+            client_calls.append((symbol, side, stop_price, price, quantity, position_side))
+            return {"orderId": 4321, "clientOrderId": "two-r-tp", "status": "NEW"}
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {"algoId": 9876, "clientAlgoId": "initial-sl", "status": "NEW"}
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=1,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.01,
+        entry_price=78000.0,
+        tp_price=78800.0,
+        sl_price=77600.0,
+        position_id=99,
+        position_mode="DUAL",
+        current_price=79000.0,
+        tp_order_type="LIMIT",
+    )
+
+    assert errors == []
+    assert client_calls == [("BTCUSDC", "SELL", 78800.0, 78800.0, 0.01, "LONG")]
+    assert created_orders[0]["order_type"] == "TAKE_PROFIT"
+    assert created_orders[0]["order_category"] == "Basic"
+    assert created_orders[0]["binance_order_id"] == "4321"
+    assert created_orders[1]["order_type"] == "STOP_MARKET"
+
+
 def test_place_tp_sl_orders_persists_failed_stop_loss_as_failed(monkeypatch):
     from trade_relay.trading import tpsl_service
 

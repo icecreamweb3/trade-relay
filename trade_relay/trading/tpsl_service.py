@@ -68,6 +68,41 @@ def _replace_existing_conditional_orders(
     return errors
 
 
+def _replace_existing_take_profit_limit_orders(
+    *,
+    client: BinanceClient,
+    user_id: int,
+    symbol: str,
+    close_side: str,
+    position_id: Optional[int],
+) -> list[str]:
+    """Cancel only limit orders created as position take-profit orders."""
+    errors: list[str] = []
+    for row in db.query_orders(user_id=user_id, status="NEW", limit=500):
+        if str(row.get("order_type") or "").upper() != "TAKE_PROFIT":
+            continue
+        if str(row.get("trade_direction") or "").upper() != "CLOSE":
+            continue
+        if str(row.get("symbol") or "").upper() != symbol.upper():
+            continue
+        if str(row.get("side") or "").upper() != close_side:
+            continue
+        row_position_id = row.get("position_id")
+        if position_id is not None and row_position_id is not None and int(row_position_id) != int(position_id):
+            continue
+
+        exchange_order_id = str(row.get("exchange_order_id") or row.get("binance_order_id") or "").strip()
+        try:
+            if exchange_order_id:
+                response = client.cancel_order(symbol, exchange_order_id)
+                if isinstance(response, dict) and response.get("error"):
+                    raise Exception(str(response.get("error_message") or "limit TP cancellation failed"))
+            db.update_order_status(int(row["id"]), "CANCELED")
+        except Exception as exc:
+            errors.append(f"TAKE_PROFIT replace: {exc}")
+    return errors
+
+
 def cancel_close_tp_sl_orders(
     *,
     client: BinanceClient,
@@ -78,6 +113,13 @@ def cancel_close_tp_sl_orders(
 ) -> list[str]:
     close_side = "SELL" if str(position_side).upper() == "LONG" else "BUY"
     errors: list[str] = []
+    errors.extend(_replace_existing_take_profit_limit_orders(
+        client=client,
+        user_id=user_id,
+        symbol=symbol,
+        close_side=close_side,
+        position_id=position_id,
+    ))
     errors.extend(_replace_existing_conditional_orders(
         client=client,
         user_id=user_id,
@@ -136,11 +178,14 @@ def place_tp_sl_orders(
     position_id: Optional[int] = None,
     position_mode: str = "UNKNOWN",
     current_price: Optional[float] = None,
+    tp_order_type: str = "MARKET",
 ) -> list[str]:
+    normalized_tp_order_type = str(tp_order_type or "MARKET").upper()
+    validation_tp_price = None if normalized_tp_order_type == "LIMIT" else tp_price
     errors = validate_tpsl_prices(
         position_side=position_side,
         entry_price=entry_price,
-        tp_price=tp_price,
+        tp_price=validation_tp_price,
         sl_price=sl_price,
         current_price=current_price,
     )
@@ -162,6 +207,15 @@ def place_tp_sl_orders(
     use_close_all_conditional_orders = normalized_position_mode == "SINGLE"
 
     if tp_price is not None and tp_price > 0:
+        # Whichever TP representation is requested, remove both supported
+        # representations so switching modes cannot leave duplicate exits.
+        errors.extend(_replace_existing_take_profit_limit_orders(
+            client=client,
+            user_id=user_id,
+            symbol=symbol,
+            close_side=close_side,
+            position_id=position_id,
+        ))
         errors.extend(_replace_existing_conditional_orders(
             client=client,
             user_id=user_id,
@@ -173,7 +227,16 @@ def place_tp_sl_orders(
         if errors:
             return errors
         try:
-            if use_close_all_conditional_orders:
+            if normalized_tp_order_type == "LIMIT":
+                tp_resp = client.place_take_profit_limit_order(
+                    symbol=symbol,
+                    side=close_side,
+                    stop_price=tp_price,
+                    price=tp_price,
+                    quantity=quantity,
+                    position_side=position_side,
+                )
+            elif use_close_all_conditional_orders:
                 tp_resp = client.place_close_all_take_profit_order(
                     symbol=symbol,
                     side=close_side,
@@ -196,19 +259,19 @@ def place_tp_sl_orders(
                 username=username,
                 symbol=symbol,
                 side=close_side,
-                order_type="TAKE_PROFIT_MARKET",
+                order_type="TAKE_PROFIT" if normalized_tp_order_type == "LIMIT" else "TAKE_PROFIT_MARKET",
                 quantity=quantity,
                 price=tp_price,
                 status=tp_status,
-                binance_order_id=None,
-                algo_id=tp_exchange_id or None,
-                algo_client_id=tp_client_id or None,
-                client_order_id=None,
+                binance_order_id=(tp_exchange_id or None) if normalized_tp_order_type == "LIMIT" else None,
+                algo_id=None if normalized_tp_order_type == "LIMIT" else tp_exchange_id or None,
+                algo_client_id=None if normalized_tp_order_type == "LIMIT" else tp_client_id or None,
+                client_order_id=(tp_client_id or None) if normalized_tp_order_type == "LIMIT" else None,
                 trade_direction="CLOSE",
                 position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Conditional",
+                order_category="Basic" if normalized_tp_order_type == "LIMIT" else "Conditional",
             )
         except Exception as exc:
             errors.append(f"TP: {exc}")
@@ -217,7 +280,7 @@ def place_tp_sl_orders(
                 username=username,
                 symbol=symbol,
                 side=close_side,
-                order_type="TAKE_PROFIT_MARKET",
+                order_type="TAKE_PROFIT" if normalized_tp_order_type == "LIMIT" else "TAKE_PROFIT_MARKET",
                 quantity=quantity,
                 price=tp_price,
                 status="FAILED",
@@ -226,7 +289,7 @@ def place_tp_sl_orders(
                 position_mode=normalized_position_mode,
                 position_id=position_id,
                 reduce_only=True,
-                order_category="Conditional",
+                order_category="Basic" if normalized_tp_order_type == "LIMIT" else "Conditional",
             )
 
     if sl_price is not None and sl_price > 0:

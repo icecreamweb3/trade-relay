@@ -295,7 +295,7 @@ def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | N
     rows = db_module.query_orders(user_id=user_id, status="NEW", limit=500)
     for row in rows:
         order_type = str(row.get("order_type") or "").upper()
-        if order_type not in {"TAKE_PROFIT_MARKET", "STOP_MARKET"}:
+        if order_type not in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET", "STOP_MARKET"}:
             continue
 
         symbol = str(row.get("symbol") or "").upper()
@@ -308,7 +308,7 @@ def _load_persisted_tpsl(user_id: int | None) -> tuple[dict[int, tuple[float | N
 
         tp_price: float | None = None
         sl_price: float | None = None
-        if order_type == "TAKE_PROFIT_MARKET":
+        if order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
             tp_price = float(row["price"]) if row.get("price") is not None else None
         else:
             sl_price = float(row["stop_price"]) if row.get("stop_price") is not None else None
@@ -801,6 +801,7 @@ async def recalculate_position_mfe(
 class TpSlIn(BaseModel):
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
+    tp_order_type: Optional[Literal["MARKET", "LIMIT"]] = None
 
 
 @router.post("/{position_id}/tpsl")
@@ -836,10 +837,24 @@ def set_position_tpsl(
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
     current_price = _fetch_current_trigger_price(user_id, username, symbol)
 
+    effective_tp_order_type = body.tp_order_type
+    if effective_tp_order_type is None and body.tp_price and body.tp_price > 0:
+        # Preserve an existing basic limit TP when another feature (for example
+        # auto-breakeven) updates only the stop through the same endpoint.
+        active_orders = db_module.query_orders(user_id=int(user["sub"]), status="NEW", limit=500)
+        has_limit_tp = any(
+            str(row.get("order_type") or "").upper() == "TAKE_PROFIT"
+            and row.get("position_id") is not None
+            and int(row["position_id"]) == position_id
+            for row in active_orders
+        )
+        effective_tp_order_type = "LIMIT" if has_limit_tp else "MARKET"
+    effective_tp_order_type = effective_tp_order_type or "MARKET"
+
     validation_errors = validate_tpsl_prices(
         position_side=position_side,
         entry_price=entry_price,
-        tp_price=body.tp_price,
+        tp_price=None if effective_tp_order_type == "LIMIT" else body.tp_price,
         sl_price=body.sl_price,
         current_price=current_price,
     )
@@ -863,6 +878,7 @@ def set_position_tpsl(
         position_id=position_id,
         position_mode=position_mode,
         current_price=current_price,
+        tp_order_type=effective_tp_order_type,
     )
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))

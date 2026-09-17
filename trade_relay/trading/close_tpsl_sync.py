@@ -65,6 +65,7 @@ def sync_close_tpsl_quantity(
     active_rows = db.query_orders(user_id=user_id, status="NEW", limit=500)
 
     tp_price: Optional[float] = None
+    tp_order_type = "MARKET"
     sl_price: Optional[float] = None
     needs_refresh = False
 
@@ -77,7 +78,7 @@ def sync_close_tpsl_quantity(
             continue
 
         order_type = str(row.get("order_type") or "").upper()
-        if order_type not in {"TAKE_PROFIT_MARKET", "STOP_MARKET"}:
+        if order_type not in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET", "STOP_MARKET"}:
             continue
 
         row_quantity = _safe_float(row.get("quantity") or 0) or 0.0
@@ -91,10 +92,11 @@ def sync_close_tpsl_quantity(
         if abs(row_quantity - quantity) > 0.0005 or position_id_mismatch:
             needs_refresh = True
 
-        if order_type == "TAKE_PROFIT_MARKET":
+        if order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
             price = _safe_float(row.get("price") or 0)
             if price and price > 0:
                 tp_price = price
+                tp_order_type = "LIMIT" if order_type == "TAKE_PROFIT" else "MARKET"
         elif order_type == "STOP_MARKET":
             stop_price = _safe_float(row.get("stop_price") or 0)
             if stop_price and stop_price > 0:
@@ -113,6 +115,7 @@ def sync_close_tpsl_quantity(
         tp_price=tp_price,
         sl_price=sl_price,
         position_id=position_id,
+        tp_order_type=tp_order_type,
         position_mode=position_mode,
     )
     if errors:

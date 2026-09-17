@@ -14,6 +14,7 @@ const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 const BINANCE_MARK_PRICE_STREAM_URL = 'wss://fstream.binance.com/market/stream?streams='
 const AUTO_BREAKEVEN_OFFSET = 0.001
 const AUTO_BREAKEVEN_RETRY_MS = 10_000
+const AUTO_TAKE_PROFIT_R_MULTIPLE = 2
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
@@ -35,8 +36,31 @@ export function calculateAutoBreakevenStop(position: Pick<Position, 'side' | 'en
   return null
 }
 
+export function calculateTwoRTakeProfit(
+  position: Pick<Position, 'side' | 'entry_price'>,
+  stopPrice: number | null,
+): number | null {
+  const entryPrice = position.entry_price
+  if (entryPrice == null || !Number.isFinite(entryPrice) || entryPrice <= 0) return null
+  if (stopPrice == null || !Number.isFinite(stopPrice) || stopPrice <= 0) return null
+  const riskDistance = Math.abs(entryPrice - stopPrice)
+  if (riskDistance <= 0) return null
+  if (position.side === 'LONG') return entryPrice + AUTO_TAKE_PROFIT_R_MULTIPLE * riskDistance
+  if (position.side === 'SHORT') return entryPrice - AUTO_TAKE_PROFIT_R_MULTIPLE * riskDistance
+  return null
+}
+
 function autoBreakevenStorageKey(username: string): string {
   return `trade-relay:auto-breakeven:${username}`
+}
+
+function autoTwoRTakeProfitStorageKey(username: string): string {
+  return `trade-relay:auto-two-r-take-profit:${username}`
+}
+
+function readAutoTwoRTakeProfitSetting(username: string): boolean {
+  if (!username) return false
+  return localStorage.getItem(autoTwoRTakeProfitStorageKey(username)) === 'true'
 }
 
 function readAutoBreakevenSettings(username: string): Record<number, boolean> {
@@ -134,6 +158,8 @@ export function PositionsPanel({
   const [autoBreakevenEnabled, setAutoBreakevenEnabled] = useState<Record<number, boolean>>({})
   const [autoBreakevenSettingsOwner, setAutoBreakevenSettingsOwner] = useState('')
   const [autoBreakevenMoving, setAutoBreakevenMoving] = useState<Record<number, boolean>>({})
+  const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(false)
+  const [autoTwoRSettingsOwner, setAutoTwoRSettingsOwner] = useState('')
   const [loading, setLoading] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<number | null>(null)
   const [cancellingId, setCancellingId] = useState<number | null>(null)
@@ -156,7 +182,15 @@ export function PositionsPanel({
     setAutoBreakevenSettingsOwner(username)
     autoBreakevenInFlightRef.current.clear()
     autoBreakevenRetryAfterRef.current.clear()
+    setAutoTwoRTakeProfit(readAutoTwoRTakeProfitSetting(username))
+    setAutoTwoRSettingsOwner(username)
   }, [currentUser?.username])
+
+  useEffect(() => {
+    const username = currentUser?.username
+    if (!username || autoTwoRSettingsOwner !== username) return
+    localStorage.setItem(autoTwoRTakeProfitStorageKey(username), String(autoTwoRTakeProfit))
+  }, [autoTwoRTakeProfit, autoTwoRSettingsOwner, currentUser?.username])
 
   useEffect(() => {
     const username = currentUser?.username
@@ -752,7 +786,25 @@ export function PositionsPanel({
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
-              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th><th></th>
+              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th>
+              <th className="min-w-[118px] text-center" title={t('pos.autoTwoRTakeProfit.hint')}>
+                <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label={t('pos.autoTwoRTakeProfit')}
+                    aria-checked={autoTwoRTakeProfit}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setAutoTwoRTakeProfit((enabled) => !enabled)
+                    }}
+                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border transition-colors ${autoTwoRTakeProfit ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#69717e] bg-[#303640]'}`}
+                  >
+                    <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all ${autoTwoRTakeProfit ? 'left-[18px]' : 'left-0.5'}`} />
+                  </button>
+                  <span className={autoTwoRTakeProfit ? 'text-[#8ee8c2]' : 'text-[#8b94a5]'}>{t('pos.autoTwoRTakeProfit')}</span>
+                </div>
+              </th>
             </tr></thead>
             <tbody>
               {positions.length === 0
@@ -1093,6 +1145,7 @@ export function PositionsPanel({
       <TpSlModal
         position={tpslPosition}
         username={currentUser?.username ?? ''}
+        autoTwoRTakeProfit={autoTwoRTakeProfit}
         onClose={() => setTpslPosition(null)}
         onSaved={(posId, tp, sl, initialRisk) => {
           setPositions(prev => prev.map(p => p.id === posId ? {
@@ -1480,12 +1533,14 @@ function AmendOrderModal({
 function TpSlModal({
   position,
   username,
+  autoTwoRTakeProfit,
   onClose,
   onSaved,
   showToast,
 }: {
   position: Position
   username: string
+  autoTwoRTakeProfit: boolean
   onClose: () => void
   onSaved: (posId: number, tp: number | null, sl: number | null, initialRisk: number | null) => void
   showToast: (type: ToastKind, msg: string) => void
@@ -1532,7 +1587,21 @@ function TpSlModal({
 
   const tpVal = parseFloat(tpInput)
   const slVal = parseFloat(slInput)
-  const tpPnl = Number.isFinite(tpVal) && tpVal > 0 ? calcPnl(tpVal) : null
+  const manualTp = Number.isFinite(tpVal) && tpVal > 0 ? tpVal : null
+  const parsedStop = Number.isFinite(slVal) && slVal > 0 ? slVal : null
+  const isInitialRiskUnset = (
+    position.planned_stop_price == null
+    || !Number.isFinite(position.planned_stop_price)
+    || position.planned_stop_price <= 0
+    || position.initial_risk_usdc == null
+    || !Number.isFinite(position.initial_risk_usdc)
+    || position.initial_risk_usdc <= 0
+  )
+  const autoTp = autoTwoRTakeProfit && isInitialRiskUnset && manualTp == null
+    ? calculateTwoRTakeProfit(position, parsedStop)
+    : null
+  const displayedTp = manualTp ?? autoTp
+  const tpPnl = displayedTp != null ? calcPnl(displayedTp) : null
   const slPnl = Number.isFinite(slVal) && slVal > 0 ? calcPnl(slVal) : null
 
   function getTriggerValidationError(
@@ -1566,8 +1635,11 @@ function TpSlModal({
   const hasValidationError = Boolean(tpError || slError)
 
   const handleConfirm = async () => {
-    const tp = Number.isFinite(tpVal) && tpVal > 0 ? tpVal : null
-    const sl = Number.isFinite(slVal) && slVal > 0 ? slVal : null
+    const sl = parsedStop
+    const generatedLimitTp = autoTwoRTakeProfit && isInitialRiskUnset && manualTp == null
+      ? calculateTwoRTakeProfit(position, sl)
+      : null
+    const tp = manualTp ?? generatedLimitTp
     setSubmitting(true)
     try {
       // Refresh before validating so the modal and the backend share the same
@@ -1582,14 +1654,18 @@ function TpSlModal({
       } catch {
         // Backend will independently try live price and then its DB fallback.
       }
-      const submitTpError = getTriggerValidationError('tp', tp, submitReferencePrice)
+      // A reduce-only limit order may validly be marketable when price has
+      // already crossed 2R; Binance will execute it at the best available price.
+      const submitTpError = generatedLimitTp == null
+        ? getTriggerValidationError('tp', tp, submitReferencePrice)
+        : null
       const submitSlError = getTriggerValidationError('sl', sl, submitReferencePrice)
       if (submitTpError || submitSlError) {
         showToast('error', submitTpError || submitSlError || 'Invalid trigger price')
         return
       }
 
-      const result = await api.setPositionTpSl(position.id, tp, sl)
+      const result = await api.setPositionTpSl(position.id, tp, sl, generatedLimitTp != null ? 'LIMIT' : undefined)
       const initialRisk = typeof result.initial_risk_usdc === 'number'
         ? result.initial_risk_usdc
         : null
@@ -1661,7 +1737,7 @@ function TpSlModal({
               type="number"
               value={tpInput}
               onChange={e => setTpInput(e.target.value)}
-              placeholder="—"
+              placeholder={autoTp != null ? autoTp.toFixed(2) : '—'}
               className="bg-[#2B2F36] border border-[#3C4149] focus:border-[#F0B90B] text-[12px] text-[#EAECEF] rounded px-3 py-2 outline-none font-mono"
             />
             <div className={`bg-[#2B2F36] border border-[#3C4149] rounded px-3 py-2 font-mono text-[12px] flex items-center ${
@@ -1673,11 +1749,13 @@ function TpSlModal({
             </div>
           </div>
           <div className="mt-1.5 text-[10px] text-[#848E9C] leading-relaxed min-h-[30px]">
-            {tpError
+            {autoTp != null
+              ? <span className="text-[#8ee8c2]">{t('pos.autoTwoRTakeProfit.preview', { price: autoTp.toFixed(2) })}</span>
+              : tpError
               ? <span className="text-[#F6465D]">{tpError}</span>
               : tpPnl != null
               ? <>{t('pos.when')} <span className="text-[#F0B90B] font-medium">{t('order.triggerPriceType.last')}</span> {t('pos.reaches')}{' '}
-                  <span className="text-[#EAECEF]">{tpVal.toFixed(2)}</span>, {t('pos.tpTriggerHint')}{' '}
+                  <span className="text-[#EAECEF]">{displayedTp?.toFixed(2)}</span>, {t('pos.tpTriggerHint')}{' '}
                   <span className={tpPnl >= 0 ? 'text-[#0ECB81]' : 'text-[#F6465D]'}>
                     {tpPnl >= 0 ? '+' : ''}{tpPnl.toFixed(2)} {quoteAsset}
                   </span>.</>

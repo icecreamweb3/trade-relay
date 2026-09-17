@@ -598,9 +598,14 @@ export const api = {
     })
   },
 
-  async setPositionTpSl(positionId: number, tpPrice: number | null, slPrice: number | null): Promise<ApiResult> {
+  async setPositionTpSl(
+    positionId: number,
+    tpPrice: number | null,
+    slPrice: number | null,
+    tpOrderType?: 'MARKET' | 'LIMIT',
+  ): Promise<ApiResult> {
     return request<ApiResult>('POST', `/api/positions/${positionId}/tpsl`, {
-      body: { tp_price: tpPrice, sl_price: slPrice },
+      body: { tp_price: tpPrice, sl_price: slPrice, tp_order_type: tpOrderType },
     })
   },
 
