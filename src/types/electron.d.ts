@@ -3,6 +3,7 @@ interface ElectronAPI {
   uiLang?: string
   backendBaseUrl?: string
   getUILang: () => Promise<string>
+  setUILang: (locale: 'en' | 'zh-CN') => Promise<'en' | 'zh-CN'>
   getBackendBaseUrl: () => Promise<string>
 
   // Auth
@@ -51,6 +52,8 @@ interface ElectronAPI {
   getTvKlines?: (symbol: string, interval: string, limit?: number) => Promise<unknown[] | null>
   setChartOverlaySignals?: (signals: Array<object>, locale?: string) => Promise<{ ok: boolean; count?: number; reason?: string }>
   clearChartOverlaySignals?: () => Promise<{ ok: boolean; reason?: string }>
+  setChartActiveOrderLines?: (orders: Array<object>, locale?: string) => Promise<{ ok: boolean; count?: number; reason?: string }>
+  clearChartActiveOrderLines?: () => Promise<{ ok: boolean; reason?: string }>
   clearAllChartDrawings?: () => Promise<{ ok: boolean; reason?: string }>
   debugProbeChartOverlay?: () => Promise<Record<string, unknown>>
   debugClearChartOverlaySignals?: () => Promise<Record<string, unknown>>

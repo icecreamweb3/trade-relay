@@ -27,6 +27,10 @@ function MainApp() {
 
   const appLocale = useUiPreferencesStore((state) => state.locale)
 
+  useEffect(() => {
+    void window.electronAPI?.setUILang?.(appLocale)
+  }, [appLocale])
+
   const { t } = useTranslation(appLocale)
   const { isAuthenticated } = useAuthStore()
   const wasAuthenticatedRef = useRef(isAuthenticated)

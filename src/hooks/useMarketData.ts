@@ -136,6 +136,7 @@ export function useMarketData() {
   const user = useAuthStore((state) => state.user)
   const chartOrderMarkersVisible = useUiPreferencesStore((state) => state.chartOrderMarkersVisible)
   const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
+  const uiLocale = useUiPreferencesStore((state) => state.locale)
   const {
     processMarketEvent,
     setSymbol,
@@ -414,4 +415,71 @@ export function useMarketData() {
       clearInterval(timer)
     }
   }, [user, symbol, chartInterval, chartOrderMarkersVisible, chartOrderMarkerLabelsVisible])
+
+  useEffect(() => {
+    const clearActiveLines = async () => {
+      try {
+        await window.electronAPI?.clearChartActiveOrderLines?.()
+      } catch {
+        // The BrowserView may be navigating while the symbol changes.
+      }
+    }
+
+    if (!user || !symbol) {
+      void clearActiveLines()
+      return
+    }
+
+    let alive = true
+    let requestSequence = 0
+    let lastLinesKey: string | null = null
+    const normalizedSymbol = symbol.toUpperCase()
+
+    const syncActiveOrderLines = async () => {
+      const currentRequest = ++requestSequence
+      try {
+        const orders = await api.getOpenOrders()
+        if (!alive || currentRequest !== requestSequence) return
+        const activeLimitOrders = orders
+          .filter((order) => {
+            const orderType = String(order.order_type || '').toUpperCase()
+            const status = String(order.status || '').toUpperCase()
+            return order.symbol.toUpperCase() === normalizedSymbol
+              && ['LIMIT', 'TAKE_PROFIT'].includes(orderType)
+              && ['NEW', 'PARTIALLY_FILLED'].includes(status)
+              && Number(order.price) > 0
+              && Number(order.quantity) > Number(order.filled_qty || 0)
+          })
+          .map((order) => ({
+            id: order.id,
+            side: order.side,
+            order_type: order.order_type,
+            trade_direction: order.trade_direction,
+            reduce_only: Boolean(order.reduce_only),
+            price: Number(order.price),
+            quantity: Number(order.quantity),
+            remaining_quantity: Math.max(0, Number(order.quantity) - Number(order.filled_qty || 0)),
+          }))
+        const linesKey = JSON.stringify(activeLimitOrders)
+        if (linesKey === lastLinesKey) return
+        lastLinesKey = linesKey
+        await window.electronAPI?.setChartActiveOrderLines?.(activeLimitOrders, uiLocale)
+      } catch (error) {
+        if (!alive || currentRequest !== requestSequence) return
+        window.electronAPI?.logToMain?.('warn', 'load chart active order lines failed', {
+          symbol: normalizedSymbol,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    void syncActiveOrderLines()
+    const timer = setInterval(() => { void syncActiveOrderLines() }, 5_000)
+    return () => {
+      alive = false
+      requestSequence += 1
+      clearInterval(timer)
+      void clearActiveLines()
+    }
+  }, [uiLocale, user, symbol])
 }

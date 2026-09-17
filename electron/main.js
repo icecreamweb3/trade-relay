@@ -8,6 +8,7 @@ const path = require('path')
 const { execFile, exec } = require('child_process')
 const http = require('http')
 const https = require('https')
+const crypto = require('crypto')
 const { ProxyAgent } = require('proxy-agent')
 function resolveEnvPath() {
   const candidates = [
@@ -53,6 +54,8 @@ let _chartRatio = 0.65   // default chart 65% vertical within left panel
 let _binanceViewVisible = true
 let _binanceViewAttached = false
 let _lastBinanceViewBoundsKey = null
+const _chartTpMenuTokens = new Map()
+const _chartTpOptionsClaims = new Map()
 
 function logBinanceView(action, extra = undefined) {
   logger.info(`[BINANCE_VIEW] action=${action}`, extra)
@@ -63,6 +66,7 @@ const _trLang = (process.env.TRADE_RELAY_LANG || '').toLowerCase()
 const _defaultBinanceLang = _trLang === 'en' ? 'en' : _trLang === 'zh' ? 'zh-CN' : 'zh-CN'
 const BINANCE_LANG   = process.env.BINANCE_LANG   || _defaultBinanceLang
 const UI_LANG        = process.env.UI_LANG        || _defaultBinanceLang
+let runtimeUiLocale  = UI_LANG === 'en' ? 'en' : 'zh-CN'
 const BINANCE_SYMBOL = process.env.BINANCE_SYMBOL || 'BTCUSDC'
 const BACKEND_PORT   = process.env.BACKEND_PORT   || '8000'
 const BACKEND_BASE_URL = normalizeBaseUrl(
@@ -448,6 +452,14 @@ function createBinanceView() {
   }
   binanceView.webContents.on('did-navigate', (_e, url) => notifySymbolFromUrl(url))
   binanceView.webContents.on('did-navigate-in-page', (_e, url) => notifySymbolFromUrl(url))
+  binanceView.webContents.on('frame-created', (_event, details) => {
+    const frame = details?.frame
+    if (!frame) return
+    frame.once('dom-ready', () => { void installChartTpWatcherInFrame(frame) })
+  })
+  binanceView.webContents.on('did-frame-finish-load', () => {
+    installChartTpWatchersInChildFrames()
+  })
 
   binanceView.webContents.on('enter-html-full-screen', () => {
     setImmediate(() => {
@@ -629,8 +641,12 @@ ipcMain.on('log-to-main', (_event, level, msg, extra) => {
   fn.call(logger, `[FRONTEND] ${msg}`, extra)
 })
 
-ipcMain.handle('get-ui-lang', () => UI_LANG)
-ipcMain.on('get-ui-lang-sync', (event) => { event.returnValue = UI_LANG })
+ipcMain.handle('get-ui-lang', () => runtimeUiLocale)
+ipcMain.on('get-ui-lang-sync', (event) => { event.returnValue = runtimeUiLocale })
+ipcMain.handle('set-ui-lang', (_event, locale) => {
+  runtimeUiLocale = locale === 'en' ? 'en' : 'zh-CN'
+  return runtimeUiLocale
+})
 ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
 ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
 
@@ -750,6 +766,369 @@ ipcMain.handle('chart-toggle-fullscreen', async () => {
   } catch (e) { return { ok: false, reason: e.message } }
 })
 
+function isBinanceViewSender(event) {
+  return Boolean(binanceView && event.sender === binanceView.webContents)
+}
+
+function normalizeChartTradeSymbol(symbol) {
+  return String(symbol || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\.P$/, '')
+    .replace(/[^A-Z0-9]/g, '')
+}
+
+async function getChartTakeProfitContext(symbol, price) {
+  const normalizedSymbol = normalizeChartTradeSymbol(symbol)
+  const limitPrice = Number(price)
+  const token = getToken()
+  if (!token) return { ok: false, reason: 'not_authenticated' }
+  if (!normalizedSymbol || !Number.isFinite(limitPrice) || limitPrice <= 0) {
+    return { ok: false, reason: 'invalid_request' }
+  }
+
+  const [positionsResponse, markResponse] = await Promise.all([
+    httpRequest('GET', buildBackendPath('/api/positions', { status: 'OPEN' }), null, token),
+    httpRequest('GET', buildBackendPath('/api/account/mark-price', { symbol: normalizedSymbol }), null, token),
+  ])
+  if (positionsResponse.status !== 200) {
+    return { ok: false, reason: positionsResponse.body?.detail || 'positions_unavailable' }
+  }
+  if (markResponse.status !== 200) {
+    return { ok: false, reason: markResponse.body?.detail || 'mark_price_unavailable' }
+  }
+
+  const markPrice = Number(markResponse.body?.mark_price)
+  if (!Number.isFinite(markPrice) || markPrice <= 0) {
+    return { ok: false, reason: 'mark_price_unavailable' }
+  }
+
+  const positions = Array.isArray(positionsResponse.body) ? positionsResponse.body : []
+  const eligiblePositions = positions.filter((position) => {
+    if (normalizeChartTradeSymbol(position?.symbol) !== normalizedSymbol) return false
+    if (String(position?.status || 'OPEN').toUpperCase() !== 'OPEN') return false
+    if (!(Number(position?.quantity) > 0)) return false
+    const side = String(position?.side || '').toUpperCase()
+    return (side === 'LONG' && limitPrice > markPrice)
+      || (side === 'SHORT' && limitPrice < markPrice)
+  })
+
+  // Binance has at most one live position per symbol and side. Collapse stale
+  // duplicate DB rows defensively so one menu action is rendered per direction.
+  const positionsBySide = new Map()
+  for (const position of eligiblePositions) {
+    const side = String(position.side || '').toUpperCase()
+    const existing = positionsBySide.get(side)
+    if (!existing || Number(position.id) > Number(existing.id)) positionsBySide.set(side, position)
+  }
+
+  return {
+    ok: true,
+    symbol: normalizedSymbol,
+    price: limitPrice,
+    markPrice,
+    positions: Array.from(positionsBySide.values()).map((position) => ({
+      id: Number(position.id),
+      symbol: normalizedSymbol,
+      side: String(position.side || '').toUpperCase(),
+      quantity: Number(position.quantity),
+    })),
+  }
+}
+
+function issueChartTpMenuToken(context) {
+  const now = Date.now()
+  for (const [token, record] of _chartTpMenuTokens) {
+    if (record.expiresAt <= now) _chartTpMenuTokens.delete(token)
+  }
+  const token = crypto.randomUUID()
+  _chartTpMenuTokens.set(token, {
+    symbol: context.symbol,
+    price: context.price,
+    positionIds: new Set(context.positions.map((position) => position.id)),
+    expiresAt: now + 60_000,
+  })
+  return token
+}
+
+function chartTpFrameWatcherScript() {
+  return `(() => {
+    if (window.__tradeRelayChartTpWatcherInstalled) return true
+    window.__tradeRelayChartTpWatcherInstalled = true
+    const menuAttr = 'data-trade-relay-tp-menu'
+    let timers = []
+
+    const findMenu = () => {
+      const pattern = /(?:Copy price|复制价格)\\s*([\\d,]+(?:\\.\\d+)?)/i
+      const candidates = Array.from(document.querySelectorAll(
+        '[role="menu"], [data-name*="menu" i], [class*="context-menu" i], [class*="menuWrap" i]'
+      ))
+      let menu = candidates
+        .filter((element) => pattern.test(String(element.innerText || '')))
+        .sort((a, b) => String(a.innerText || '').length - String(b.innerText || '').length)[0] || null
+      if (!menu && document.body) {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+        let node
+        while ((node = walker.nextNode())) {
+          if (!pattern.test(String(node.nodeValue || ''))) continue
+          let element = node.parentElement
+          let best = null
+          for (let depth = 0; element && depth < 9; depth += 1, element = element.parentElement) {
+            const text = String(element.innerText || '')
+            if (pattern.test(text) && text.length < 1600) best = element
+            if (element.getAttribute('role') === 'menu') { best = element; break }
+          }
+          if (best) { menu = best; break }
+        }
+      }
+      if (!menu) return null
+      const match = String(menu.innerText || '').match(pattern)
+      const price = match ? Number(match[1].replace(/,/g, '')) : NaN
+      return Number.isFinite(price) && price > 0 ? { menu, price } : null
+    }
+
+    const toast = (message, success) => {
+      document.getElementById('trade-relay-chart-tp-frame-toast')?.remove()
+      const node = document.createElement('div')
+      node.id = 'trade-relay-chart-tp-frame-toast'
+      node.textContent = message
+      Object.assign(node.style, {
+        position: 'fixed', zIndex: '2147483647', right: '18px', top: '18px', maxWidth: '420px',
+        padding: '10px 14px', borderRadius: '6px',
+        border: '1px solid ' + (success ? '#0ECB81' : '#F6465D'), background: '#1E2329',
+        color: success ? '#8ee8c2' : '#ff9aa8',
+        font: '13px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',
+        boxShadow: '0 8px 24px rgba(0,0,0,.4)'
+      })
+      document.body.appendChild(node)
+      setTimeout(() => node.remove(), 4000)
+    }
+
+    const requestTop = (type, payload, responseType) => new Promise((resolve) => {
+      const requestId = 'chart-tp-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', onMessage)
+        resolve({ ok: false, reason: 'request_timeout' })
+      }, 8000)
+      const onMessage = (event) => {
+        const response = event.data
+        if (!response || response.type !== responseType || response.requestId !== requestId) return
+        clearTimeout(timeout)
+        window.removeEventListener('message', onMessage)
+        resolve(response.result)
+      }
+      window.addEventListener('message', onMessage)
+      window.top.postMessage({ type, requestId, payload }, '*')
+    })
+
+    const enhance = async () => {
+      const found = findMenu()
+      if (!found || found.menu.querySelector('[' + menuAttr + ']')) return
+      const { menu, price } = found
+      const marker = document.createElement('span')
+      marker.setAttribute(menuAttr, 'frame-loading')
+      marker.style.display = 'none'
+      menu.appendChild(marker)
+      const options = await requestTop(
+        'trade-relay-chart-tp-options', { price }, 'trade-relay-chart-tp-options-result'
+      )
+      if (!menu.isConnected || !/(?:Copy price|复制价格)\\s*[\\d,]+/i.test(String(menu.innerText || ''))) {
+        marker.remove()
+        return
+      }
+      if (!options?.ok || !Array.isArray(options.positions) || options.positions.length === 0) {
+        marker.remove()
+        return
+      }
+      marker.remove()
+      const group = document.createElement('div')
+      group.setAttribute(menuAttr, 'frame-watcher')
+      Object.assign(group.style, {
+        borderTop: '1px solid #363a45', borderBottom: '1px solid #363a45', padding: '4px 0'
+      })
+      let lifetimeCheck
+      let maxLifetime
+      const onOutsidePointer = (event) => { if (!group.contains(event.target)) setTimeout(cleanup, 0) }
+      const onEscape = (event) => { if (event.key === 'Escape') cleanup() }
+      const cleanup = () => {
+        clearInterval(lifetimeCheck)
+        clearTimeout(maxLifetime)
+        window.removeEventListener('pointerdown', onOutsidePointer, true)
+        window.removeEventListener('keydown', onEscape, true)
+        group.remove()
+      }
+      lifetimeCheck = setInterval(() => {
+        if (!group.isConnected || !/(?:Copy price|复制价格)\\s*[\\d,]+/i.test(String(menu.innerText || ''))) cleanup()
+      }, 100)
+      maxLifetime = setTimeout(cleanup, 15000)
+      window.addEventListener('pointerdown', onOutsidePointer, true)
+      window.addEventListener('keydown', onEscape, true)
+      for (const position of options.positions) {
+        const locale = options.locale === 'en' ? 'en' : 'zh-CN'
+        const item = document.createElement('div')
+        item.setAttribute('role', 'menuitem')
+        item.tabIndex = 0
+        const actionLabel = locale === 'en'
+          ? (position.side === 'LONG' ? 'Sell Take-Profit Limit' : 'Buy Take-Profit Limit')
+          : (position.side === 'LONG' ? '卖出限价止盈' : '买入限价止盈')
+        item.textContent = '◎  ' + actionLabel + ' · ' + position.quantity + ' ' + options.symbol + ' @ ' + price
+        Object.assign(item.style, {
+          display: 'flex', alignItems: 'center', minHeight: '42px', padding: '0 16px',
+          color: '#d1d4dc', background: '#1e1e1e', cursor: 'pointer', whiteSpace: 'nowrap',
+          font: '14px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+        })
+        item.addEventListener('mouseenter', () => { item.style.background = '#2a2e39' })
+        item.addEventListener('mouseleave', () => { item.style.background = '#1e1e1e' })
+        item.addEventListener('mousedown', (event) => { event.preventDefault(); event.stopPropagation() })
+        item.addEventListener('click', async (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          const confirmation = locale === 'en'
+            ? 'Place a reduce-only ' + actionLabel + ' order for the full ' + position.quantity + ' ' + options.symbol + ' position at ' + price + '?'
+            : '确认以 ' + price + ' ' + actionLabel + '整个 ' + position.quantity + ' ' + options.symbol + ' 持仓？'
+          if (!window.confirm(confirmation)) return
+          const placed = await requestTop('trade-relay-chart-tp-place', {
+            positionId: position.id,
+            symbol: options.symbol,
+            price,
+            menuToken: options.menuToken
+          }, 'trade-relay-chart-tp-result')
+          const message = placed?.ok
+            ? (locale === 'en' ? 'Take-profit limit placed at ' + price : '止盈限价单已挂出：' + price)
+            : (locale === 'en' ? 'Failed: ' + (placed?.reason || 'unknown error') : '下单失败：' + (placed?.reason || '未知错误'))
+          toast(message, Boolean(placed?.ok))
+          menu.remove()
+        })
+        group.appendChild(item)
+      }
+      const orderItems = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+      const anchor = orderItems.find((node) => /Add order|添加订单/i.test(String(node.innerText || '')))
+      if (anchor) anchor.after(group)
+      else menu.appendChild(group)
+    }
+
+    window.addEventListener('contextmenu', () => {
+      for (const stale of document.querySelectorAll('[' + menuAttr + ']')) stale.remove()
+      for (const timer of timers) clearTimeout(timer)
+      timers = [30, 80, 160, 320].map((delay) => setTimeout(() => { void enhance() }, delay))
+    }, true)
+    return true
+  })()`
+}
+
+async function installChartTpWatcherInFrame(frame) {
+  if (!frame || !frame.parent) return
+  try {
+    await frame.executeJavaScript(chartTpFrameWatcherScript(), true)
+    logger.info('[CHART_TP_LIMIT] phase=frame-watcher-installed', { url: frame.url || null })
+  } catch (error) {
+    logger.debug('[CHART_TP_LIMIT] phase=frame-watcher-install-failed', {
+      url: frame?.url || null,
+      reason: error?.message || 'unknown_error',
+    })
+  }
+}
+
+function installChartTpWatchersInChildFrames() {
+  if (!binanceView || binanceView.webContents.isDestroyed()) return
+  const mainFrame = binanceView.webContents.mainFrame
+  for (const frame of mainFrame.framesInSubtree) {
+    if (frame.parent) void installChartTpWatcherInFrame(frame)
+  }
+}
+
+ipcMain.handle('chart-take-profit-limit-options', async (event, payload = {}) => {
+  if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
+  try {
+    const now = Date.now()
+    for (const [key, claimedAt] of _chartTpOptionsClaims) {
+      if (now - claimedAt > 1_000) _chartTpOptionsClaims.delete(key)
+    }
+    const claimKey = `${normalizeChartTradeSymbol(payload.symbol)}:${Number(payload.price)}`
+    const existingClaim = _chartTpOptionsClaims.get(claimKey)
+    if (existingClaim && now - existingClaim <= 1_000) {
+      return { ok: false, reason: 'duplicate_menu_request', locale: runtimeUiLocale }
+    }
+    _chartTpOptionsClaims.set(claimKey, now)
+
+    const context = await getChartTakeProfitContext(payload.symbol, payload.price)
+    const menuToken = context.ok && context.positions.length > 0
+      ? issueChartTpMenuToken(context)
+      : null
+    return { ...context, menuToken, locale: runtimeUiLocale }
+  } catch (error) {
+    logger.warn('[CHART_TP_LIMIT] phase=options-failed', { reason: error?.message || 'unknown_error' })
+    return { ok: false, reason: error?.message || 'options_failed', locale: runtimeUiLocale }
+  }
+})
+
+ipcMain.handle('chart-place-take-profit-limit', async (event, payload = {}) => {
+  if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
+  try {
+    const menuToken = String(payload.menuToken || '')
+    const tokenRecord = _chartTpMenuTokens.get(menuToken)
+    const requestedPositionId = Number(payload.positionId)
+    const requestedSymbol = normalizeChartTradeSymbol(payload.symbol)
+    const requestedPrice = Number(payload.price)
+    if (
+      !tokenRecord
+      || tokenRecord.expiresAt <= Date.now()
+      || tokenRecord.symbol !== requestedSymbol
+      || tokenRecord.price !== requestedPrice
+      || !tokenRecord.positionIds.has(requestedPositionId)
+    ) {
+      _chartTpMenuTokens.delete(menuToken)
+      return { ok: false, reason: 'menu_request_expired' }
+    }
+    _chartTpMenuTokens.delete(menuToken)
+
+    const context = await getChartTakeProfitContext(payload.symbol, payload.price)
+    if (!context.ok) return context
+    const positionId = requestedPositionId
+    const selected = context.positions.find((position) => position.id === positionId)
+    if (!selected) return { ok: false, reason: 'position_or_price_no_longer_valid' }
+
+    const token = getToken()
+    const positionsResponse = await httpRequest(
+      'GET',
+      buildBackendPath('/api/positions', { status: 'OPEN' }),
+      null,
+      token,
+    )
+    const currentPosition = Array.isArray(positionsResponse.body)
+      ? positionsResponse.body.find((position) => Number(position?.id) === positionId)
+      : null
+    if (!currentPosition || normalizeChartTradeSymbol(currentPosition.symbol) !== context.symbol) {
+      return { ok: false, reason: 'position_not_found' }
+    }
+
+    const response = await httpRequest(
+      'POST',
+      `/api/positions/${positionId}/tpsl`,
+      {
+        tp_price: context.price,
+        sl_price: Number(currentPosition.sl_price) > 0 ? Number(currentPosition.sl_price) : null,
+        tp_order_type: 'LIMIT',
+      },
+      token,
+    )
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
+    }
+    logger.info('[CHART_TP_LIMIT] phase=placed', {
+      positionId,
+      symbol: context.symbol,
+      side: selected.side,
+      price: context.price,
+      quantity: selected.quantity,
+    })
+    return { ok: true, position: selected, price: context.price }
+  } catch (error) {
+    logger.warn('[CHART_TP_LIMIT] phase=place-failed', { reason: error?.message || 'unknown_error' })
+    return { ok: false, reason: error?.message || 'place_failed' }
+  }
+})
+
 ipcMain.handle('get-tv-klines', async (_event, symbol, interval, limit) => {
   if (!binanceView) return null
   try {
@@ -781,6 +1160,28 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
   } catch (error) {
     logger.warn('[OVERLAY_IPC] phase=send-failed', { action: 'clear', reason: error?.message || 'overlay_clear_failed' })
     return { ok: false, reason: error?.message || 'overlay_clear_failed' }
+  }
+})
+
+ipcMain.handle('set-chart-active-order-lines', async (_event, orders, locale) => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  const normalizedOrders = Array.isArray(orders) ? orders : []
+  try {
+    binanceView.webContents.send('active-order-lines', normalizedOrders, locale)
+    return { ok: true, count: normalizedOrders.length }
+  } catch (error) {
+    logger.warn('[ACTIVE_ORDER_LINES] phase=send-failed', { reason: error?.message || 'send_failed' })
+    return { ok: false, reason: error?.message || 'send_failed' }
+  }
+})
+
+ipcMain.handle('clear-chart-active-order-lines', async () => {
+  if (!binanceView) return { ok: false, reason: 'no_view' }
+  try {
+    binanceView.webContents.send('active-order-lines-clear')
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: error?.message || 'send_failed' }
   }
 })
 

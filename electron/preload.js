@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uiLang: ipcRenderer.sendSync('get-ui-lang-sync'),
   backendBaseUrl: ipcRenderer.sendSync('get-backend-base-url-sync'),
   getUILang: () => ipcRenderer.invoke('get-ui-lang'),
+  setUILang: (locale) => ipcRenderer.invoke('set-ui-lang', locale),
   getBackendBaseUrl: () => ipcRenderer.invoke('get-backend-base-url'),
 
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -81,6 +82,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('get-tv-klines', symbol, interval, limit),
   setChartOverlaySignals: (signals, locale) => ipcRenderer.invoke('set-chart-overlay-signals', signals, locale),
   clearChartOverlaySignals: () => ipcRenderer.invoke('clear-chart-overlay-signals'),
+  setChartActiveOrderLines: (orders, locale) => ipcRenderer.invoke('set-chart-active-order-lines', orders, locale),
+  clearChartActiveOrderLines: () => ipcRenderer.invoke('clear-chart-active-order-lines'),
   clearAllChartDrawings: () => ipcRenderer.invoke('clear-all-chart-drawings'),
   debugProbeChartOverlay: () => ipcRenderer.invoke('debug-probe-chart-overlay'),
   debugClearChartOverlaySignals: () => ipcRenderer.invoke('debug-clear-chart-overlay-signals'),

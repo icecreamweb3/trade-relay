@@ -6,6 +6,227 @@
 const { ipcRenderer } = require('electron')
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TradingView context menu — position take-profit limit shortcut
+// ─────────────────────────────────────────────────────────────────────────────
+const CHART_TP_MENU_ATTR = 'data-trade-relay-tp-menu'
+let _chartTpMenuTimers = []
+let _chartTpFrameMenuClaim = null
+
+function _chartTradeSymbol() {
+  const pathMatch = String(location.pathname || '').match(/\/futures\/([A-Z0-9.]+)/i)
+  if (pathMatch) return pathMatch[1].toUpperCase().replace(/\.P$/, '')
+  const cachedSymbol = String(_lastChartKlineKey || '').split('_')[0]
+  return cachedSymbol.toUpperCase().replace(/\.P$/, '')
+}
+
+function _chartContextPrice(menu) {
+  const text = String(menu?.innerText || '')
+  const match = text.match(/(?:Copy price|复制价格)\s*([\d,]+(?:\.\d+)?)/i)
+  if (!match) return null
+  const price = Number(match[1].replace(/,/g, ''))
+  return Number.isFinite(price) && price > 0 ? price : null
+}
+
+function _findChartContextMenu() {
+  const candidates = Array.from(document.querySelectorAll(
+    '[role="menu"], [data-name*="menu" i], [class*="context-menu" i], [class*="menuWrap" i]',
+  ))
+  return candidates
+    .filter((element) => /(?:Copy price|复制价格)\s*[\d,]+/i.test(String(element.innerText || '')))
+    .sort((left, right) => String(left.innerText || '').length - String(right.innerText || '').length)[0] || null
+}
+
+function _chartTpToast(message, success) {
+  const previous = document.getElementById('trade-relay-chart-tp-toast')
+  previous?.remove()
+  const toast = document.createElement('div')
+  toast.id = 'trade-relay-chart-tp-toast'
+  toast.textContent = message
+  Object.assign(toast.style, {
+    position: 'fixed',
+    zIndex: '2147483647',
+    right: '18px',
+    top: '18px',
+    maxWidth: '420px',
+    padding: '10px 14px',
+    borderRadius: '6px',
+    border: `1px solid ${success ? '#0ECB81' : '#F6465D'}`,
+    background: '#1E2329',
+    color: success ? '#8ee8c2' : '#ff9aa8',
+    font: '13px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',
+    boxShadow: '0 8px 24px rgba(0,0,0,.4)',
+  })
+  document.body.appendChild(toast)
+  setTimeout(() => toast.remove(), 4000)
+}
+
+function _chartTpMenuItem(label, onClick) {
+  const item = document.createElement('div')
+  item.setAttribute('role', 'menuitem')
+  item.tabIndex = 0
+  item.textContent = `◎  ${label}`
+  Object.assign(item.style, {
+    display: 'flex',
+    alignItems: 'center',
+    minHeight: '42px',
+    padding: '0 16px',
+    color: '#d1d4dc',
+    background: '#1e1e1e',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    font: '14px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',
+  })
+  item.addEventListener('mouseenter', () => { item.style.background = '#2a2e39' })
+  item.addEventListener('mouseleave', () => { item.style.background = '#1e1e1e' })
+  item.addEventListener('mousedown', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+  })
+  item.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    void onClick()
+  })
+  return item
+}
+
+function _bindChartTpMenuCleanup(group, menu) {
+  let finished = false
+  let lifetimeCheck
+  let maxLifetime
+  const onPointerDown = (event) => {
+    if (!group.contains(event.target)) setTimeout(cleanup, 0)
+  }
+  const onKeyDown = (event) => { if (event.key === 'Escape') cleanup() }
+  const onNextContextMenu = () => cleanup()
+  const cleanup = () => {
+    if (finished) return
+    finished = true
+    clearInterval(lifetimeCheck)
+    clearTimeout(maxLifetime)
+    window.removeEventListener('pointerdown', onPointerDown, true)
+    window.removeEventListener('keydown', onKeyDown, true)
+    window.removeEventListener('contextmenu', onNextContextMenu, true)
+    group.remove()
+  }
+  lifetimeCheck = setInterval(() => {
+    if (!group.isConnected || !/(?:Copy price|复制价格)\s*[\d,]+/i.test(String(menu.innerText || ''))) cleanup()
+  }, 100)
+  maxLifetime = setTimeout(cleanup, 15_000)
+  window.addEventListener('pointerdown', onPointerDown, true)
+  window.addEventListener('keydown', onKeyDown, true)
+  window.addEventListener('contextmenu', onNextContextMenu, true)
+}
+
+async function _enhanceChartContextMenu() {
+  const menu = _findChartContextMenu()
+  if (!menu || menu.querySelector(`[${CHART_TP_MENU_ATTR}]`)) return
+  const price = _chartContextPrice(menu)
+  const symbol = _chartTradeSymbol()
+  if (!price || !symbol) return
+
+  const marker = document.createElement('div')
+  marker.setAttribute(CHART_TP_MENU_ATTR, 'loading')
+  marker.style.display = 'none'
+  menu.appendChild(marker)
+
+  const result = await ipcRenderer.invoke('chart-take-profit-limit-options', { symbol, price })
+  if (!menu.isConnected || _chartContextPrice(menu) !== price) return
+  marker.remove()
+  if (!result?.ok || !Array.isArray(result.positions) || result.positions.length === 0) return
+
+  const locale = result.locale === 'en' ? 'en' : 'zh-CN'
+  const group = document.createElement('div')
+  group.setAttribute(CHART_TP_MENU_ATTR, 'ready')
+  group.style.borderTop = '1px solid #363a45'
+  group.style.borderBottom = '1px solid #363a45'
+  group.style.padding = '4px 0'
+
+  for (const position of result.positions) {
+    const sideLabel = locale === 'en'
+      ? (position.side === 'LONG' ? 'Sell Take-Profit Limit' : 'Buy Take-Profit Limit')
+      : (position.side === 'LONG' ? '卖出限价止盈' : '买入限价止盈')
+    const label = locale === 'en'
+      ? `${sideLabel} · ${position.quantity} ${symbol} @ ${price}`
+      : `${sideLabel} · ${position.quantity} ${symbol} @ ${price}`
+    group.appendChild(_chartTpMenuItem(label, async () => {
+      const confirmation = locale === 'en'
+        ? `Place a reduce-only take-profit limit for the full ${position.quantity} ${symbol} position at ${price}?`
+        : `确认以 ${price} 为整个 ${position.quantity} ${symbol} 持仓挂出只减仓止盈限价单？`
+      if (!window.confirm(confirmation)) return
+      const placed = await ipcRenderer.invoke('chart-place-take-profit-limit', {
+        positionId: position.id,
+        symbol,
+        price,
+        menuToken: result.menuToken,
+      })
+      const message = placed?.ok
+        ? (locale === 'en' ? `Take-profit limit placed at ${price}` : `止盈限价单已挂出：${price}`)
+        : (locale === 'en' ? `Failed: ${placed?.reason || 'unknown error'}` : `下单失败：${placed?.reason || '未知错误'}`)
+      _chartTpToast(message, Boolean(placed?.ok))
+      menu.remove()
+    }))
+  }
+
+  const orderItems = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+  const addOrderItem = orderItems.find((item) => /Add order|添加订单/i.test(String(item.innerText || '')))
+  if (addOrderItem) addOrderItem.after(group)
+  else menu.appendChild(group)
+  _bindChartTpMenuCleanup(group, menu)
+}
+
+function _scheduleChartContextMenuEnhancement() {
+  for (const timer of _chartTpMenuTimers) clearTimeout(timer)
+  _chartTpMenuTimers = [40, 120, 280].map((delay) => (
+    setTimeout(() => { void _enhanceChartContextMenu() }, delay)
+  ))
+}
+
+window.addEventListener('contextmenu', _scheduleChartContextMenuEnhancement, true)
+
+// TradingView may render its menu in a child frame where this preload does not
+// run. The main process injects the visual item there; this top-frame bridge is
+// the only path from that item to the authenticated order IPC handler.
+window.addEventListener('message', async (event) => {
+  const request = event.data
+  if (!request || !['trade-relay-chart-tp-options', 'trade-relay-chart-tp-place'].includes(request.type)) return
+  const isOptionsRequest = request.type === 'trade-relay-chart-tp-options'
+  if (isOptionsRequest) {
+    const now = Date.now()
+    const requestedPrice = Number(request.payload?.price)
+    const claimedByAnotherFrame = _chartTpFrameMenuClaim
+      && now - _chartTpFrameMenuClaim.at < 750
+      && _chartTpFrameMenuClaim.price === requestedPrice
+      && _chartTpFrameMenuClaim.source !== event.source
+    if (claimedByAnotherFrame) {
+      try {
+        event.source?.postMessage({
+          type: 'trade-relay-chart-tp-options-result',
+          requestId: request.requestId,
+          result: { ok: false, reason: 'duplicate_frame_menu' },
+        }, '*')
+      } catch {}
+      return
+    }
+    _chartTpFrameMenuClaim = { at: now, price: requestedPrice, source: event.source }
+  }
+  const payload = isOptionsRequest
+    ? { ...(request.payload || {}), symbol: _chartTradeSymbol() }
+    : (request.payload || {})
+  const result = await ipcRenderer.invoke(
+    isOptionsRequest ? 'chart-take-profit-limit-options' : 'chart-place-take-profit-limit',
+    payload,
+  )
+  try {
+    event.source?.postMessage({
+      type: isOptionsRequest ? 'trade-relay-chart-tp-options-result' : 'trade-relay-chart-tp-result',
+      requestId: request.requestId,
+      result,
+    }, '*')
+  } catch {}
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TV Chart Fullscreen — prevent BrowserView from covering React UI panels
 // ─────────────────────────────────────────────────────────────────────────────
 // TradingView's "maximize chart" button calls requestFullscreen().  In an
@@ -837,6 +1058,8 @@ const OVERLAY_MARKER_STACK_GAP_RATIO = 0.07
 // Keep references so we can clear them before re-drawing
 let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
 let _orderLines     = []    // objects from createOrderLine() — need .remove()
+let _activeOrderShapeIds = [] // horizontal-line fallback IDs
+let _activeOrderLineGeneration = 0
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
 let _overlayShapeSignals = new Map()
@@ -1688,6 +1911,103 @@ function drawSignalsOnChart(chart, signals) {
   _captureOverlayShapesByDiff(chart, baseShapeIds)
 }
 
+function _activeOrderLabel(order, locale) {
+  const isEnglish = locale === 'en'
+  const side = String(order.side || '').toUpperCase()
+  const isClose = String(order.trade_direction || '').toUpperCase() === 'CLOSE'
+    || Boolean(order.reduce_only)
+    || String(order.order_type || '').toUpperCase() === 'TAKE_PROFIT'
+  if (isClose) {
+    if (side === 'SELL') return isEnglish ? 'Sell Take-Profit Limit' : '卖出限价止盈'
+    return isEnglish ? 'Buy Take-Profit Limit' : '买入限价止盈'
+  }
+  if (side === 'SELL') return isEnglish ? 'Sell Limit' : '卖出限价'
+  return isEnglish ? 'Buy Limit' : '买入限价'
+}
+
+function clearActiveOrderLines(chart = _getActiveOverlayChart()) {
+  _activeOrderLineGeneration += 1
+  for (const line of _orderLines) {
+    try { line?.remove?.() } catch { /* stale line */ }
+  }
+  _orderLines = []
+  if (chart) {
+    for (const id of _activeOrderShapeIds) {
+      try { chart.removeEntity(id) } catch { /* stale shape */ }
+    }
+  }
+  _activeOrderShapeIds = []
+}
+
+async function drawActiveOrderLines(chart, orders, locale) {
+  clearActiveOrderLines(chart)
+  const generation = _activeOrderLineGeneration
+  for (const order of orders) {
+    const price = Number(order.price)
+    const quantity = Number(order.remaining_quantity ?? order.quantity)
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) continue
+    const side = String(order.side || '').toUpperCase()
+    const color = side === 'SELL' ? '#f23645' : '#2962ff'
+    const label = _activeOrderLabel(order, locale)
+
+    if (typeof chart.createOrderLine === 'function') {
+      try {
+        const line = await Promise.resolve(chart.createOrderLine())
+        if (!line) throw new Error('createOrderLine returned no adapter')
+        if (generation !== _activeOrderLineGeneration) {
+          try { line.remove?.() } catch {}
+          continue
+        }
+        const setters = [
+          ['setPrice', price],
+          ['setQuantity', String(quantity)],
+          ['setText', label],
+          ['setLineColor', color],
+          ['setBodyTextColor', color],
+          ['setBodyBorderColor', color],
+          ['setQuantityTextColor', '#ffffff'],
+          ['setQuantityBackgroundColor', color],
+          ['setCancelButtonBorderColor', color],
+          ['setCancelButtonIconColor', color],
+          ['setLineLength', 35],
+          ['setLineWidth', 1],
+        ]
+        for (const [method, value] of setters) {
+          try { if (typeof line[method] === 'function') line[method](value) } catch {}
+        }
+        _orderLines.push(line)
+        continue
+      } catch (error) {
+        _logOverlayToMain('debug', 'createOrderLine unavailable; using horizontal-line fallback', {
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    try {
+      const id = chart.createShape(
+        { time: Math.floor(Date.now() / 1000), price },
+        {
+          shape: 'horizontal_line',
+          lock: true,
+          disableSelection: true,
+          zOrder: 'top',
+          overrides: {
+            linecolor: color,
+            linewidth: 1,
+            linestyle: 0,
+            showLabel: true,
+            text: `${quantity} ${label}`,
+            fontsize: 10,
+            textcolor: color,
+          },
+        },
+      )
+      if (id) _activeOrderShapeIds.push(id)
+    } catch { /* chart API variant does not support this fallback */ }
+  }
+}
+
 function _refreshOverlayForVisibleRangeChange() {
   if (!_tvChart || !_cachedSignals.length) return
   const nextKey = _getOverlayVisibleRangeKey()
@@ -1794,6 +2114,7 @@ function _clearAllChartDrawingsOnKnownCharts() {
   if (_tvChart && !charts.includes(_tvChart)) charts.push(_tvChart)
 
   const widget = findTvWidget()
+  clearActiveOrderLines(freshChart || _tvChart)
   const clearResults = []
   let clearedCount = 0
 
@@ -1974,6 +2295,32 @@ ipcRenderer.on('overlay-signals', async (event, signals, locale) => {
 ipcRenderer.on('overlay-clear', async () => {
   _overlayMessageVersion += 1
   _clearOverlayOnKnownCharts()
+})
+
+ipcRenderer.on('active-order-lines', async (_event, orders, locale) => {
+  if (locale) _uiLocale = locale
+  const messageOrders = Array.isArray(orders) ? orders : []
+  if (messageOrders.length === 0) {
+    clearActiveOrderLines()
+    return
+  }
+  let chart = _getActiveOverlayChart()
+  if (!chart) chart = await waitForTvChart(8_000)
+  if (!chart) {
+    _logOverlayToMain('warn', 'active order lines skipped: chart not found', { count: messageOrders.length })
+    return
+  }
+  _tvChart = chart
+  await drawActiveOrderLines(chart, messageOrders, locale || _uiLocale)
+  _logOverlayToMain('info', 'active order lines drawn', {
+    count: messageOrders.length,
+    nativeLineCount: _orderLines.length,
+    fallbackShapeCount: _activeOrderShapeIds.length,
+  })
+})
+
+ipcRenderer.on('active-order-lines-clear', () => {
+  clearActiveOrderLines()
 })
 
 ipcRenderer.on('overlay-clear-debug', async () => {
