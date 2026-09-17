@@ -54,6 +54,16 @@ function autoBreakevenStorageKey(username: string): string {
   return `trade-relay:auto-breakeven:${username}`
 }
 
+function autoBreakevenDefaultStorageKey(username: string): string {
+  return `trade-relay:auto-breakeven-default:${username}`
+}
+
+function readAutoBreakevenDefault(username: string): boolean {
+  if (!username) return true
+  const stored = localStorage.getItem(autoBreakevenDefaultStorageKey(username))
+  return stored == null ? true : stored === 'true'
+}
+
 function autoTwoRTakeProfitStorageKey(username: string): string {
   return `trade-relay:auto-two-r-take-profit:${username}`
 }
@@ -156,6 +166,7 @@ export function PositionsPanel({
   const [positionMarkPrices, setPositionMarkPrices] = useState<Record<string, number>>({})
   const [positionExcursions, setPositionExcursions] = useState<Record<number, { mfe: number; mae: number }>>({})
   const [autoBreakevenEnabled, setAutoBreakevenEnabled] = useState<Record<number, boolean>>({})
+  const [autoBreakevenDefaultEnabled, setAutoBreakevenDefaultEnabled] = useState(true)
   const [autoBreakevenSettingsOwner, setAutoBreakevenSettingsOwner] = useState('')
   const [autoBreakevenMoving, setAutoBreakevenMoving] = useState<Record<number, boolean>>({})
   const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(false)
@@ -179,6 +190,7 @@ export function PositionsPanel({
   useEffect(() => {
     const username = currentUser?.username ?? ''
     setAutoBreakevenEnabled(readAutoBreakevenSettings(username))
+    setAutoBreakevenDefaultEnabled(readAutoBreakevenDefault(username))
     setAutoBreakevenSettingsOwner(username)
     autoBreakevenInFlightRef.current.clear()
     autoBreakevenRetryAfterRef.current.clear()
@@ -198,8 +210,15 @@ export function PositionsPanel({
     localStorage.setItem(autoBreakevenStorageKey(username), JSON.stringify(autoBreakevenEnabled))
   }, [autoBreakevenEnabled, autoBreakevenSettingsOwner, currentUser?.username])
 
-  // A valid stop defines the position's 1R. Enable protection by default the
-  // first time such a position is seen, while preserving an explicit user-off value.
+  useEffect(() => {
+    const username = currentUser?.username
+    if (!username || autoBreakevenSettingsOwner !== username) return
+    localStorage.setItem(autoBreakevenDefaultStorageKey(username), String(autoBreakevenDefaultEnabled))
+  }, [autoBreakevenDefaultEnabled, autoBreakevenSettingsOwner, currentUser?.username])
+
+  // A valid stop defines the position's 1R. Apply the user's last manual
+  // preference the first time such a position is seen, while preserving the
+  // position's explicit setting afterwards.
   useEffect(() => {
     const username = currentUser?.username ?? ''
     if (!username || autoBreakevenSettingsOwner !== username) return
@@ -217,13 +236,13 @@ export function PositionsPanel({
           && position.initial_risk_usdc > 0
         )
         if (!hasExplicitSetting && hasValidStopAndRisk) {
-          next[position.id] = true
+          next[position.id] = autoBreakevenDefaultEnabled
           changed = true
         }
       }
       return changed ? next : current
     })
-  }, [autoBreakevenSettingsOwner, currentUser?.username, positions])
+  }, [autoBreakevenDefaultEnabled, autoBreakevenSettingsOwner, currentUser?.username, positions])
   const _positionsFirstLoadDone = useRef(false)
 
   const loadPositions = useCallback(async () => {
@@ -439,8 +458,10 @@ export function PositionsPanel({
     }
   }, [activeSymbol, autoBreakevenEnabled, currentPrice, isActive, isAuthenticated, markPrice, positionExcursions, positionMarkPrices, positions, showToast, t])
 
-  const toggleAutoBreakeven = useCallback((positionId: number) => {
-    setAutoBreakevenEnabled((current) => ({ ...current, [positionId]: !current[positionId] }))
+  const toggleAutoBreakeven = useCallback((positionId: number, enabled: boolean) => {
+    const nextEnabled = !enabled
+    setAutoBreakevenEnabled((current) => ({ ...current, [positionId]: nextEnabled }))
+    setAutoBreakevenDefaultEnabled(nextEnabled)
     autoBreakevenRetryAfterRef.current.delete(positionId)
   }, [])
 
@@ -904,7 +925,7 @@ export function PositionsPanel({
                             disabled={moving || p.entry_price == null || p.initial_risk_usdc == null || p.initial_risk_usdc <= 0}
                             onClick={(event) => {
                               event.stopPropagation()
-                              toggleAutoBreakeven(p.id)
+                              toggleAutoBreakeven(p.id, enabled)
                             }}
                             className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#69717e] bg-[#303640]'}`}
                             title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : t('pos.autoBreakeven.hint')}
@@ -1155,7 +1176,12 @@ export function PositionsPanel({
             initial_risk_usdc: initialRisk ?? p.initial_risk_usdc,
           } : p))
           if (sl != null && Number.isFinite(sl) && sl > 0) {
-            setAutoBreakevenEnabled((current) => ({ ...current, [posId]: true }))
+            setAutoBreakevenEnabled((current) => ({
+              ...current,
+              [posId]: Object.prototype.hasOwnProperty.call(current, posId)
+                ? current[posId]
+                : autoBreakevenDefaultEnabled,
+            }))
             autoBreakevenRetryAfterRef.current.delete(posId)
           }
           setTpslPosition(null)
