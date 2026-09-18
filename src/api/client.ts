@@ -519,6 +519,7 @@ export const api = {
     post_only?: boolean
     leverage?: number
     margin_type: string; position_direction: string; position_mode?: string
+    rebalance_close_orders?: boolean
   }): Promise<ApiResult> {
     return request<ApiResult>('POST', '/api/orders', { body: order })
   },

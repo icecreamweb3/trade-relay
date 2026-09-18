@@ -5,6 +5,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -39,6 +40,7 @@ _client_cache: dict[tuple[str, str, bool], tuple[float, FuturesBinanceClient]] =
 _client_cache_lock = Lock()
 _position_id_backfill_lock = Lock()
 _position_id_backfill_inflight: set[int | None] = set()
+_close_limit_rebalance_locks: dict[tuple[int, str, str], asyncio.Lock] = {}
 
 
 def _get_futures_client(api_key: str, api_secret: str, testnet: bool) -> FuturesBinanceClient:
@@ -74,6 +76,9 @@ class OrderRequest(BaseModel):
     leverage: int = 10
     position_direction: str = 'OPEN'  # OPEN | CLOSE
     position_mode: Optional[str] = None  # SINGLE | DUAL
+    # When a close LIMIT would exceed the position because an earlier take-profit
+    # already reserves the quantity, shrink that earlier order before submitting.
+    rebalance_close_orders: bool = False
 
 class OrderOut(BaseModel):
     id: int
@@ -304,30 +309,60 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price, body.position_direction,
     )
     session = Session(int(user["sub"]), user["username"], user["role"])
-    result = await submit_order(
-        session,
-        body.symbol,
-        body.side,
-        body.order_type,
-        body.quantity,
-        body.price,
-        body.stop_price,
-        body.tp_price,
-        body.sl_price,
-        body.post_only,
-        body.leverage,
-        body.position_direction,
-        body.position_mode,
+    rebalanced_orders: list[dict] = []
+
+    async def _submit():
+        return await submit_order(
+            session,
+            body.symbol,
+            body.side,
+            body.order_type,
+            body.quantity,
+            body.price,
+            body.stop_price,
+            body.tp_price,
+            body.sl_price,
+            body.post_only,
+            body.leverage,
+            body.position_direction,
+            body.position_mode,
+        )
+
+    should_rebalance = (
+        body.rebalance_close_orders
+        and body.position_direction.upper() == "CLOSE"
+        and body.order_type.upper() == "LIMIT"
     )
+    if should_rebalance:
+        symbol = body.symbol.strip().upper()
+        side = body.side.strip().upper()
+        lock_key = (session.user_id, symbol, side)
+        lock = _close_limit_rebalance_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            rebalanced_orders = await _rebalance_close_limit_orders(
+                user=user,
+                symbol=symbol,
+                side=side,
+                new_quantity=body.quantity,
+            )
+            result = await _submit()
+    else:
+        result = await _submit()
     if not result.success:
         _log.warning("[ORDER_FLOW] phase=failed username=%s reason=%s", user["username"], result.message)
-        raise HTTPException(status_code=400, detail=result.message)
+        detail = result.message
+        if rebalanced_orders:
+            detail = (
+                f"Existing close order(s) were adjusted, but the new order failed: {result.message}"
+            )
+        raise HTTPException(status_code=400, detail=detail)
     _log.info("[ORDER_FLOW] phase=success order_id=%s username=%s", result.order_id, user["username"])
     return {
         "ok": True,
         "order_id": result.order_id,
         "message": result.message,
         "pending_confirmation": result.pending_confirmation,
+        "rebalanced_orders": rebalanced_orders,
     }
 
 
@@ -844,6 +879,171 @@ async def amend_order(order_id: int, body: AmendOrderRequest, user: dict = Depen
         symbol,
     )
     return {"ok": True, "order_id": result.order_id, "message": result.message}
+
+
+def _step_quantity(value: float) -> float:
+    """Normalize a base-asset quantity to the order manager's 0.001 step."""
+    return max(0.0, math.floor((float(value) + 1e-12) * 1000) / 1000)
+
+
+def _plan_close_limit_rebalance(
+    orders: list[dict],
+    *,
+    position_quantity: float,
+    new_quantity: float,
+) -> list[tuple[dict, float]]:
+    """Return (order, desired_remaining_qty) changes needed for a new TP tier.
+
+    The largest existing order is reduced first. This preserves smaller TP tiers
+    when a previous full-position take-profit and several partial tiers coexist.
+    """
+    position_qty = _step_quantity(position_quantity)
+    requested_qty = _step_quantity(new_quantity)
+    if requested_qty > position_qty:
+        raise ValueError(
+            f"Close quantity {requested_qty:g} exceeds position quantity {position_qty:g}"
+        )
+
+    candidates: list[tuple[dict, float]] = []
+    for order in orders:
+        remaining = _step_quantity(
+            float(order.get("quantity") or 0) - float(order.get("filled_qty") or 0)
+        )
+        if remaining > 0:
+            candidates.append((order, remaining))
+
+    existing_total = _step_quantity(sum(remaining for _, remaining in candidates))
+    allowed_existing = _step_quantity(position_qty - requested_qty)
+    excess = _step_quantity(existing_total - allowed_existing)
+    if excess <= 0:
+        return []
+
+    candidates.sort(
+        key=lambda item: (item[1], int(item[0].get("id") or 0)),
+        reverse=True,
+    )
+    changes: list[tuple[dict, float]] = []
+    for order, remaining in candidates:
+        if excess <= 0:
+            break
+        reduction = min(remaining, excess)
+        desired_remaining = _step_quantity(remaining - reduction)
+        changes.append((order, desired_remaining))
+        excess = _step_quantity(excess - reduction)
+    return changes
+
+
+async def _rebalance_close_limit_orders(
+    *,
+    user: dict,
+    symbol: str,
+    side: str,
+    new_quantity: float,
+) -> list[dict]:
+    """Shrink existing basic close LIMIT orders to make room for a new tier."""
+    user_id = int(user["sub"])
+    position_side = "LONG" if side == "SELL" else "SHORT"
+    rows = await asyncio.to_thread(db_module.get_active_orders, user_id)
+    eligible = [
+        row for row in rows
+        if str(row.get("symbol") or "").upper() == symbol
+        and str(row.get("side") or "").upper() == side
+        and str(row.get("order_type") or "").upper() == "LIMIT"
+        and str(row.get("order_category") or "Basic").upper() == "BASIC"
+        and str(row.get("status") or "").upper() in {"NEW", "PARTIALLY_FILLED"}
+        and (
+            str(row.get("trade_direction") or "").upper() == "CLOSE"
+            or bool(row.get("reduce_only"))
+        )
+        and bool(str(row.get("exchange_order_id") or "").strip())
+    ]
+    if not eligible:
+        return []
+
+    position = await asyncio.to_thread(
+        db_module.get_position,
+        user_id,
+        symbol,
+        position_side,
+    )
+    if not position:
+        raise HTTPException(status_code=400, detail=f"No open {position_side} position found")
+
+    try:
+        changes = _plan_close_limit_rebalance(
+            eligible,
+            position_quantity=float(position.get("quantity") or 0),
+            new_quantity=new_quantity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    applied: list[dict] = []
+    try:
+        for order, desired_remaining in changes:
+            order_id = int(order["id"])
+            old_remaining = _step_quantity(
+                float(order.get("quantity") or 0) - float(order.get("filled_qty") or 0)
+            )
+            if desired_remaining <= 0:
+                await cancel_order(
+                    order_id,
+                    CancelOrderRequest(
+                        symbol=symbol,
+                        exchange_order_id=str(order["exchange_order_id"]),
+                    ),
+                    user,
+                )
+                applied.append({
+                    "order_id": order_id,
+                    "action": "canceled",
+                    "old_remaining_quantity": old_remaining,
+                    "new_remaining_quantity": 0,
+                })
+                continue
+
+            target_total_quantity = _step_quantity(
+                float(order.get("filled_qty") or 0) + desired_remaining
+            )
+            result = await amend_order(
+                order_id,
+                AmendOrderRequest(
+                    quantity=target_total_quantity,
+                    price=float(order.get("price") or 0),
+                ),
+                user,
+            )
+            applied.append({
+                "order_id": order_id,
+                "replacement_order_id": result.get("order_id"),
+                "action": "reduced",
+                "old_remaining_quantity": old_remaining,
+                "new_remaining_quantity": desired_remaining,
+            })
+    except Exception as exc:
+        if applied:
+            _log.exception(
+                "[ORDER_FLOW] phase=close_limit_rebalance_partial username=%s symbol=%s changes=%s",
+                user.get("username"),
+                symbol,
+                applied,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Take-profit rebalance was only partially applied; refresh open orders before retrying",
+            ) from exc
+        raise
+
+    if applied:
+        _log.info(
+            "[ORDER_FLOW] phase=close_limit_rebalanced username=%s symbol=%s side=%s new_qty=%s changes=%s",
+            user.get("username"),
+            symbol,
+            side,
+            new_quantity,
+            applied,
+        )
+    return applied
 
 
 class ConditionalOrderOut(BaseModel):

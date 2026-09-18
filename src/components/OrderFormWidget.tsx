@@ -876,8 +876,8 @@ export function OrderFormWidget({
   const closeEstimate = useMemo(() => {
     if (posDir !== 'CLOSE' || !closeEstimatePrice || !closeEstimateBaseQty) return null
 
-    const longClosableQty = Math.min(closeEstimateBaseQty, Math.max(availLongCloseQty ?? liveLongQty ?? 0, 0))
-    const shortClosableQty = Math.min(closeEstimateBaseQty, Math.max(availShortCloseQty ?? liveShortQty ?? 0, 0))
+    const longClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveLongQty ?? 0, 0))
+    const shortClosableQty = Math.min(closeEstimateBaseQty, Math.max(liveShortQty ?? 0, 0))
 
     const longPnl = longClosableQty > 0 && liveLongEntryPrice != null
       ? longClosableQty * (closeEstimatePrice - liveLongEntryPrice)
@@ -895,8 +895,6 @@ export function OrderFormWidget({
     posDir,
     closeEstimatePrice,
     closeEstimateBaseQty,
-    availLongCloseQty,
-    availShortCloseQty,
     liveLongQty,
     liveShortQty,
     liveLongEntryPrice,
@@ -905,8 +903,10 @@ export function OrderFormWidget({
 
   const fillPct = (pct: number) => {
     if (posDir === 'CLOSE') {
-      const longQty = availLongCloseQty ?? 0
-      const shortQty = availShortCloseQty ?? 0
+      // Close percentages refer to the whole position. If an earlier LIMIT TP
+      // already reserves it, the backend shrinks that order to make room.
+      const longQty = liveLongQty ?? 0
+      const shortQty = liveShortQty ?? 0
       const posQty = Math.max(longQty, shortQty)
       if (sizeUnit === 'QUOTE') {
         const refPrice = orderType === 'MARKET'
@@ -1097,6 +1097,7 @@ export function OrderFormWidget({
       position_direction: posDir,
       position_mode: positionMode,
       post_only: isPostOnly,
+      rebalance_close_orders: posDir === 'CLOSE' && backendOrderType === 'LIMIT',
     }
     if ((orderType === 'LIMIT' || orderType === 'POST_ONLY' || (orderType === 'CONDITIONAL' && condSubType === 'LIMIT')) && price)
       body.price = parseFloat(price)
@@ -1130,8 +1131,13 @@ export function OrderFormWidget({
       })
 
       const result = await api.submitOrder(body)
+      const rebalancedCount = Array.isArray(result.rebalanced_orders)
+        ? result.rebalanced_orders.length
+        : 0
       if (result.pending_confirmation === true) {
         showToast('info', typeof result.message === 'string' ? result.message : t('order.success'), { duration: 8000 })
+      } else if (rebalancedCount > 0) {
+        showToast('success', t('order.success.rebalanced', { count: rebalancedCount }))
       } else {
         showToast('success', t('order.success'))
       }
@@ -1432,6 +1438,12 @@ export function OrderFormWidget({
             </button>
           ))}
         </div>
+        {posDir === 'CLOSE' && (orderType === 'LIMIT' || orderType === 'POST_ONLY')
+          && (pendingLongCloseQty > 0 || pendingShortCloseQty > 0) && (
+          <div className="text-[9px] leading-relaxed text-[#F0B90B]">
+            {t('order.closeRebalanceHint')}
+          </div>
+        )}
 
         {/* Estimated margin cost */}
         {estimatedCost != null && (
