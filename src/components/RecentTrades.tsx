@@ -208,7 +208,12 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
           )
           return filtered.map((f, i) => {
             const isBuy = f.side === 'BUY'
-            const value = f.avg_price != null ? f.quantity * f.avg_price : null
+            // This table represents fills, so both displayed price and notional
+            // must use the exchange-reported execution average. `price` is the
+            // original LIMIT instruction and can be far away from the fill when
+            // a marketable reduce-only order executes immediately.
+            const executionPrice = f.avg_price
+            const value = executionPrice != null ? f.quantity * executionPrice : null
             const commissionText = f.commission != null
               ? `${fmtNum(f.commission, 4)}${f.commission_asset ? ` ${f.commission_asset}` : ''}`
               : '—'
@@ -231,7 +236,7 @@ export function RecentTrades({ isActive = true, refreshTrigger }: { isActive?: b
                 <span className={`pl-[8px] text-left ${f.trade_direction === 'CLOSE' ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
                   {f.trade_direction === 'CLOSE' ? t('order.close') : f.trade_direction === 'OPEN' ? t('order.open') : '—'}
                 </span>
-                <span className="text-right text-[#aaa]">{(f.price != null && f.price > 0) ? fmtNum(f.price, 2) : (f.avg_price != null ? fmtNum(f.avg_price, 2) : '—')}</span>
+                <span className="text-right text-[#aaa]">{executionPrice != null ? fmtNum(executionPrice, 2) : '—'}</span>
                 <span className="text-right text-[#aaa]">{value != null ? fmtNum(value, 2) : '—'}</span>
                 <span className={`text-center ${realizedPnlClass}`}>{fmtSignedNum(f.realized_pnl, 2)}</span>
                 <span className="truncate px-1 text-center text-[#aaa]" title={formatUtcTimestampToLocalString(getEffectiveFillTimestamp(f))}>{fmtTime(getEffectiveFillTimestamp(f))}</span>
