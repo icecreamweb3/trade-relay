@@ -1057,10 +1057,15 @@ function chartTpFrameWatcherScript() {
         item.addEventListener('click', async (event) => {
           event.preventDefault()
           event.stopPropagation()
-          const confirmation = locale === 'en'
-            ? 'Place a reduce-only ' + actionLabel + ' order for the full ' + position.quantity + ' ' + options.symbol + ' position at ' + price + '?'
-            : '确认以 ' + price + ' ' + actionLabel + '整个 ' + position.quantity + ' ' + options.symbol + ' 持仓？'
-          if (!window.confirm(confirmation)) return
+          const confirmation = await requestTop('trade-relay-chart-tp-confirm', {
+            locale,
+            side: position.side,
+            quantity: position.quantity,
+            symbol: options.symbol,
+            price,
+            actionLabel
+          }, 'trade-relay-chart-tp-confirm-result')
+          if (!confirmation?.confirmed) return
           const placed = await requestTop('trade-relay-chart-tp-place', {
             positionId: position.id,
             symbol: options.symbol,

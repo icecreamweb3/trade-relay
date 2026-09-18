@@ -11,6 +11,7 @@ const { ipcRenderer } = require('electron')
 const CHART_TP_MENU_ATTR = 'data-trade-relay-tp-menu'
 let _chartTpMenuTimers = []
 let _chartTpFrameMenuClaim = null
+let _chartTpConfirmCancel = null
 
 function _chartTradeSymbol() {
   const pathMatch = String(location.pathname || '').match(/\/futures\/([A-Z0-9.]+)/i)
@@ -58,6 +59,171 @@ function _chartTpToast(message, success) {
   })
   document.body.appendChild(toast)
   setTimeout(() => toast.remove(), 4000)
+}
+
+function _chartTpConfirm({ locale, side, quantity, symbol, price, actionLabel }) {
+  _chartTpConfirmCancel?.()
+  const isEnglish = locale === 'en'
+  const isSell = String(side || '').toUpperCase() === 'LONG'
+  const accent = isSell ? '#F6465D' : '#0ECB81'
+  const accentSoft = isSell ? 'rgba(246,70,93,.12)' : 'rgba(14,203,129,.12)'
+  const overlay = document.createElement('div')
+  const panel = document.createElement('section')
+  const titleId = `trade-relay-tp-confirm-title-${Date.now()}`
+
+  overlay.id = 'trade-relay-chart-tp-confirm'
+  Object.assign(overlay.style, {
+    position: 'fixed', inset: '0', zIndex: '2147483647', display: 'flex',
+    alignItems: 'center', justifyContent: 'center', padding: '20px',
+    background: 'rgba(5,8,12,.72)', backdropFilter: 'blur(2px)',
+    fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',
+  })
+  panel.setAttribute('role', 'dialog')
+  panel.setAttribute('aria-modal', 'true')
+  panel.setAttribute('aria-labelledby', titleId)
+  Object.assign(panel.style, {
+    width: '390px', maxWidth: 'calc(100vw - 32px)', overflow: 'hidden',
+    border: '1px solid #3B414C', borderRadius: '10px', background: '#171B21',
+    color: '#EAECEF', boxShadow: '0 22px 70px rgba(0,0,0,.58)',
+  })
+
+  const header = document.createElement('header')
+  Object.assign(header.style, {
+    display: 'flex', alignItems: 'center', gap: '11px', padding: '16px 18px',
+    borderBottom: '1px solid #2B313B', background: '#1B2027',
+  })
+  const icon = document.createElement('div')
+  icon.textContent = 'TP'
+  Object.assign(icon.style, {
+    display: 'grid', placeItems: 'center', width: '32px', height: '32px',
+    flex: '0 0 32px', borderRadius: '8px', border: `1px solid ${accent}66`,
+    background: accentSoft, color: accent, fontSize: '11px', fontWeight: '750',
+    letterSpacing: '.04em',
+  })
+  const heading = document.createElement('div')
+  heading.style.flex = '1'
+  const title = document.createElement('div')
+  title.id = titleId
+  title.textContent = isEnglish ? 'Confirm Take-Profit Order' : '确认止盈委托'
+  Object.assign(title.style, { fontSize: '14px', lineHeight: '20px', fontWeight: '650' })
+  const subtitle = document.createElement('div')
+  subtitle.textContent = isEnglish ? 'Reduce-only · Limit' : '只减仓 · 限价单'
+  Object.assign(subtitle.style, { marginTop: '2px', color: '#848E9C', fontSize: '11px', lineHeight: '16px' })
+  heading.append(title, subtitle)
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.setAttribute('aria-label', isEnglish ? 'Close' : '关闭')
+  close.textContent = '×'
+  Object.assign(close.style, {
+    width: '28px', height: '28px', border: '0', borderRadius: '6px',
+    background: 'transparent', color: '#929AA5', cursor: 'pointer',
+    fontSize: '22px', lineHeight: '25px', padding: '0',
+  })
+  close.addEventListener('mouseenter', () => { close.style.background = '#2B313B'; close.style.color = '#EAECEF' })
+  close.addEventListener('mouseleave', () => { close.style.background = 'transparent'; close.style.color = '#929AA5' })
+  header.append(icon, heading, close)
+
+  const body = document.createElement('div')
+  body.style.padding = '16px 18px 14px'
+  const details = document.createElement('div')
+  Object.assign(details.style, {
+    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px', overflow: 'hidden',
+    border: '1px solid #2B313B', borderRadius: '8px', background: '#2B313B',
+  })
+  const fields = [
+    [isEnglish ? 'Symbol' : '交易对', symbol],
+    [isEnglish ? 'Direction' : '方向', actionLabel],
+    [isEnglish ? 'Order price' : '委托价格', String(price)],
+    [isEnglish ? 'Close quantity' : '平仓数量', `${quantity} ${symbol}`],
+  ]
+  fields.forEach(([label, value], index) => {
+    const cell = document.createElement('div')
+    Object.assign(cell.style, { minWidth: '0', padding: '11px 12px', background: '#11151A' })
+    const key = document.createElement('div')
+    key.textContent = label
+    Object.assign(key.style, { color: '#848E9C', fontSize: '10px', lineHeight: '15px' })
+    const content = document.createElement('div')
+    content.textContent = value
+    Object.assign(content.style, {
+      marginTop: '3px', overflow: 'hidden', color: index === 1 ? accent : '#EAECEF',
+      fontFamily: index >= 2 ? 'ui-monospace, SFMono-Regular, Consolas, monospace' : 'inherit',
+      fontSize: '12px', fontWeight: '600', lineHeight: '18px', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    })
+    cell.append(key, content)
+    details.appendChild(cell)
+  })
+  const note = document.createElement('div')
+  note.textContent = isEnglish
+    ? 'This places a reduce-only order on the exchange and will not increase a reverse position.'
+    : '提交后将在交易所挂出只减仓委托，不会增加反向仓位。'
+  Object.assign(note.style, {
+    marginTop: '12px', padding: '9px 11px', border: '1px solid #353B45',
+    borderRadius: '7px', background: '#1D2229', color: '#A8B0BC',
+    fontSize: '11px', lineHeight: '17px',
+  })
+  body.append(details, note)
+
+  const footer = document.createElement('footer')
+  Object.assign(footer.style, {
+    display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px',
+    padding: '0 18px 18px',
+  })
+  const cancel = document.createElement('button')
+  const confirm = document.createElement('button')
+  cancel.type = confirm.type = 'button'
+  cancel.textContent = isEnglish ? 'Cancel' : '取消'
+  confirm.textContent = isEnglish ? 'Confirm order' : '确认下单'
+  Object.assign(cancel.style, {
+    height: '36px', border: '1px solid #474D57', borderRadius: '7px',
+    background: '#22272E', color: '#D5D9DF', cursor: 'pointer', fontSize: '12px', fontWeight: '600',
+  })
+  Object.assign(confirm.style, {
+    height: '36px', border: `1px solid ${accent}`, borderRadius: '7px',
+    background: accent, color: isSell ? '#FFF' : '#071A12', cursor: 'pointer',
+    fontSize: '12px', fontWeight: '700',
+  })
+  cancel.addEventListener('mouseenter', () => { cancel.style.background = '#2B313B'; cancel.style.borderColor = '#69717D' })
+  cancel.addEventListener('mouseleave', () => { cancel.style.background = '#22272E'; cancel.style.borderColor = '#474D57' })
+  confirm.addEventListener('mouseenter', () => { confirm.style.filter = 'brightness(1.08)' })
+  confirm.addEventListener('mouseleave', () => { confirm.style.filter = 'none' })
+  footer.append(cancel, confirm)
+  panel.append(header, body, footer)
+  overlay.appendChild(panel)
+  document.body.appendChild(overlay)
+  overlay.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease-out' })
+  panel.animate?.(
+    [{ opacity: 0, transform: 'translateY(6px) scale(.985)' }, { opacity: 1, transform: 'none' }],
+    { duration: 150, easing: 'ease-out' },
+  )
+
+  return new Promise((resolve) => {
+    let finished = false
+    const finish = (confirmed) => {
+      if (finished) return
+      finished = true
+      window.removeEventListener('keydown', onKeyDown, true)
+      overlay.remove()
+      if (_chartTpConfirmCancel === cancelCurrent) _chartTpConfirmCancel = null
+      resolve(confirmed)
+    }
+    const cancelCurrent = () => finish(false)
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); finish(false) }
+      if (event.key === 'Enter') { event.preventDefault(); finish(true) }
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        ;(document.activeElement === confirm ? cancel : confirm).focus()
+      }
+    }
+    _chartTpConfirmCancel = cancelCurrent
+    close.addEventListener('click', cancelCurrent)
+    cancel.addEventListener('click', cancelCurrent)
+    confirm.addEventListener('click', () => finish(true))
+    overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) finish(false) })
+    panel.addEventListener('mousedown', (event) => event.stopPropagation())
+    window.addEventListener('keydown', onKeyDown, true)
+    confirm.focus()
+  })
 }
 
 function _chartTpMenuItem(label, onClick) {
@@ -150,10 +316,10 @@ async function _enhanceChartContextMenu() {
       ? `${sideLabel} · ${position.quantity} ${symbol} @ ${price}`
       : `${sideLabel} · ${position.quantity} ${symbol} @ ${price}`
     group.appendChild(_chartTpMenuItem(label, async () => {
-      const confirmation = locale === 'en'
-        ? `Place a reduce-only take-profit limit for the full ${position.quantity} ${symbol} position at ${price}?`
-        : `确认以 ${price} 为整个 ${position.quantity} ${symbol} 持仓挂出只减仓止盈限价单？`
-      if (!window.confirm(confirmation)) return
+      const confirmed = await _chartTpConfirm({
+        locale, side: position.side, quantity: position.quantity, symbol, price, actionLabel: sideLabel,
+      })
+      if (!confirmed) return
       const placed = await ipcRenderer.invoke('chart-place-take-profit-limit', {
         positionId: position.id,
         symbol,
@@ -189,7 +355,22 @@ window.addEventListener('contextmenu', _scheduleChartContextMenuEnhancement, tru
 // the only path from that item to the authenticated order IPC handler.
 window.addEventListener('message', async (event) => {
   const request = event.data
-  if (!request || !['trade-relay-chart-tp-options', 'trade-relay-chart-tp-place'].includes(request.type)) return
+  if (!request || ![
+    'trade-relay-chart-tp-options',
+    'trade-relay-chart-tp-confirm',
+    'trade-relay-chart-tp-place',
+  ].includes(request.type)) return
+  if (request.type === 'trade-relay-chart-tp-confirm') {
+    const confirmed = await _chartTpConfirm(request.payload || {})
+    try {
+      event.source?.postMessage({
+        type: 'trade-relay-chart-tp-confirm-result',
+        requestId: request.requestId,
+        result: { ok: true, confirmed },
+      }, '*')
+    } catch {}
+    return
+  }
   const isOptionsRequest = request.type === 'trade-relay-chart-tp-options'
   if (isOptionsRequest) {
     const now = Date.now()
