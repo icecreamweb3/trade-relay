@@ -452,6 +452,8 @@ export function useMarketData() {
           })
           .map((order) => ({
             id: order.id,
+            symbol: order.symbol,
+            exchange_order_id: order.exchange_order_id,
             side: order.side,
             order_type: order.order_type,
             trade_direction: order.trade_direction,

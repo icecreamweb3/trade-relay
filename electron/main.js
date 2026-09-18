@@ -1208,6 +1208,60 @@ ipcMain.handle('chart-place-take-profit-limit', async (event, payload = {}) => {
   }
 })
 
+ipcMain.handle('chart-cancel-active-order', async (event, payload = {}) => {
+  if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
+  try {
+    const orderId = Number(payload.orderId)
+    const symbol = normalizeChartTradeSymbol(payload.symbol)
+    const exchangeOrderId = String(payload.exchangeOrderId || '').trim()
+    if (!Number.isInteger(orderId) || orderId <= 0 || !symbol || !exchangeOrderId) {
+      return { ok: false, reason: 'invalid_request' }
+    }
+
+    // Only permit cancellation of an order that the authenticated renderer
+    // recently supplied for the active chart. Never trust an arbitrary order ID
+    // originating from the remote Binance page.
+    const activeOrders = Array.isArray(_activeOrderLinesState?.orders)
+      ? _activeOrderLinesState.orders
+      : []
+    const activeOrder = activeOrders.find((order) => (
+      Number(order?.id) === orderId
+      && normalizeChartTradeSymbol(order?.symbol) === symbol
+      && String(order?.exchange_order_id || '').trim() === exchangeOrderId
+    ))
+    if (!activeOrder) return { ok: false, reason: 'order_no_longer_active' }
+
+    const token = getToken()
+    if (!token) return { ok: false, reason: 'not_authenticated' }
+    const response = await httpRequest(
+      'POST',
+      `/api/orders/${orderId}/cancel`,
+      { symbol, exchange_order_id: exchangeOrderId },
+      token,
+    )
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
+    }
+
+    _activeOrderLinesState = {
+      ..._activeOrderLinesState,
+      orders: activeOrders.filter((order) => Number(order?.id) !== orderId),
+    }
+    logger.info('[ACTIVE_ORDER_LINES] phase=chart-cancel-success', {
+      orderId,
+      symbol,
+      exchangeOrderId,
+    })
+    return { ok: true, orderId }
+  } catch (error) {
+    logger.warn('[ACTIVE_ORDER_LINES] phase=chart-cancel-failed', {
+      orderId: Number(payload.orderId) || null,
+      reason: error?.message || 'unknown_error',
+    })
+    return { ok: false, reason: error?.message || 'cancel_failed' }
+  }
+})
+
 ipcMain.handle('get-tv-klines', async (_event, symbol, interval, limit) => {
   if (!binanceView) return null
   try {

@@ -1246,6 +1246,7 @@ let _cachedActiveOrderLinesLocale = 'en'
 let _activeOrderLinesChart = null
 let _activeOrderLinesRefreshInFlight = false
 let _activeOrderLinesStabilizeTimer = null
+const _activeOrderCancelPending = new Set()
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
 let _overlayShapeSignals = new Map()
@@ -2111,6 +2112,57 @@ function _activeOrderLabel(order, locale) {
   return isEnglish ? 'Buy Limit' : '买入限价'
 }
 
+async function _cancelActiveOrderFromChart(order, line, locale) {
+  const orderId = Number(order?.id)
+  const symbol = String(order?.symbol || '').trim().toUpperCase()
+  const exchangeOrderId = String(order?.exchange_order_id || '').trim()
+  if (!Number.isInteger(orderId) || orderId <= 0 || !symbol || !exchangeOrderId) {
+    _chartTpToast(locale === 'en' ? 'Unable to identify this order' : '无法识别该委托', false)
+    return
+  }
+  if (_activeOrderCancelPending.has(orderId)) return
+
+  _activeOrderCancelPending.add(orderId)
+  const originalLabel = _activeOrderLabel(order, locale)
+  try {
+    try { line?.setCancellable?.(false) } catch {}
+    try { line?.setText?.(locale === 'en' ? 'Canceling…' : '撤单中…') } catch {}
+    const result = await ipcRenderer.invoke('chart-cancel-active-order', {
+      orderId,
+      symbol,
+      exchangeOrderId,
+    })
+    if (!result?.ok) {
+      try { line?.setCancellable?.(true) } catch {}
+      try { line?.setText?.(originalLabel) } catch {}
+      const reason = String(result?.reason || (locale === 'en' ? 'unknown error' : '未知错误'))
+      _chartTpToast(
+        locale === 'en' ? `Cancel failed: ${reason}` : `撤单失败：${reason}`,
+        false,
+      )
+      return
+    }
+
+    _cachedActiveOrderLines = _cachedActiveOrderLines.filter(
+      (candidate) => Number(candidate?.id) !== orderId,
+    )
+    _orderLines = _orderLines.filter((candidate) => candidate !== line)
+    try { line?.remove?.() } catch {}
+    _chartTpToast(locale === 'en' ? 'Order canceled' : '止盈委托已取消', true)
+  } catch (error) {
+    try { line?.setCancellable?.(true) } catch {}
+    try { line?.setText?.(originalLabel) } catch {}
+    _chartTpToast(
+      locale === 'en'
+        ? `Cancel failed: ${error instanceof Error ? error.message : String(error)}`
+        : `撤单失败：${error instanceof Error ? error.message : String(error)}`,
+      false,
+    )
+  } finally {
+    _activeOrderCancelPending.delete(orderId)
+  }
+}
+
 function clearActiveOrderLines(chart = _getActiveOverlayChart()) {
   _activeOrderLineGeneration += 1
   for (const line of _orderLines) {
@@ -2155,12 +2207,19 @@ async function drawActiveOrderLines(chart, orders, locale) {
           ['setQuantityBackgroundColor', color],
           ['setCancelButtonBorderColor', color],
           ['setCancelButtonIconColor', color],
+          ['setCancelTooltip', locale === 'en' ? 'Cancel order' : '取消止盈委托'],
+          ['setCancellable', true],
           ['setLineLength', 35],
           ['setLineWidth', 1],
         ]
         for (const [method, value] of setters) {
           try { if (typeof line[method] === 'function') line[method](value) } catch {}
         }
+        try {
+          if (typeof line.onCancel === 'function') {
+            line.onCancel(() => { void _cancelActiveOrderFromChart(order, line, locale) })
+          }
+        } catch {}
         _orderLines.push(line)
         continue
       } catch (error) {
