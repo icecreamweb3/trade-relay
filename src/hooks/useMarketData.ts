@@ -462,8 +462,16 @@ export function useMarketData() {
           }))
         const linesKey = JSON.stringify(activeLimitOrders)
         if (linesKey === lastLinesKey) return
-        lastLinesKey = linesKey
-        await window.electronAPI?.setChartActiveOrderLines?.(activeLimitOrders, uiLocale)
+        const result = await window.electronAPI?.setChartActiveOrderLines?.(activeLimitOrders, uiLocale)
+        if (!alive || currentRequest !== requestSequence) return
+        if (result?.ok) {
+          lastLinesKey = linesKey
+        } else {
+          window.electronAPI?.logToMain?.('warn', 'chart active order lines not ready; will retry', {
+            symbol: normalizedSymbol,
+            reason: result?.reason || 'chart_unavailable',
+          })
+        }
       } catch (error) {
         if (!alive || currentRequest !== requestSequence) return
         window.electronAPI?.logToMain?.('warn', 'load chart active order lines failed', {

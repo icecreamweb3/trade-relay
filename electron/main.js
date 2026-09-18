@@ -54,6 +54,8 @@ let _chartRatio = 0.65   // default chart 65% vertical within left panel
 let _binanceViewVisible = true
 let _binanceViewAttached = false
 let _lastBinanceViewBoundsKey = null
+let _activeOrderLinesState = null
+let _activeOrderLinesRequestSequence = 0
 const _chartTpMenuTokens = new Map()
 const _chartTpOptionsClaims = new Map()
 
@@ -310,6 +312,70 @@ function waitForOverlayStatus(action, timeoutMs = 4000) {
   })
 }
 
+function waitForActiveOrderLinesStatus(requestId, timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    if (!binanceView || binanceView.webContents.isDestroyed()) {
+      resolve({ ok: false, reason: 'no_view' })
+      return
+    }
+
+    const targetWebContents = binanceView.webContents
+    let settled = false
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      ipcMain.removeListener('active-order-lines-status', handler)
+    }
+
+    const finish = (payload) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(payload)
+    }
+
+    const handler = (event, payload) => {
+      if (event.sender !== targetWebContents) return
+      if (!payload || payload.requestId !== requestId) return
+      finish(payload)
+    }
+
+    const timer = setTimeout(() => {
+      logger.warn('[ACTIVE_ORDER_LINES] phase=timeout', { requestId, timeoutMs })
+      finish({ ok: false, reason: 'timeout' })
+    }, timeoutMs)
+
+    ipcMain.on('active-order-lines-status', handler)
+  })
+}
+
+async function sendActiveOrderLinesToChart(orders, locale, reason) {
+  if (!binanceView || binanceView.webContents.isDestroyed()) {
+    return { ok: false, reason: 'no_view' }
+  }
+
+  const requestId = `${Date.now()}-${++_activeOrderLinesRequestSequence}`
+  try {
+    const statusPromise = waitForActiveOrderLinesStatus(requestId)
+    binanceView.webContents.send('active-order-lines', orders, locale, requestId)
+    const status = await statusPromise
+    logger.info('[ACTIVE_ORDER_LINES] phase=status', {
+      reason,
+      requestId,
+      count: orders.length,
+      status,
+    })
+    return status
+  } catch (error) {
+    logger.warn('[ACTIVE_ORDER_LINES] phase=send-failed', {
+      reason,
+      requestId,
+      details: error?.message || 'send_failed',
+    })
+    return { ok: false, reason: error?.message || 'send_failed' }
+  }
+}
+
 // ── Retryable load ────────────────────────────────────────────────────────────
 const RETRYABLE_ERRORS = new Set([-21, -2, -7, -100, -101, -102, -105, -106])
 
@@ -473,6 +539,14 @@ function createBinanceView() {
 
   // Auto-expand TradingView chart on first load
   binanceView.webContents.on('did-finish-load', () => {
+    // Renderer state can arrive before the Binance preload/chart is ready.
+    // Replay it after every navigation so terminal restarts and chart reloads
+    // rebuild unchanged active-order lines as well.
+    if (_activeOrderLinesState) {
+      const { orders, locale } = _activeOrderLinesState
+      void sendActiveOrderLinesToChart(orders, locale, 'view-loaded')
+    }
+
     if (_autoExpandDone) return
     _autoExpandDone = true
     const MAX_ATTEMPTS = 30
@@ -1164,18 +1238,13 @@ ipcMain.handle('clear-chart-overlay-signals', async () => {
 })
 
 ipcMain.handle('set-chart-active-order-lines', async (_event, orders, locale) => {
-  if (!binanceView) return { ok: false, reason: 'no_view' }
   const normalizedOrders = Array.isArray(orders) ? orders : []
-  try {
-    binanceView.webContents.send('active-order-lines', normalizedOrders, locale)
-    return { ok: true, count: normalizedOrders.length }
-  } catch (error) {
-    logger.warn('[ACTIVE_ORDER_LINES] phase=send-failed', { reason: error?.message || 'send_failed' })
-    return { ok: false, reason: error?.message || 'send_failed' }
-  }
+  _activeOrderLinesState = { orders: normalizedOrders, locale }
+  return sendActiveOrderLinesToChart(normalizedOrders, locale, 'renderer-sync')
 })
 
 ipcMain.handle('clear-chart-active-order-lines', async () => {
+  _activeOrderLinesState = null
   if (!binanceView) return { ok: false, reason: 'no_view' }
   try {
     binanceView.webContents.send('active-order-lines-clear')

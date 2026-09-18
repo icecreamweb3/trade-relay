@@ -1060,6 +1060,11 @@ let _drawnShapes    = []    // shape IDs from createShape() (may be falsy)
 let _orderLines     = []    // objects from createOrderLine() — need .remove()
 let _activeOrderShapeIds = [] // horizontal-line fallback IDs
 let _activeOrderLineGeneration = 0
+let _cachedActiveOrderLines = []
+let _cachedActiveOrderLinesLocale = 'en'
+let _activeOrderLinesChart = null
+let _activeOrderLinesRefreshInFlight = false
+let _activeOrderLinesStabilizeTimer = null
 let _cachedSignals  = []    // full signal list cached for redraw after detail clear
 let _lastOverlayVisibleRangeKey = null
 let _overlayShapeSignals = new Map()
@@ -2008,6 +2013,48 @@ async function drawActiveOrderLines(chart, orders, locale) {
   }
 }
 
+async function _restoreCachedActiveOrderLines(reason, force = false) {
+  if (_activeOrderLinesRefreshInFlight || _cachedActiveOrderLines.length === 0) return
+  const chart = findTvChart()
+  if (!chart || (!force && chart === _activeOrderLinesChart)) return
+
+  _activeOrderLinesRefreshInFlight = true
+  try {
+    const orders = _cachedActiveOrderLines.slice()
+    await drawActiveOrderLines(chart, orders, _cachedActiveOrderLinesLocale)
+    _tvChart = chart
+    _activeOrderLinesChart = chart
+    _logOverlayToMain('info', 'active order lines restored', {
+      reason,
+      count: orders.length,
+      nativeLineCount: _orderLines.length,
+      fallbackShapeCount: _activeOrderShapeIds.length,
+    })
+  } finally {
+    _activeOrderLinesRefreshInFlight = false
+  }
+}
+
+function _scheduleActiveOrderLinesStabilizedRestore() {
+  if (_activeOrderLinesStabilizeTimer) clearTimeout(_activeOrderLinesStabilizeTimer)
+  if (_cachedActiveOrderLines.length === 0) {
+    _activeOrderLinesStabilizeTimer = null
+    return
+  }
+  // Binance may replace the inner TradingView frame several seconds after the
+  // first usable chart appears. A one-shot redraw after startup settles covers
+  // replacements that retain the same public chart adapter object.
+  _activeOrderLinesStabilizeTimer = setTimeout(() => {
+    _activeOrderLinesStabilizeTimer = null
+    void _restoreCachedActiveOrderLines('chart-stabilized', true)
+  }, 10_000)
+}
+
+// Restore immediately when Binance swaps the TradingView chart instance.
+setInterval(() => {
+  void _restoreCachedActiveOrderLines('chart-instance-changed')
+}, 1_500)
+
 function _refreshOverlayForVisibleRangeChange() {
   if (!_tvChart || !_cachedSignals.length) return
   const nextKey = _getOverlayVisibleRangeKey()
@@ -2297,29 +2344,49 @@ ipcRenderer.on('overlay-clear', async () => {
   _clearOverlayOnKnownCharts()
 })
 
-ipcRenderer.on('active-order-lines', async (_event, orders, locale) => {
+ipcRenderer.on('active-order-lines', async (_event, orders, locale, requestId) => {
   if (locale) _uiLocale = locale
   const messageOrders = Array.isArray(orders) ? orders : []
+  _cachedActiveOrderLines = messageOrders.slice()
+  _cachedActiveOrderLinesLocale = locale || _uiLocale
+  _scheduleActiveOrderLinesStabilizedRestore()
   if (messageOrders.length === 0) {
     clearActiveOrderLines()
+    _activeOrderLinesChart = null
+    ipcRenderer.send('active-order-lines-status', { requestId, ok: true, count: 0 })
     return
   }
   let chart = _getActiveOverlayChart()
   if (!chart) chart = await waitForTvChart(8_000)
   if (!chart) {
     _logOverlayToMain('warn', 'active order lines skipped: chart not found', { count: messageOrders.length })
+    ipcRenderer.send('active-order-lines-status', { requestId, ok: false, reason: 'tv_chart_not_found' })
     return
   }
   _tvChart = chart
-  await drawActiveOrderLines(chart, messageOrders, locale || _uiLocale)
-  _logOverlayToMain('info', 'active order lines drawn', {
-    count: messageOrders.length,
-    nativeLineCount: _orderLines.length,
-    fallbackShapeCount: _activeOrderShapeIds.length,
-  })
+  try {
+    await drawActiveOrderLines(chart, messageOrders, locale || _uiLocale)
+    _activeOrderLinesChart = chart
+    _logOverlayToMain('info', 'active order lines drawn', {
+      count: messageOrders.length,
+      nativeLineCount: _orderLines.length,
+      fallbackShapeCount: _activeOrderShapeIds.length,
+    })
+    ipcRenderer.send('active-order-lines-status', { requestId, ok: true, count: messageOrders.length })
+  } catch (error) {
+    _logOverlayToMain('warn', 'active order lines failed', {
+      count: messageOrders.length,
+      reason: error instanceof Error ? error.message : String(error),
+    })
+    ipcRenderer.send('active-order-lines-status', { requestId, ok: false, reason: 'draw_failed' })
+  }
 })
 
 ipcRenderer.on('active-order-lines-clear', () => {
+  _cachedActiveOrderLines = []
+  _activeOrderLinesChart = null
+  if (_activeOrderLinesStabilizeTimer) clearTimeout(_activeOrderLinesStabilizeTimer)
+  _activeOrderLinesStabilizeTimer = null
   clearActiveOrderLines()
 })
 
