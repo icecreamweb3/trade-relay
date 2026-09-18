@@ -62,6 +62,7 @@ interface ApiPosition {
   leverage: number
   margin_type: string
   margin: number
+  opened_at?: string | null
   tp_price?: number | null
   sl_price?: number | null
   planned_stop_price?: number | null
@@ -93,6 +94,7 @@ interface ApiOrder {
   exchange_order_id?: string
   created_at?: string
   updated_at?: string | null
+  filled_at?: string | null
   error_message?: string
   source?: 'trade_relay' | 'external'
 }

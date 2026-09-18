@@ -6,7 +6,11 @@ import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { perfSignalDone } from '../utils/perf'
 import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreferencesStore'
-import { RISK_COOLDOWN_MS, useRiskWarningStore } from '../store/riskWarningStore'
+import { useRiskWarningStore } from '../store/riskWarningStore'
+import {
+  DEFAULT_RISK_WARNING_PARAMETERS,
+  useRiskWarningSettingsStore,
+} from '../store/riskWarningSettingsStore'
 
 type Side = 'BUY' | 'SELL'
 type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'POST_ONLY'
@@ -49,11 +53,13 @@ interface AccountSummary {
 }
 
 interface PositionSnapshot {
+  id?: number
   symbol: string
   side: string
   quantity: number
   entry_price: number | null
   unrealized_pnl: number | null
+  opened_at?: string | null
 }
 
 interface LiveOrderSnapshot {
@@ -363,11 +369,21 @@ export function OrderFormWidget({
   const showToast = useToastStore((state) => state.showToast)
   const riskWarningsEnabled = useUiPreferencesStore((state) => state.riskWarningsEnabled)
   const showRiskWarning = useRiskWarningStore((state) => state.showWarning)
+  const riskWarningParameters = useRiskWarningSettingsStore((state) => (
+    user?.username
+      ? state.byUsername[user.username] ?? DEFAULT_RISK_WARNING_PARAMETERS
+      : DEFAULT_RISK_WARNING_PARAMETERS
+  ))
+  const loadRiskWarningParameters = useRiskWarningSettingsStore((state) => state.loadParameters)
   const lastAccountErrorRef = useRef<string | null>(null)
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const loadSymbolPositionsRef = useRef<(() => Promise<void>) | null>(null)
   const _accountFirstLoadDone = useRef(false)
+
+  useEffect(() => {
+    if (user?.username) loadRiskWarningParameters(user.username)
+  }, [loadRiskWarningParameters, user?.username])
 
   useEffect(() => {
     const username = user?.username
@@ -1106,8 +1122,46 @@ export function OrderFormWidget({
           symbol,
           lossAmount: matchingPnl,
           triggeredAt: now,
-          cooldownUntil: now + RISK_COOLDOWN_MS,
+          cooldownUntil: now + riskWarningParameters.cooldownMinutes * 60_000,
         })
+      }
+
+      if (matchingQuantity > 0) {
+        try {
+          const openedAt = liveSymbolPositions
+            .filter((position) => position.side === targetSide)
+            .map((position) => position.opened_at)
+            .find((value): value is string => Boolean(value))
+          const openingOrders = await api.getOrders({
+            limit: 200,
+            username: user.username,
+            symbol,
+            trade_direction: 'OPEN',
+            start_time: openedAt || undefined,
+          })
+          const filledEntryCount = openingOrders.filter((order) => (
+            order.username === user.username
+            && order.symbol.toUpperCase() === symbol.toUpperCase()
+            && order.side === submitSide
+            && Number(order.filled_qty ?? 0) > 0
+          )).length
+          const completedAdds = Math.max(0, filledEntryCount - 1)
+          if (completedAdds >= riskWarningParameters.addPositionLimit) {
+            const now = Date.now()
+            showRiskWarning({
+              kind: 'ADD_POSITION_LIMIT',
+              signature: `add-position-limit:${user.username}:${symbol}:${targetSide}:${filledEntryCount}:${now}`,
+              username: user.username,
+              symbol,
+              addPositionCount: completedAdds + 1,
+              addPositionLimit: riskWarningParameters.addPositionLimit,
+              triggeredAt: now,
+              cooldownUntil: now + riskWarningParameters.cooldownMinutes * 60_000,
+            })
+          }
+        } catch {
+          // Do not interrupt order submission when warning history cannot be loaded.
+        }
       }
     }
 

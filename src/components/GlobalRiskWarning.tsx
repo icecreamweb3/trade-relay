@@ -44,7 +44,18 @@ export function GlobalRiskWarning() {
         symbol: warning.symbol ?? '—',
         pnl: Math.abs(warning.lossAmount ?? 0).toFixed(2),
       })
-    : t('riskWarning.consecutiveLosses.message', { count: warning.consecutiveLosses ?? 2 })
+    : warning.kind === 'CONSECUTIVE_LOSSES'
+      ? t('riskWarning.consecutiveLosses.message', { count: warning.consecutiveLosses ?? 2 })
+      : warning.kind === 'OVERTRADING'
+        ? t('riskWarning.overtrading.message', {
+            count: warning.tradeCount ?? 4,
+            window: warning.tradeWindowMinutes ?? 60,
+          })
+        : t('riskWarning.addPositionLimit.message', {
+            symbol: warning.symbol ?? '—',
+            count: warning.addPositionCount ?? 0,
+            limit: warning.addPositionLimit ?? 0,
+          })
 
   return createPortal(
     <section

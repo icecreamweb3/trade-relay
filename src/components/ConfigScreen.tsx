@@ -10,6 +10,11 @@ import {
 import { useToastStore } from '../store/toastStore'
 import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
+import {
+  DEFAULT_RISK_WARNING_PARAMETERS,
+  RISK_WARNING_PARAMETER_LIMITS,
+  useRiskWarningSettingsStore,
+} from '../store/riskWarningSettingsStore'
 
 type SettingsCategory = 'language' | 'password' | 'riskProtection' | 'orderbook' | 'chart' | 'apikey'
 
@@ -41,6 +46,18 @@ export function ConfigScreen() {
   const setAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.setParameters)
   const [triggerRMultiple, setTriggerRMultiple] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerRMultiple))
   const [minimumProfitPercent, setMinimumProfitPercent] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.minimumProfitPercent))
+  const riskWarningParameters = useRiskWarningSettingsStore((state) => (
+    username
+      ? state.byUsername[username] ?? DEFAULT_RISK_WARNING_PARAMETERS
+      : DEFAULT_RISK_WARNING_PARAMETERS
+  ))
+  const loadRiskWarningParameters = useRiskWarningSettingsStore((state) => state.loadParameters)
+  const setRiskWarningParameters = useRiskWarningSettingsStore((state) => state.setParameters)
+  const [tradeWindowMinutes, setTradeWindowMinutes] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.tradeWindowMinutes))
+  const [tradeLimit, setTradeLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.tradeLimit))
+  const [cooldownMinutes, setCooldownMinutes] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.cooldownMinutes))
+  const [consecutiveLossLimit, setConsecutiveLossLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.consecutiveLossLimit))
+  const [addPositionLimit, setAddPositionLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.addPositionLimit))
 
   // API Key settings
   const [apiKey, setApiKey] = useState('')
@@ -52,14 +69,21 @@ export function ConfigScreen() {
   const [showApiSecret, setShowApiSecret] = useState(false)
 
   useEffect(() => {
-    if (username) loadAutoBreakevenParameters(username)
-  }, [loadAutoBreakevenParameters, username])
+    if (!username) return
+    loadAutoBreakevenParameters(username)
+    loadRiskWarningParameters(username)
+  }, [loadAutoBreakevenParameters, loadRiskWarningParameters, username])
 
   useEffect(() => {
     if (activeCategory !== 'riskProtection') return
     setTriggerRMultiple(String(autoBreakevenParameters.triggerRMultiple))
     setMinimumProfitPercent(String(autoBreakevenParameters.minimumProfitPercent))
-  }, [activeCategory, autoBreakevenParameters])
+    setTradeWindowMinutes(String(riskWarningParameters.tradeWindowMinutes))
+    setTradeLimit(String(riskWarningParameters.tradeLimit))
+    setCooldownMinutes(String(riskWarningParameters.cooldownMinutes))
+    setConsecutiveLossLimit(String(riskWarningParameters.consecutiveLossLimit))
+    setAddPositionLimit(String(riskWarningParameters.addPositionLimit))
+  }, [activeCategory, autoBreakevenParameters, riskWarningParameters])
 
   useEffect(() => {
     if (activeCategory !== 'apikey') return
@@ -108,6 +132,27 @@ export function ConfigScreen() {
     if (enabled === riskWarningsEnabled) return
     setRiskWarningsEnabled(enabled)
     showToast('success', translateForLocale(locale, 'config.riskWarningsUpdated'))
+  }
+
+  const handleSaveRiskWarnings = (e: React.FormEvent) => {
+    e.preventDefault()
+    const next = {
+      tradeWindowMinutes: Number(tradeWindowMinutes),
+      tradeLimit: Number(tradeLimit),
+      cooldownMinutes: Number(cooldownMinutes),
+      consecutiveLossLimit: Number(consecutiveLossLimit),
+      addPositionLimit: Number(addPositionLimit),
+    }
+    const valid = username && Object.entries(next).every(([key, value]) => {
+      const limits = RISK_WARNING_PARAMETER_LIMITS[key as keyof typeof RISK_WARNING_PARAMETER_LIMITS]
+      return Number.isInteger(value) && value >= limits.min && value <= limits.max
+    })
+    if (!valid) {
+      showToast('error', t('config.riskWarnings.invalid'))
+      return
+    }
+    setRiskWarningParameters(username, next)
+    showToast('success', t('config.riskWarnings.saved'))
   }
 
   const handleSave = async (e: React.FormEvent) => {
@@ -372,6 +417,54 @@ export function ConfigScreen() {
                   </button>
                 ))}
               </div>
+              <form onSubmit={handleSaveRiskWarnings} className="max-w-lg space-y-4 rounded border border-[#2d3542] bg-[#15191f] p-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <RiskParameterField
+                    label={t('config.riskWarnings.tradeWindowMinutes')}
+                    value={tradeWindowMinutes}
+                    onChange={setTradeWindowMinutes}
+                    min={RISK_WARNING_PARAMETER_LIMITS.tradeWindowMinutes.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.tradeWindowMinutes.max}
+                    unit={t('config.riskWarnings.unit.minutes')}
+                  />
+                  <RiskParameterField
+                    label={t('config.riskWarnings.tradeLimit')}
+                    value={tradeLimit}
+                    onChange={setTradeLimit}
+                    min={RISK_WARNING_PARAMETER_LIMITS.tradeLimit.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.tradeLimit.max}
+                    unit={t('config.riskWarnings.unit.trades')}
+                  />
+                  <RiskParameterField
+                    label={t('config.riskWarnings.cooldownMinutes')}
+                    value={cooldownMinutes}
+                    onChange={setCooldownMinutes}
+                    min={RISK_WARNING_PARAMETER_LIMITS.cooldownMinutes.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.cooldownMinutes.max}
+                    unit={t('config.riskWarnings.unit.minutes')}
+                  />
+                  <RiskParameterField
+                    label={t('config.riskWarnings.consecutiveLossLimit')}
+                    value={consecutiveLossLimit}
+                    onChange={setConsecutiveLossLimit}
+                    min={RISK_WARNING_PARAMETER_LIMITS.consecutiveLossLimit.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.consecutiveLossLimit.max}
+                    unit={t('config.riskWarnings.unit.trades')}
+                  />
+                  <RiskParameterField
+                    label={t('config.riskWarnings.addPositionLimit')}
+                    value={addPositionLimit}
+                    onChange={setAddPositionLimit}
+                    min={RISK_WARNING_PARAMETER_LIMITS.addPositionLimit.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.addPositionLimit.max}
+                    unit={t('config.riskWarnings.unit.times')}
+                  />
+                </div>
+                <p className="text-xs leading-5 text-[#8b94a5]">{t('config.riskWarnings.parameterHint')}</p>
+                <button type="submit" className="rounded bg-[#007acc] px-6 py-2 text-sm text-white hover:bg-blue-600">
+                  {t('config.riskWarnings.save')}
+                </button>
+              </form>
               <div className="border-t border-[#2d3542] pt-4">
                 <h3 className="text-sm font-medium text-[#d6dbe4]">{t('config.riskProtection.autoBreakevenTitle')}</h3>
               </div>
@@ -516,5 +609,38 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="block text-xs text-[#858585] mb-1">{label}</label>
       {children}
     </div>
+  )
+}
+
+function RiskParameterField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  unit,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  min: number
+  max: number
+  unit: string
+}) {
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <input
+          type="number"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          min={min}
+          max={max}
+          step="1"
+          className={`${INPUT_CLS} pr-12`}
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#858585]">{unit}</span>
+      </div>
+    </Field>
   )
 }

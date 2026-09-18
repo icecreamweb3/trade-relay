@@ -213,6 +213,7 @@ class PositionOut(BaseModel):
     leverage: int
     margin_type: str
     margin: Optional[float]
+    opened_at: Optional[str] = None
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
     planned_stop_price: Optional[float] = None
@@ -464,6 +465,7 @@ def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[Posi
                 leverage=int(row.get("leverage") or 0),
                 margin_type=str(row.get("margin_type", "") or "").upper(),
                 margin=None,
+                opened_at=serialize_utc_timestamp(row.get("opened_at")),
                 tp_price=tp,
                 sl_price=sl,
                 planned_stop_price=planned_stop_price,

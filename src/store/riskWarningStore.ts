@@ -1,8 +1,6 @@
 import { create } from 'zustand'
 
-export type RiskWarningKind = 'LOSS_ADD' | 'CONSECUTIVE_LOSSES'
-export const RISK_COOLDOWN_MS = 30 * 60 * 1000
-export const CONSECUTIVE_LOSS_THRESHOLD = 2
+export type RiskWarningKind = 'LOSS_ADD' | 'CONSECUTIVE_LOSSES' | 'OVERTRADING' | 'ADD_POSITION_LIMIT'
 
 export interface RiskWarningItem {
   id: number
@@ -12,6 +10,10 @@ export interface RiskWarningItem {
   symbol?: string
   lossAmount?: number
   consecutiveLosses?: number
+  tradeCount?: number
+  tradeWindowMinutes?: number
+  addPositionCount?: number
+  addPositionLimit?: number
   triggeredAt: number
   cooldownUntil: number
 }
