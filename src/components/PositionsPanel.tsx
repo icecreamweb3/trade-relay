@@ -13,6 +13,7 @@ import {
   type AutoBreakevenParameters,
   useAutoBreakevenSettingsStore,
 } from '../store/autoBreakevenSettingsStore'
+import { ChevronDown } from 'lucide-react'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -183,11 +184,13 @@ export function PositionsPanel({
   isActive = true,
   sizeUnit = 'QUOTE',
   onOrdersChanged,
+  onCollapse,
 }: {
   refreshTrigger?: number
   isActive?: boolean
   sizeUnit?: 'QUOTE' | 'BASE'
   onOrdersChanged?: () => void
+  onCollapse?: () => void
 }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
@@ -859,7 +862,16 @@ export function PositionsPanel({
             {t(`pos.${tabKey === 'positions' ? 'title' : tabKey === 'openOrders' ? 'openOrders' : tabKey === 'history' ? 'history' : 'tradeHistory'}`)}
           </button>
         ))}
-        <button onClick={handleRefresh} disabled={loading} className="ml-auto px-2 text-[#858585] hover:text-[#cccccc] text-xs pr-3 disabled:opacity-50">
+        <button
+          type="button"
+          onClick={onCollapse}
+          className="ml-auto flex w-8 items-center justify-center text-[#858585] transition-colors hover:bg-[#303033] hover:text-[#cccccc]"
+          title={t('pos.collapse')}
+          aria-label={t('pos.collapse')}
+        >
+          <ChevronDown size={15} />
+        </button>
+        <button onClick={handleRefresh} disabled={loading} className="px-2 text-[#858585] hover:text-[#cccccc] text-xs pr-3 disabled:opacity-50">
           {loading ? t('statusbar.refreshing') : `↻ ${t('pos.refresh')}`}
         </button>
       </div>

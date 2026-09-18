@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
+import { PanelGroup, Panel, PanelResizeHandle, type ImperativePanelGroupHandle } from 'react-resizable-panels'
 import { useAuthStore } from './store/authStore'
 import { Locale, useTranslation } from './i18n/translations'
 import { useMarketData } from './hooks/useMarketData'
@@ -56,6 +56,7 @@ function MainApp() {
   const [showLogin, setShowLogin] = useState(false)
   const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
   const [tradeSizeUnit, setTradeSizeUnit] = useState<'QUOTE' | 'BASE'>('QUOTE')
+  const [positionsCollapsed, setPositionsCollapsed] = useState(false)
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? { id: 'trade', screen: 'trade', title: getScreenTitle('trade'), closable: false }
   const activeScreen = activeTab.screen
@@ -124,7 +125,11 @@ function MainApp() {
 
   // Track both ratios to send both to Electron on any resize
   const leftRatio = useRef(0.60)
-  const chartRatio = useRef(0.65)
+  const chartRatio = useRef(0.72)
+  const expandedChartRatio = useRef(0.72)
+  const rightTopRatio = useRef(0.72)
+  const leftVerticalGroupRef = useRef<ImperativePanelGroupHandle>(null)
+  const rightVerticalGroupRef = useRef<ImperativePanelGroupHandle>(null)
 
   const notifyElectron = () => {
     window.electronAPI?.resizeBinancePanel(leftRatio.current, chartRatio.current)
@@ -136,13 +141,58 @@ function MainApp() {
   }
 
   const handleLeftLayout = (sizes: number[]) => {
-    chartRatio.current = sizes[0] / 100
+    if (positionsCollapsed) {
+      chartRatio.current = 1
+    } else {
+      const nextRatio = sizes[0] / 100
+      chartRatio.current = nextRatio
+      expandedChartRatio.current = nextRatio
+      if (sizes.length > 1 && Math.abs(rightTopRatio.current - nextRatio) > 0.001) {
+        rightTopRatio.current = nextRatio
+        rightVerticalGroupRef.current?.setLayout([sizes[0], sizes[1]])
+      }
+    }
+    notifyElectron()
+  }
+
+  const handleRightLayout = (sizes: number[]) => {
+    if (sizes.length < 2) return
+    const nextRatio = sizes[0] / 100
+    rightTopRatio.current = nextRatio
+    if (positionsCollapsed) {
+      expandedChartRatio.current = nextRatio
+      return
+    }
+    if (Math.abs(expandedChartRatio.current - nextRatio) <= 0.001) return
+    expandedChartRatio.current = nextRatio
+    chartRatio.current = nextRatio
+    leftVerticalGroupRef.current?.setLayout([sizes[0], sizes[1]])
+    notifyElectron()
+  }
+
+  const collapsePositions = () => {
+    if (!positionsCollapsed) expandedChartRatio.current = chartRatio.current
+    chartRatio.current = 1
+    setPositionsCollapsed(true)
+    notifyElectron()
+  }
+
+  const expandPositions = () => {
+    expandedChartRatio.current = rightTopRatio.current
+    chartRatio.current = rightTopRatio.current
+    setPositionsCollapsed(false)
     notifyElectron()
   }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <TitleBar activeScreen={activeScreen} onNavigate={openScreen} onLoginClick={openLogin} />
+      <TitleBar
+        activeScreen={activeScreen}
+        onNavigate={openScreen}
+        onLoginClick={openLogin}
+        positionsCollapsed={positionsCollapsed}
+        onExpandPositions={expandPositions}
+      />
       <RiskWarningMonitor />
       <GlobalRiskWarning />
       <GlobalToast />
@@ -201,19 +251,30 @@ function MainApp() {
         >
           {/* ── LEFT: chart (top) + positions (bottom) ── */}
           <Panel defaultSize={67} minSize={40} id="left">
-            <PanelGroup direction="vertical" className="h-full" onLayout={handleLeftLayout}>
-              <Panel defaultSize={65} minSize={30} id="chart">
+            <PanelGroup
+              ref={leftVerticalGroupRef}
+              key={positionsCollapsed ? 'positions-collapsed' : 'positions-expanded'}
+              direction="vertical"
+              className="h-full"
+              onLayout={handleLeftLayout}
+            >
+              <Panel defaultSize={positionsCollapsed ? 100 : expandedChartRatio.current * 100} minSize={30} id="chart">
                 <BinancePanel />
               </Panel>
-              <PanelResizeHandle className="h-px bg-[#3e3e42] hover:bg-[#007acc] cursor-row-resize" />
-              <Panel defaultSize={35} minSize={15} id="positions">
-                <PositionsPanel
-                  refreshTrigger={orderRefresh + positionRefresh}
-                  isActive={isTradeScreenActive}
-                  sizeUnit={tradeSizeUnit}
-                  onOrdersChanged={() => setOrderRefresh(n => n + 1)}
-                />
-              </Panel>
+              {!positionsCollapsed && (
+                <>
+                  <PanelResizeHandle className="h-px bg-[#3e3e42] hover:bg-[#007acc] cursor-row-resize" />
+                  <Panel defaultSize={(1 - expandedChartRatio.current) * 100} minSize={15} id="positions">
+                    <PositionsPanel
+                      refreshTrigger={orderRefresh + positionRefresh}
+                      isActive={isTradeScreenActive}
+                      sizeUnit={tradeSizeUnit}
+                      onOrdersChanged={() => setOrderRefresh(n => n + 1)}
+                      onCollapse={collapsePositions}
+                    />
+                  </Panel>
+                </>
+              )}
             </PanelGroup>
           </Panel>
 
@@ -221,7 +282,12 @@ function MainApp() {
 
           {/* ── RIGHT: [order book | trade form] (top) + recent trades (bottom) ── */}
           <Panel defaultSize={33} minSize={22} maxSize={48} id="right">
-            <PanelGroup direction="vertical" className="h-full">
+            <PanelGroup
+              ref={rightVerticalGroupRef}
+              direction="vertical"
+              className="h-full"
+              onLayout={handleRightLayout}
+            >
               {/* Top: order book (fixed width) + trade form (flex) */}
               <Panel defaultSize={72} minSize={50} id="right-top">
                 <div className="h-full flex overflow-hidden">
@@ -256,7 +322,10 @@ function MainApp() {
           </Panel>
         </PanelGroup>
 
-        <StatusBar />
+        <StatusBar
+          positionsCollapsed={positionsCollapsed}
+          onExpandPositions={expandPositions}
+        />
       </div>
     </div>
   )

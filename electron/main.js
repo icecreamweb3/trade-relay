@@ -636,7 +636,8 @@ function updateBinanceViewBounds() {
     return
   }
   const bounds = mainWindow.getBounds()
-  const TITLEBAR_H = 36
+  // Renderer chrome above the trade workspace: 32px title bar + 36px tab bar.
+  const TITLEBAR_H = 68
   const STATUSBAR_H = 24
   const availH = bounds.height - TITLEBAR_H - STATUSBAR_H
   const panelWidth = Math.floor(bounds.width * _splitRatio)
@@ -725,7 +726,7 @@ ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
 ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
-  if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(0.95, chartRatio))
+  if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(1, chartRatio))
   if (splitRatio === 0) {
     // Hide BrowserView by moving it off-screen
     _splitRatio = 0
@@ -995,6 +996,27 @@ function chartTpFrameWatcherScript() {
       window.top.postMessage({ type, requestId, payload }, '*')
     })
 
+    const fitMenuInViewport = (menu) => {
+      if (!menu?.isConnected) return
+      menu.style.setProperty('z-index', '2147483646', 'important')
+      const fit = () => {
+        if (!menu.isConnected) return
+        const margin = 8
+        const rect = menu.getBoundingClientRect()
+        const viewportHeight = document.documentElement.clientHeight || window.innerHeight
+        const overflowBottom = Math.ceil(rect.bottom - (viewportHeight - margin))
+        if (overflowBottom <= 0) return
+        const shift = Math.min(overflowBottom, Math.max(0, rect.top - margin))
+        if (shift <= 0) return
+        const currentMarginTop = Number.parseFloat(getComputedStyle(menu).marginTop) || 0
+        menu.style.setProperty('margin-top', (currentMarginTop - shift) + 'px', 'important')
+      }
+      requestAnimationFrame(() => {
+        fit()
+        requestAnimationFrame(fit)
+      })
+    }
+
     const enhance = async () => {
       const found = findMenu()
       if (!found || found.menu.querySelector('[' + menuAttr + ']')) return
@@ -1084,6 +1106,7 @@ function chartTpFrameWatcherScript() {
       const anchor = orderItems.find((node) => /Add order|添加订单/i.test(String(node.innerText || '')))
       if (anchor) anchor.after(group)
       else menu.appendChild(group)
+      fitMenuInViewport(menu)
     }
 
     window.addEventListener('contextmenu', () => {

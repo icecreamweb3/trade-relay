@@ -1,6 +1,7 @@
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { ChevronUp } from 'lucide-react'
 const appVersion = __APP_VERSION__
 
 function formatBuildTime(value: string, locale: Locale) {
@@ -17,7 +18,13 @@ function formatBuildTime(value: string, locale: Locale) {
   })
 }
 
-export function StatusBar() {
+export function StatusBar({
+  positionsCollapsed = false,
+  onExpandPositions,
+}: {
+  positionsCollapsed?: boolean
+  onExpandPositions?: () => void
+} = {}) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
   const {
@@ -40,6 +47,18 @@ export function StatusBar() {
 
   return (
     <div className="h-6 border-t border-[#2B2F36] bg-[#11161c] flex items-center px-3 gap-4 text-xs text-[#EAECEF] select-none shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      {positionsCollapsed && onExpandPositions && (
+        <button
+          type="button"
+          onClick={onExpandPositions}
+          className="ml-1 flex h-5 shrink-0 items-center gap-1 rounded border border-[#3d6d91] bg-[#162637] px-2 font-medium text-[#9dccf2] shadow-sm transition-colors hover:border-[#58a6df] hover:bg-[#1b3248] hover:text-white"
+          title={t('pos.expand')}
+          aria-label={t('pos.expand')}
+        >
+          <ChevronUp size={14} />
+          <span>{t('pos.title')}</span>
+        </button>
+      )}
       <span className={`flex items-center gap-1 ${isConnected ? '' : 'opacity-60'}`}>
         <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-300' : 'bg-yellow-300'}`} />
         {isConnected ? t('statusbar.live') : t('statusbar.disconnected')}

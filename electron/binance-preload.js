@@ -256,6 +256,30 @@ function _chartTpMenuItem(label, onClick) {
   return item
 }
 
+function _fitChartContextMenuInViewport(menu) {
+  if (!menu?.isConnected) return
+  menu.style.setProperty('z-index', '2147483646', 'important')
+
+  const fit = () => {
+    if (!menu.isConnected) return
+    const margin = 8
+    const rect = menu.getBoundingClientRect()
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight
+    const overflowBottom = Math.ceil(rect.bottom - (viewportHeight - margin))
+    if (overflowBottom <= 0) return
+    const availableShift = Math.max(0, rect.top - margin)
+    const shift = Math.min(overflowBottom, availableShift)
+    if (shift <= 0) return
+    const currentMarginTop = Number.parseFloat(getComputedStyle(menu).marginTop) || 0
+    menu.style.setProperty('margin-top', `${currentMarginTop - shift}px`, 'important')
+  }
+
+  requestAnimationFrame(() => {
+    fit()
+    requestAnimationFrame(fit)
+  })
+}
+
 function _bindChartTpMenuCleanup(group, menu) {
   let finished = false
   let lifetimeCheck
@@ -338,6 +362,7 @@ async function _enhanceChartContextMenu() {
   const addOrderItem = orderItems.find((item) => /Add order|添加订单/i.test(String(item.innerText || '')))
   if (addOrderItem) addOrderItem.after(group)
   else menu.appendChild(group)
+  _fitChartContextMenuInViewport(menu)
   _bindChartTpMenuCleanup(group, menu)
 }
 

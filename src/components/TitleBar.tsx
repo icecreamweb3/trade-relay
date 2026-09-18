@@ -1,5 +1,5 @@
 import React from 'react'
-import { ChevronLeft, ChevronRight, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2, BriefcaseBusiness } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronUp, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2, BriefcaseBusiness } from 'lucide-react'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -11,9 +11,17 @@ interface TitleBarProps {
   activeScreen: Screen
   onNavigate: (screen: Screen) => void
   onLoginClick?: () => void
+  positionsCollapsed?: boolean
+  onExpandPositions?: () => void
 }
 
-export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarProps) {
+export function TitleBar({
+  activeScreen,
+  onNavigate,
+  onLoginClick,
+  positionsCollapsed = false,
+  onExpandPositions,
+}: TitleBarProps) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
   const { t } = useTranslation(locale)
@@ -71,6 +79,11 @@ export function TitleBar({ activeScreen, onNavigate, onLoginClick }: TitleBarPro
             >
               {isChartExpanded ? <Shrink size={11} /> : <Expand size={11} />}
             </NavBtn>
+            {activeScreen === 'trade' && positionsCollapsed && onExpandPositions && (
+              <NavBtn onClick={onExpandPositions} title={t('pos.expand')}>
+                <ChevronUp size={14} />
+              </NavBtn>
+            )}
             {showChartCleanupButtons && (
               <NavBtn
                 onClick={handleClearAllDrawings}
