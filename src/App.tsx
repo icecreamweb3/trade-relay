@@ -17,6 +17,8 @@ import { AdminScreen } from './components/AdminScreen'
 import { ProfileScreen } from './components/ProfileScreen'
 import { ConfigScreen } from './components/ConfigScreen'
 import { GlobalToast } from './components/GlobalToast'
+import { GlobalRiskWarning } from './components/GlobalRiskWarning'
+import { RiskWarningMonitor } from './components/RiskWarningMonitor'
 import { useUiPreferencesStore } from './store/uiPreferencesStore'
 
 type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings'
@@ -141,6 +143,8 @@ function MainApp() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <TitleBar activeScreen={activeScreen} onNavigate={openScreen} onLoginClick={openLogin} />
+      <RiskWarningMonitor />
+      <GlobalRiskWarning />
       <GlobalToast />
 
       <div className="h-9 shrink-0 bg-[#1a1d23] border-b border-[#2b2f36] flex items-end px-2 overflow-x-auto">

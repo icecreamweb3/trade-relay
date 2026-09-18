@@ -7,6 +7,7 @@ const UI_LOCALE_STORAGE_KEY = 'trade-relay:ui-locale'
 const ORDER_BOOK_DEPTH_MODE_STORAGE_KEY = 'trade-relay:order-book-depth-mode'
 const CHART_ORDER_MARKERS_VISIBLE_STORAGE_KEY = 'trade-relay:chart-order-markers-visible'
 const CHART_ORDER_MARKER_LABELS_VISIBLE_STORAGE_KEY = 'trade-relay:chart-order-marker-labels-visible'
+const RISK_WARNINGS_ENABLED_STORAGE_KEY = 'trade-relay:risk-warnings-enabled'
 
 function readStoredLocale(): Locale | null {
   try {
@@ -86,15 +87,35 @@ function writeStoredChartOrderMarkerLabelsVisible(visible: boolean) {
   }
 }
 
+function readStoredRiskWarningsEnabled(): boolean {
+  try {
+    const raw = window.localStorage.getItem(RISK_WARNINGS_ENABLED_STORAGE_KEY)
+    if (raw == null) return true
+    return raw !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function writeStoredRiskWarningsEnabled(enabled: boolean) {
+  try {
+    window.localStorage.setItem(RISK_WARNINGS_ENABLED_STORAGE_KEY, String(enabled))
+  } catch {
+    // Ignore storage failures and keep the in-memory preference.
+  }
+}
+
 interface UiPreferencesStore {
   locale: Locale
   orderBookDepthMode: OrderBookDepthMode
   chartOrderMarkersVisible: boolean
   chartOrderMarkerLabelsVisible: boolean
+  riskWarningsEnabled: boolean
   setLocale: (locale: Locale) => void
   setOrderBookDepthMode: (mode: OrderBookDepthMode) => void
   setChartOrderMarkersVisible: (visible: boolean) => void
   setChartOrderMarkerLabelsVisible: (visible: boolean) => void
+  setRiskWarningsEnabled: (enabled: boolean) => void
 }
 
 export const useUiPreferencesStore = create<UiPreferencesStore>((set) => ({
@@ -102,6 +123,7 @@ export const useUiPreferencesStore = create<UiPreferencesStore>((set) => ({
   orderBookDepthMode: readStoredOrderBookDepthMode(),
   chartOrderMarkersVisible: readStoredChartOrderMarkersVisible(),
   chartOrderMarkerLabelsVisible: readStoredChartOrderMarkerLabelsVisible(),
+  riskWarningsEnabled: readStoredRiskWarningsEnabled(),
   setLocale: (locale) => {
     writeStoredLocale(locale)
     set({ locale })
@@ -117,5 +139,9 @@ export const useUiPreferencesStore = create<UiPreferencesStore>((set) => ({
   setChartOrderMarkerLabelsVisible: (visible) => {
     writeStoredChartOrderMarkerLabelsVisible(visible)
     set({ chartOrderMarkerLabelsVisible: visible })
+  },
+  setRiskWarningsEnabled: (enabled) => {
+    writeStoredRiskWarningsEnabled(enabled)
+    set({ riskWarningsEnabled: enabled })
   },
 }))

@@ -6,6 +6,7 @@ import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { perfSignalDone } from '../utils/perf'
 import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { RISK_COOLDOWN_MS, useRiskWarningStore } from '../store/riskWarningStore'
 
 type Side = 'BUY' | 'SELL'
 type OrderType = 'LIMIT' | 'MARKET' | 'CONDITIONAL' | 'POST_ONLY'
@@ -360,6 +361,8 @@ export function OrderFormWidget({
   const [pendingShortCloseQty, setPendingShortCloseQty] = useState<number>(0)
   const [liveSymbolPositions, setLiveSymbolPositions] = useState<PositionSnapshot[] | null>(null)
   const showToast = useToastStore((state) => state.showToast)
+  const riskWarningsEnabled = useUiPreferencesStore((state) => state.riskWarningsEnabled)
+  const showRiskWarning = useRiskWarningStore((state) => state.showWarning)
   const lastAccountErrorRef = useRef<string | null>(null)
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
@@ -1077,6 +1080,36 @@ export function OrderFormWidget({
       baseQty = Math.floor(baseQty * 1000) / 1000
     }
     if (baseQty <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
+
+    if (riskWarningsEnabled && user?.username && posDir === 'OPEN' && liveSymbolPositions) {
+      const targetSide = submitSide === 'BUY' ? 'LONG' : 'SHORT'
+      const livePrice = markPrice ?? currentPrice
+      let matchingQuantity = 0
+      let matchingPnl = 0
+      for (const position of liveSymbolPositions) {
+        if (position.side !== targetSide || position.quantity <= 0) continue
+        matchingQuantity += position.quantity
+        if (livePrice != null && position.entry_price != null) {
+          matchingPnl += targetSide === 'LONG'
+            ? position.quantity * (livePrice - position.entry_price)
+            : position.quantity * (position.entry_price - livePrice)
+        } else {
+          matchingPnl += position.unrealized_pnl ?? 0
+        }
+      }
+      if (matchingQuantity > 0 && matchingPnl < 0) {
+        const now = Date.now()
+        showRiskWarning({
+          kind: 'LOSS_ADD',
+          signature: `loss-add:${user.username}:${symbol}:${targetSide}:${now}`,
+          username: user.username,
+          symbol,
+          lossAmount: matchingPnl,
+          triggeredAt: now,
+          cooldownUntil: now + RISK_COOLDOWN_MS,
+        })
+      }
+    }
 
     // Map frontend order type to backend order_type
     let backendOrderType: string = orderType

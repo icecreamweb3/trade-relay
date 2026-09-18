@@ -24,6 +24,8 @@ export function ConfigScreen() {
   const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
   const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
   const setChartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.setChartOrderMarkerLabelsVisible)
+  const riskWarningsEnabled = useUiPreferencesStore((state) => state.riskWarningsEnabled)
+  const setRiskWarningsEnabled = useUiPreferencesStore((state) => state.setRiskWarningsEnabled)
   const { t } = useTranslation(locale)
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('language')
   const [currentPassword, setCurrentPassword] = useState('')
@@ -100,6 +102,12 @@ export function ConfigScreen() {
     if (visible === chartOrderMarkerLabelsVisible) return
     setChartOrderMarkerLabelsVisible(visible)
     showToast('success', translateForLocale(locale, 'config.chartOrderMarkerLabelsUpdated'))
+  }
+
+  const handleRiskWarningsEnabledChange = (enabled: boolean) => {
+    if (enabled === riskWarningsEnabled) return
+    setRiskWarningsEnabled(enabled)
+    showToast('success', translateForLocale(locale, 'config.riskWarningsUpdated'))
   }
 
   const handleSave = async (e: React.FormEvent) => {
@@ -339,6 +347,33 @@ export function ConfigScreen() {
               <div>
                 <h2 className="text-base font-semibold text-[#e6ebf2]">{t('config.category.riskProtection')}</h2>
                 <p className="mt-1 text-sm text-[#8b94a5]">{t('config.riskProtectionDescription')}</p>
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-[#d6dbe4]">{t('config.riskWarnings.title')}</h3>
+                <p className="mt-1 text-sm text-[#8b94a5]">{t('config.riskWarnings.description')}</p>
+              </div>
+              <div className="grid max-w-md gap-2">
+                {([
+                  [true, t('config.riskWarnings.enable')],
+                  [false, t('config.riskWarnings.disable')],
+                ] as Array<[boolean, string]>).map(([enabled, label]) => (
+                  <button
+                    key={`risk-warning-${String(enabled)}`}
+                    type="button"
+                    onClick={() => handleRiskWarningsEnabledChange(enabled)}
+                    className={`flex items-center justify-between rounded border px-3 py-2 text-sm transition-colors ${
+                      riskWarningsEnabled === enabled
+                        ? 'border-[#007acc] bg-[#14263a] text-[#EAECEF]'
+                        : 'border-[#2d3542] bg-[#0d131a] text-[#c5ccd8] hover:border-[#3a4454] hover:text-[#EAECEF]'
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span className={riskWarningsEnabled === enabled ? 'text-[#4da3ff]' : 'text-transparent'}>✓</span>
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-[#2d3542] pt-4">
+                <h3 className="text-sm font-medium text-[#d6dbe4]">{t('config.riskProtection.autoBreakevenTitle')}</h3>
               </div>
               <form onSubmit={handleSaveRiskProtection} className="max-w-lg space-y-4">
                 <Field label={t('config.riskProtection.triggerRMultiple')}>
