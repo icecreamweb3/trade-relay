@@ -8,6 +8,11 @@ import { Locale, useTranslation } from '../i18n/translations'
 import { formatUtcTimestampToLocalString } from '../utils/datetime'
 import { perfSignalDone } from '../utils/perf'
 import { getPreferredLocale, useUiPreferencesStore } from '../store/uiPreferencesStore'
+import {
+  DEFAULT_AUTO_BREAKEVEN_PARAMETERS,
+  type AutoBreakevenParameters,
+  useAutoBreakevenSettingsStore,
+} from '../store/autoBreakevenSettingsStore'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -33,6 +38,41 @@ export function calculateAutoBreakevenStop(position: Pick<Position, 'side' | 'en
   if (entryPrice == null || !Number.isFinite(entryPrice) || entryPrice <= 0) return null
   if (position.side === 'LONG') return entryPrice * (1 + AUTO_BREAKEVEN_OFFSET)
   if (position.side === 'SHORT') return entryPrice * (1 - AUTO_BREAKEVEN_OFFSET)
+  return null
+}
+
+export function calculateAutoBreakevenTriggerPrice(
+  position: Pick<Position, 'side' | 'entry_price' | 'planned_stop_price' | 'initial_risk_usdc' | 'quantity'>,
+  parameters: AutoBreakevenParameters = DEFAULT_AUTO_BREAKEVEN_PARAMETERS,
+): number | null {
+  const entryPrice = position.entry_price
+  if (entryPrice == null || !Number.isFinite(entryPrice) || entryPrice <= 0 || position.quantity <= 0) return null
+
+  const plannedStop = position.planned_stop_price
+  const hasDirectionalPlannedStop = plannedStop != null
+    && Number.isFinite(plannedStop)
+    && plannedStop > 0
+    && (
+      (position.side === 'LONG' && plannedStop < entryPrice)
+      || (position.side === 'SHORT' && plannedStop > entryPrice)
+    )
+  const riskDistance = hasDirectionalPlannedStop
+    ? Math.abs(entryPrice - plannedStop)
+    : (position.initial_risk_usdc != null && Number.isFinite(position.initial_risk_usdc)
+        ? position.initial_risk_usdc / position.quantity
+        : 0)
+  if (!Number.isFinite(riskDistance) || riskDistance <= 0) return null
+
+  const rTriggerDistance = riskDistance * parameters.triggerRMultiple
+  const minimumProfitDistance = entryPrice * (parameters.minimumProfitPercent / 100)
+  const triggerDistance = Math.max(rTriggerDistance, minimumProfitDistance)
+  if (!Number.isFinite(triggerDistance) || triggerDistance <= 0) return null
+
+  if (position.side === 'LONG') return entryPrice + triggerDistance
+  if (position.side === 'SHORT') {
+    const trigger = entryPrice - triggerDistance
+    return trigger > 0 ? trigger : null
+  }
   return null
 }
 
@@ -155,6 +195,15 @@ export function PositionsPanel({
   const { baseAsset: activeBaseAsset, quoteAsset: activeQuoteAsset } = splitTradingSymbol(activeSymbol)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
+  const autoBreakevenParameters = useAutoBreakevenSettingsStore((state) => (
+    currentUser?.username
+      ? state.byUsername[currentUser.username] ?? DEFAULT_AUTO_BREAKEVEN_PARAMETERS
+      : DEFAULT_AUTO_BREAKEVEN_PARAMETERS
+  ))
+  const autoBreakevenParametersLoaded = useAutoBreakevenSettingsStore((state) => (
+    Boolean(currentUser?.username && state.byUsername[currentUser.username])
+  ))
+  const loadAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.loadParameters)
   const expireSession = useAuthStore((state) => state.expireSession)
   const showToast = useToastStore((state) => state.showToast)
   const [tab, setTab] = useState<Tab>('positions')
@@ -186,6 +235,15 @@ export function PositionsPanel({
   const loadRef = useRef<() => Promise<void>>(async () => {})
   const autoBreakevenInFlightRef = useRef(new Set<number>())
   const autoBreakevenRetryAfterRef = useRef(new Map<number, number>())
+
+  useEffect(() => {
+    if (currentUser?.username) loadAutoBreakevenParameters(currentUser.username)
+  }, [currentUser?.username, loadAutoBreakevenParameters])
+
+  const autoBreakevenHint = t('pos.autoBreakeven.hint', {
+    r: autoBreakevenParameters.triggerRMultiple.toString(),
+    percent: autoBreakevenParameters.minimumProfitPercent.toString(),
+  })
 
   useEffect(() => {
     const username = currentUser?.username ?? ''
@@ -415,13 +473,21 @@ export function PositionsPanel({
   }, [activeSymbol, currentPrice, markPrice, positionMarkPrices, positions])
 
   useEffect(() => {
-    if (!isActive || !isAuthenticated) return
+    if (!isActive || !isAuthenticated || !autoBreakevenParametersLoaded) return
     for (const position of positions) {
       if (!autoBreakevenEnabled[position.id] || position.status !== 'OPEN') continue
       const initialRisk = position.initial_risk_usdc
       const mfe = positionExcursions[position.id]?.mfe ?? position.live_mfe_usdc ?? 0
       const targetStop = calculateAutoBreakevenStop(position)
-      if (initialRisk == null || !Number.isFinite(initialRisk) || initialRisk <= 0 || mfe <= initialRisk || targetStop == null) continue
+      const triggerPrice = calculateAutoBreakevenTriggerPrice(position, autoBreakevenParameters)
+      if (
+        initialRisk == null
+        || !Number.isFinite(initialRisk)
+        || initialRisk <= 0
+        || mfe < initialRisk
+        || targetStop == null
+        || triggerPrice == null
+      ) continue
 
       const existingStop = position.sl_price
       const alreadyProtected = existingStop != null && (
@@ -432,11 +498,11 @@ export function PositionsPanel({
       if ((autoBreakevenRetryAfterRef.current.get(position.id) ?? 0) > Date.now()) continue
 
       const rowMarkPrice = getPositionMarkPrice(position, positionMarkPrices, activeSymbol, markPrice ?? currentPrice)
-      const canPlaceWithoutImmediateTrigger = rowMarkPrice != null && (
-        (position.side === 'LONG' && targetStop < rowMarkPrice)
-        || (position.side === 'SHORT' && targetStop > rowMarkPrice)
+      const hasFullRiskBuffer = rowMarkPrice != null && (
+        (position.side === 'LONG' && rowMarkPrice >= triggerPrice)
+        || (position.side === 'SHORT' && rowMarkPrice <= triggerPrice)
       )
-      if (!canPlaceWithoutImmediateTrigger) continue
+      if (!hasFullRiskBuffer) continue
 
       autoBreakevenInFlightRef.current.add(position.id)
       setAutoBreakevenMoving((current) => ({ ...current, [position.id]: true }))
@@ -456,7 +522,7 @@ export function PositionsPanel({
           setAutoBreakevenMoving((current) => ({ ...current, [position.id]: false }))
         })
     }
-  }, [activeSymbol, autoBreakevenEnabled, currentPrice, isActive, isAuthenticated, markPrice, positionExcursions, positionMarkPrices, positions, showToast, t])
+  }, [activeSymbol, autoBreakevenEnabled, autoBreakevenParameters, autoBreakevenParametersLoaded, currentPrice, isActive, isAuthenticated, markPrice, positionExcursions, positionMarkPrices, positions, showToast, t])
 
   const toggleAutoBreakeven = useCallback((positionId: number, enabled: boolean) => {
     const nextEnabled = !enabled
@@ -807,7 +873,7 @@ export function PositionsPanel({
               <th>{t('pos.positionMode')}</th><th>{t('pos.liq')}</th><th>{t('pos.pnl')}</th>
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
-              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={t('pos.autoBreakeven.hint')}>{t('pos.autoBreakeven')}</th>
+              <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={autoBreakevenHint}>{t('pos.autoBreakeven')}</th>
               <th className="min-w-[118px] text-center" title={t('pos.autoTwoRTakeProfit.hint')}>
                 <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
                   <button
@@ -928,7 +994,7 @@ export function PositionsPanel({
                               toggleAutoBreakeven(p.id, enabled)
                             }}
                             className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#69717e] bg-[#303640]'}`}
-                            title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : t('pos.autoBreakeven.hint')}
+                            title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : autoBreakevenHint}
                           >
                             <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
                           </button>

@@ -1,13 +1,21 @@
 import { useState, useEffect } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { api } from '../api/client'
+import { useAuthStore } from '../store/authStore'
+import {
+  AUTO_BREAKEVEN_PARAMETER_LIMITS,
+  DEFAULT_AUTO_BREAKEVEN_PARAMETERS,
+  useAutoBreakevenSettingsStore,
+} from '../store/autoBreakevenSettingsStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
 
-type SettingsCategory = 'language' | 'password' | 'orderbook' | 'chart' | 'apikey'
+type SettingsCategory = 'language' | 'password' | 'riskProtection' | 'orderbook' | 'chart' | 'apikey'
 
 export function ConfigScreen() {
+  const currentUser = useAuthStore((state) => state.user)
+  const username = currentUser?.username ?? ''
   const locale = useUiPreferencesStore((state) => state.locale)
   const setLocale = useUiPreferencesStore((state) => state.setLocale)
   const orderBookDepthMode = useUiPreferencesStore((state) => state.orderBookDepthMode)
@@ -22,6 +30,15 @@ export function ConfigScreen() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [saving, setSaving] = useState(false)
+  const autoBreakevenParameters = useAutoBreakevenSettingsStore((state) => (
+    username
+      ? state.byUsername[username] ?? DEFAULT_AUTO_BREAKEVEN_PARAMETERS
+      : DEFAULT_AUTO_BREAKEVEN_PARAMETERS
+  ))
+  const loadAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.loadParameters)
+  const setAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.setParameters)
+  const [triggerRMultiple, setTriggerRMultiple] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerRMultiple))
+  const [minimumProfitPercent, setMinimumProfitPercent] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.minimumProfitPercent))
 
   // API Key settings
   const [apiKey, setApiKey] = useState('')
@@ -31,6 +48,16 @@ export function ConfigScreen() {
   const [apiKeyLoading, setApiKeyLoading] = useState(false)
   const [apiKeySaving, setApiKeySaving] = useState(false)
   const [showApiSecret, setShowApiSecret] = useState(false)
+
+  useEffect(() => {
+    if (username) loadAutoBreakevenParameters(username)
+  }, [loadAutoBreakevenParameters, username])
+
+  useEffect(() => {
+    if (activeCategory !== 'riskProtection') return
+    setTriggerRMultiple(String(autoBreakevenParameters.triggerRMultiple))
+    setMinimumProfitPercent(String(autoBreakevenParameters.minimumProfitPercent))
+  }, [activeCategory, autoBreakevenParameters])
 
   useEffect(() => {
     if (activeCategory !== 'apikey') return
@@ -127,6 +154,31 @@ export function ConfigScreen() {
     setApiKeySaving(false)
   }
 
+  const handleSaveRiskProtection = (e: React.FormEvent) => {
+    e.preventDefault()
+    const nextTriggerRMultiple = Number(triggerRMultiple)
+    const nextMinimumProfitPercent = Number(minimumProfitPercent)
+    const triggerLimits = AUTO_BREAKEVEN_PARAMETER_LIMITS.triggerRMultiple
+    const profitLimits = AUTO_BREAKEVEN_PARAMETER_LIMITS.minimumProfitPercent
+    if (
+      !username
+      || !Number.isFinite(nextTriggerRMultiple)
+      || nextTriggerRMultiple < triggerLimits.min
+      || nextTriggerRMultiple > triggerLimits.max
+      || !Number.isFinite(nextMinimumProfitPercent)
+      || nextMinimumProfitPercent < profitLimits.min
+      || nextMinimumProfitPercent > profitLimits.max
+    ) {
+      showToast('error', t('config.riskProtection.invalid'))
+      return
+    }
+    setAutoBreakevenParameters(username, {
+      triggerRMultiple: nextTriggerRMultiple,
+      minimumProfitPercent: nextMinimumProfitPercent,
+    })
+    showToast('success', t('config.riskProtection.saved'))
+  }
+
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e]">
       <div className="px-4 py-2 border-b border-[#3e3e42] shrink-0">
@@ -139,6 +191,7 @@ export function ConfigScreen() {
               ['language', t('config.category.language')],
               ['password', t('config.category.password')],
               ['apikey', t('config.category.apikey')],
+              ['riskProtection', t('config.category.riskProtection')],
               ['orderbook', t('config.category.orderbook')],
               ['chart', t('config.category.chart')],
             ] as Array<[SettingsCategory, string]>).map(([category, label]) => (
@@ -278,6 +331,57 @@ export function ConfigScreen() {
                   </button>
                 </form>
               )}
+            </section>
+          )}
+
+          {activeCategory === 'riskProtection' && (
+            <section className="max-w-2xl space-y-4">
+              <div>
+                <h2 className="text-base font-semibold text-[#e6ebf2]">{t('config.category.riskProtection')}</h2>
+                <p className="mt-1 text-sm text-[#8b94a5]">{t('config.riskProtectionDescription')}</p>
+              </div>
+              <form onSubmit={handleSaveRiskProtection} className="max-w-lg space-y-4">
+                <Field label={t('config.riskProtection.triggerRMultiple')}>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={AUTO_BREAKEVEN_PARAMETER_LIMITS.triggerRMultiple.min}
+                      max={AUTO_BREAKEVEN_PARAMETER_LIMITS.triggerRMultiple.max}
+                      step="0.1"
+                      value={triggerRMultiple}
+                      onChange={e => setTriggerRMultiple(e.target.value)}
+                      className={`${INPUT_CLS} pr-9`}
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#858585]">R</span>
+                  </div>
+                  <p className="mt-1 text-xs text-[#697386]">{t('config.riskProtection.triggerRMultipleDescription')}</p>
+                </Field>
+                <Field label={t('config.riskProtection.minimumProfitPercent')}>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={AUTO_BREAKEVEN_PARAMETER_LIMITS.minimumProfitPercent.min}
+                      max={AUTO_BREAKEVEN_PARAMETER_LIMITS.minimumProfitPercent.max}
+                      step="0.1"
+                      value={minimumProfitPercent}
+                      onChange={e => setMinimumProfitPercent(e.target.value)}
+                      className={`${INPUT_CLS} pr-9`}
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#858585]">%</span>
+                  </div>
+                  <p className="mt-1 text-xs text-[#697386]">{t('config.riskProtection.minimumProfitPercentDescription')}</p>
+                </Field>
+                <div className="rounded border border-[#2d3542] bg-[#15191f] px-3 py-2.5 text-sm text-[#b7c0ce]">
+                  <div>
+                    <span className="text-[#858f9f]">{t('config.riskProtection.formula')}:</span>
+                    <span className="ml-2 font-mono text-[#e6ebf2]">max({triggerRMultiple || '—'}R, {minimumProfitPercent || '—'}%)</span>
+                  </div>
+                  <p className="mt-1.5 text-xs text-[#8b94a5]">{t('config.riskProtection.stopTarget')}</p>
+                </div>
+                <button type="submit" className="rounded bg-[#007acc] px-6 py-2 text-sm text-white hover:bg-blue-600">
+                  {t('config.riskProtection.save')}
+                </button>
+              </form>
             </section>
           )}
 
