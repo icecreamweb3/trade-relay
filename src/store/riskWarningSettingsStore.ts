@@ -3,6 +3,7 @@ import { create } from 'zustand'
 export interface RiskWarningParameters {
   tradeWindowMinutes: number
   tradeLimit: number
+  dailyTradeTarget: number
   cooldownMinutes: number
   consecutiveLossLimit: number
   addPositionLimit: number
@@ -11,6 +12,7 @@ export interface RiskWarningParameters {
 export const DEFAULT_RISK_WARNING_PARAMETERS: RiskWarningParameters = {
   tradeWindowMinutes: 60,
   tradeLimit: 3,
+  dailyTradeTarget: 5,
   cooldownMinutes: 30,
   consecutiveLossLimit: 2,
   addPositionLimit: 2,
@@ -19,6 +21,7 @@ export const DEFAULT_RISK_WARNING_PARAMETERS: RiskWarningParameters = {
 export const RISK_WARNING_PARAMETER_LIMITS = {
   tradeWindowMinutes: { min: 5, max: 1440 },
   tradeLimit: { min: 1, max: 100 },
+  dailyTradeTarget: { min: 1, max: 100 },
   cooldownMinutes: { min: 1, max: 1440 },
   consecutiveLossLimit: { min: 1, max: 20 },
   addPositionLimit: { min: 0, max: 20 },
@@ -46,6 +49,12 @@ export function normalizeRiskWarningParameters(value: Partial<RiskWarningParamet
       DEFAULT_RISK_WARNING_PARAMETERS.tradeLimit,
       RISK_WARNING_PARAMETER_LIMITS.tradeLimit.min,
       RISK_WARNING_PARAMETER_LIMITS.tradeLimit.max,
+    ),
+    dailyTradeTarget: normalizeInteger(
+      value.dailyTradeTarget,
+      DEFAULT_RISK_WARNING_PARAMETERS.dailyTradeTarget,
+      RISK_WARNING_PARAMETER_LIMITS.dailyTradeTarget.min,
+      RISK_WARNING_PARAMETER_LIMITS.dailyTradeTarget.max,
     ),
     cooldownMinutes: normalizeInteger(
       value.cooldownMinutes,

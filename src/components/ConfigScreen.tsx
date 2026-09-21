@@ -55,6 +55,7 @@ export function ConfigScreen() {
   const setRiskWarningParameters = useRiskWarningSettingsStore((state) => state.setParameters)
   const [tradeWindowMinutes, setTradeWindowMinutes] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.tradeWindowMinutes))
   const [tradeLimit, setTradeLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.tradeLimit))
+  const [dailyTradeTarget, setDailyTradeTarget] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.dailyTradeTarget))
   const [cooldownMinutes, setCooldownMinutes] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.cooldownMinutes))
   const [consecutiveLossLimit, setConsecutiveLossLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.consecutiveLossLimit))
   const [addPositionLimit, setAddPositionLimit] = useState(String(DEFAULT_RISK_WARNING_PARAMETERS.addPositionLimit))
@@ -80,6 +81,7 @@ export function ConfigScreen() {
     setMinimumProfitPercent(String(autoBreakevenParameters.minimumProfitPercent))
     setTradeWindowMinutes(String(riskWarningParameters.tradeWindowMinutes))
     setTradeLimit(String(riskWarningParameters.tradeLimit))
+    setDailyTradeTarget(String(riskWarningParameters.dailyTradeTarget))
     setCooldownMinutes(String(riskWarningParameters.cooldownMinutes))
     setConsecutiveLossLimit(String(riskWarningParameters.consecutiveLossLimit))
     setAddPositionLimit(String(riskWarningParameters.addPositionLimit))
@@ -139,6 +141,7 @@ export function ConfigScreen() {
     const next = {
       tradeWindowMinutes: Number(tradeWindowMinutes),
       tradeLimit: Number(tradeLimit),
+      dailyTradeTarget: Number(dailyTradeTarget),
       cooldownMinutes: Number(cooldownMinutes),
       consecutiveLossLimit: Number(consecutiveLossLimit),
       addPositionLimit: Number(addPositionLimit),
@@ -433,6 +436,14 @@ export function ConfigScreen() {
                     onChange={setTradeLimit}
                     min={RISK_WARNING_PARAMETER_LIMITS.tradeLimit.min}
                     max={RISK_WARNING_PARAMETER_LIMITS.tradeLimit.max}
+                    unit={t('config.riskWarnings.unit.trades')}
+                  />
+                  <RiskParameterField
+                    label={t('config.riskWarnings.dailyTradeTarget')}
+                    value={dailyTradeTarget}
+                    onChange={setDailyTradeTarget}
+                    min={RISK_WARNING_PARAMETER_LIMITS.dailyTradeTarget.min}
+                    max={RISK_WARNING_PARAMETER_LIMITS.dailyTradeTarget.max}
                     unit={t('config.riskWarnings.unit.trades')}
                   />
                   <RiskParameterField

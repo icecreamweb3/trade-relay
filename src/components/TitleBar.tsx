@@ -4,6 +4,11 @@ import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
+import { api } from '../api/client'
+import {
+  DEFAULT_RISK_WARNING_PARAMETERS,
+  useRiskWarningSettingsStore,
+} from '../store/riskWarningSettingsStore'
 
 type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings'
 
@@ -13,6 +18,7 @@ interface TitleBarProps {
   onLoginClick?: () => void
   positionsCollapsed?: boolean
   onExpandPositions?: () => void
+  orderRefresh?: number
 }
 
 export function TitleBar({
@@ -21,14 +27,22 @@ export function TitleBar({
   onLoginClick,
   positionsCollapsed = false,
   onExpandPositions,
+  orderRefresh = 0,
 }: TitleBarProps) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
   const { t } = useTranslation(locale)
   const { symbol, isConnected, isChartExpanded, setChartExpanded } = useMarketStore()
   const { user, logout } = useAuthStore()
+  const riskWarningParameters = useRiskWarningSettingsStore((state) => (
+    user?.username
+      ? state.byUsername[user.username] ?? DEFAULT_RISK_WARNING_PARAMETERS
+      : DEFAULT_RISK_WARNING_PARAMETERS
+  ))
+  const loadRiskWarningParameters = useRiskWarningSettingsStore((state) => state.loadParameters)
   const [isClearingAllDrawings, setIsClearingAllDrawings] = React.useState(false)
   const [debugDialog, setDebugDialog] = React.useState<null | { title: string; lines: string[] }>(null)
+  const [openingTradeCount, setOpeningTradeCount] = React.useState<number | null>(null)
 
   const minimize = () => window.electronAPI?.minimizeWindow()
   const maximize = () => window.electronAPI?.maximizeWindow()
@@ -42,6 +56,51 @@ export function TitleBar({
     const shouldShowBinanceView = activeScreen === 'trade' && (!showDebugDialog || !debugDialog)
     window.electronAPI?.setBinanceViewVisible?.(shouldShowBinanceView)
   }, [activeScreen, debugDialog, showDebugDialog])
+
+  React.useEffect(() => {
+    if (user?.username) loadRiskWarningParameters(user.username)
+  }, [loadRiskWarningParameters, user?.username])
+
+  React.useEffect(() => {
+    if (activeScreen !== 'trade' || !user?.username || user.role === 'admin') {
+      setOpeningTradeCount(null)
+      return
+    }
+
+    let alive = true
+    let inFlight = false
+    const refreshTradeProgress = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const todayStartedAt = new Date()
+        todayStartedAt.setHours(0, 0, 0, 0)
+        const todayStartedAtMs = todayStartedAt.getTime()
+        const orders = await api.getOrders({
+          limit: 500,
+          username: user.username,
+          trade_direction: 'OPEN',
+        })
+        const count = orders.filter((order) => {
+          if (order.username !== user.username || Number(order.filled_qty ?? 0) <= 0) return false
+          const filledAt = Date.parse(order.filled_at || order.updated_at || order.created_at || '')
+          return Number.isFinite(filledAt) && filledAt >= todayStartedAtMs
+        }).length
+        if (alive) setOpeningTradeCount(count)
+      } catch {
+        // Keep the last known progress when order history is temporarily unavailable.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void refreshTradeProgress()
+    const timer = window.setInterval(() => void refreshTradeProgress(), 10_000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [activeScreen, orderRefresh, user?.role, user?.username])
 
   const handleClearAllDrawings = async () => {
     if (isClearingAllDrawings) return
@@ -105,9 +164,32 @@ export function TitleBar({
             <ScreenTab active={activeScreen === 'profile'} onClick={() => onNavigate('profile')} icon={<BarChart2 size={11} />}>{t('nav.profile')}</ScreenTab>
             <ScreenTab active={activeScreen === 'settings'} onClick={() => onNavigate('settings')} icon={<Settings size={11} />}>{t('nav.settings')}</ScreenTab>
           </div>
+
         </div>
 
         <div className="flex items-center gap-1.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {activeScreen === 'trade' && user?.role === 'user' && (
+            <div
+              className={`mr-2 inline-flex h-5 shrink-0 items-center gap-1 rounded border px-2 text-[11px] font-semibold tabular-nums ${
+                openingTradeCount != null && openingTradeCount > riskWarningParameters.dailyTradeTarget
+                  ? 'border-[#7f3340] bg-[#3a1d24] text-[#ff8c9a]'
+                  : openingTradeCount != null && openingTradeCount >= riskWarningParameters.dailyTradeTarget
+                    ? 'border-[#80691e] bg-[#332b16] text-[#f0c94d]'
+                    : 'border-[#345d7a] bg-[#172735] text-[#9dccf2]'
+              }`}
+              title={t('title.tradeGoalHint', {
+                count: openingTradeCount ?? '—',
+                limit: riskWarningParameters.dailyTradeTarget,
+              })}
+              aria-label={t('title.tradeGoalHint', {
+                count: openingTradeCount ?? '—',
+                limit: riskWarningParameters.dailyTradeTarget,
+              })}
+            >
+              <span aria-hidden="true">🎯</span>
+              <span>{openingTradeCount ?? '—'}/{riskWarningParameters.dailyTradeTarget}</span>
+            </div>
+          )}
           {user ? (
             <>
               <span className="text-xs text-[#858585]">{user.username} ({user.role})</span>

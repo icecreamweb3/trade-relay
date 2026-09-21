@@ -192,6 +192,7 @@ function MainApp() {
         onLoginClick={openLogin}
         positionsCollapsed={positionsCollapsed}
         onExpandPositions={expandPositions}
+        orderRefresh={orderRefresh}
       />
       <RiskWarningMonitor />
       <GlobalRiskWarning />
