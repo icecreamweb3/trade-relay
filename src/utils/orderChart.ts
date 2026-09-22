@@ -32,6 +32,21 @@ export interface PositionWindow {
   markers: PositionFillMarker[]
 }
 
+/** Return the quantity-weighted fill price of protective stop exits. */
+export function resolveActualStopFillPrice(markers: PositionFillMarker[]): number | null {
+  const stopExits = markers.filter((marker) => (
+    marker.action === 'EXIT'
+    && ['STOP', 'STOP_MARKET'].includes(String(marker.orderType || '').trim().toUpperCase())
+    && Number.isFinite(marker.price)
+    && marker.price > 0
+    && Number.isFinite(marker.quantity)
+    && marker.quantity > 0
+  ))
+  const totalQuantity = stopExits.reduce((sum, marker) => sum + marker.quantity, 0)
+  if (!(totalQuantity > 0)) return null
+  return stopExits.reduce((sum, marker) => sum + marker.price * marker.quantity, 0) / totalQuantity
+}
+
 export interface PositionRecordLike {
   id: number
   position_id?: number | null

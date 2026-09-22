@@ -5,7 +5,7 @@ import { api, type ApiKline, type ApiPositionReviewInput } from '../api/client'
 import { useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { parseUtcTimestamp } from '../utils/datetime'
-import type { PositionFillMarker, PositionWindow } from '../utils/orderChart'
+import { resolveActualStopFillPrice, type PositionFillMarker, type PositionWindow } from '../utils/orderChart'
 
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
 const SETUP_OPTIONS = [
@@ -398,7 +398,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
         </div>
 
         <FillRecords symbol={position.symbol} markers={position.markers} t={t} />
-        {position.positionRecordId != null && <PositionReviewForm recordId={position.positionRecordId} positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} onReviewSaved={onReviewSaved} t={t} />}
+        {position.positionRecordId != null && <PositionReviewForm recordId={position.positionRecordId} positionId={position.positionId} entryPrice={position.entryPrice} positionSide={position.positionSide} plannedStopPrice={position.plannedStopPrice} actualStopFillPrice={resolveActualStopFillPrice(position.markers)} signalCandle={signalCandle} onSignalCandleLoaded={setSignalCandle} onReviewSaved={onReviewSaved} t={t} />}
       </section>,
     document.body,
   )
@@ -429,7 +429,7 @@ type ReviewDraft = {
 const EMPTY_REVIEW: ReviewDraft = {
   market_state: '', setup_name: '', setup_variant: '', entry_rationale: '', signal_candle_trigger: '',
   signal_candle_interval: '', signal_candle_open_time: '', signal_candle_number: null,
-  opportunity_grade: '', estimated_win_probability: '', first_target_price: '', is_planned_trade: '', first_entry_pnl_state: '',
+  opportunity_grade: '', estimated_win_probability: '', first_target_price: '', is_planned_trade: '', first_entry_pnl_state: 'NOT_APPLICABLE',
   planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
   final_exit_reason: '', discipline_trigger: '',
 }
@@ -501,12 +501,13 @@ function formatOpportunityScore(result: OpportunityScoreResult, t: (key: string)
   return `${grade} · ${(result.score ?? 0).toFixed(0)}/100 · RR ${(result.rewardRisk ?? 0).toFixed(2)} · EV ${expectedValue >= 0 ? '+' : ''}${expectedValue.toFixed(2)}R`
 }
 
-function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, plannedStopPrice, signalCandle, onSignalCandleLoaded, onReviewSaved, t }: {
+function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, plannedStopPrice, actualStopFillPrice, signalCandle, onSignalCandleLoaded, onReviewSaved, t }: {
   recordId: number
   positionId?: number
   entryPrice?: number | null
   positionSide: PositionWindow['positionSide']
   plannedStopPrice?: number | null
+  actualStopFillPrice?: number | null
   signalCandle: SignalCandleSelection | null
   onSignalCandleLoaded: (selection: SignalCandleSelection | null) => void
   onReviewSaved?: (recordId: number) => void
@@ -520,13 +521,19 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
   useEffect(() => {
     let active = true
     const authoritativePlannedStop = plannedStopPrice?.toString() ?? ''
+    const authoritativeActualStop = actualStopFillPrice?.toString() ?? ''
     onSignalCandleLoaded(null)
-    setDraft({ ...EMPTY_REVIEW, planned_stop_price: authoritativePlannedStop })
+    setDraft({
+      ...EMPTY_REVIEW,
+      planned_stop_price: authoritativePlannedStop,
+      actual_stop_fill_price: authoritativeActualStop,
+    })
     setLoading(true)
     setStatus('idle')
     api.getPositionRecordReview(recordId).then((review) => {
       if (!active || !review) return
       const effectivePlannedStop = authoritativePlannedStop || review.planned_stop_price?.toString() || ''
+      const effectiveActualStop = authoritativeActualStop || review.actual_stop_fill_price?.toString() || ''
       const savedSignalCandleOpenTime = parseUtcTimestamp(review.signal_candle_open_time)
       const savedSignalCandle = review.signal_candle_interval && savedSignalCandleOpenTime && review.signal_candle_number
         ? {
@@ -549,9 +556,9 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
         estimated_win_probability: review.estimated_win_probability?.toString() as ReviewDraft['estimated_win_probability'] ?? '',
         first_target_price: review.first_target_price?.toString() ?? '',
         is_planned_trade: review.is_planned_trade == null ? '' : review.is_planned_trade ? 'YES' : 'NO',
-        first_entry_pnl_state: review.first_entry_pnl_state ?? '',
+        first_entry_pnl_state: review.first_entry_pnl_state ?? 'NOT_APPLICABLE',
         planned_stop_price: effectivePlannedStop,
-        actual_stop_fill_price: review.actual_stop_fill_price?.toString() ?? '',
+        actual_stop_fill_price: effectiveActualStop,
         first_target: review.first_target ?? '',
         structural_target: review.structural_target ?? '',
         final_exit_reason: review.final_exit_reason ?? '',
@@ -563,7 +570,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
       if (active) setLoading(false)
     })
     return () => { active = false }
-  }, [onSignalCandleLoaded, plannedStopPrice, recordId])
+  }, [actualStopFillPrice, onSignalCandleLoaded, plannedStopPrice, recordId])
 
   useEffect(() => {
     if (!signalCandle) return
@@ -700,7 +707,17 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
           title={t(plannedStopPrice == null ? 'review.plannedStopManual' : 'review.plannedStopSource')}
           className={plannedStopPrice == null ? inputClass : `${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`}
         />)}
-        {label('review.actualStop', 'review.tip.actualStop', <input type="number" min="0" step="any" value={draft.actual_stop_fill_price} onChange={(e) => update('actual_stop_fill_price', e.target.value)} className={inputClass} />)}
+        {label('review.actualStop', 'review.tip.actualStop', <input
+          type="number"
+          min="0"
+          step="any"
+          value={draft.actual_stop_fill_price}
+          readOnly={actualStopFillPrice != null}
+          onChange={(e) => update('actual_stop_fill_price', e.target.value)}
+          placeholder={actualStopFillPrice == null ? t('review.actualStopManual') : undefined}
+          title={t(actualStopFillPrice == null ? 'review.actualStopManual' : 'review.actualStopSource')}
+          className={actualStopFillPrice == null ? inputClass : `${inputClass} cursor-not-allowed bg-[#20252d] text-[#aeb7c4]`}
+        />)}
         {label('review.firstTargetPrice', 'review.tip.firstTargetPrice', <div>
           <input
             type="text"
