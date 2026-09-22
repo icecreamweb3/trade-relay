@@ -606,9 +606,15 @@ export const api = {
     tpPrice: number | null,
     slPrice: number | null,
     tpOrderType?: 'MARKET' | 'LIMIT',
+    updateTakeProfit = true,
   ): Promise<ApiResult> {
     return request<ApiResult>('POST', `/api/positions/${positionId}/tpsl`, {
-      body: { tp_price: tpPrice, sl_price: slPrice, tp_order_type: tpOrderType },
+      body: {
+        tp_price: tpPrice,
+        sl_price: slPrice,
+        tp_order_type: tpOrderType,
+        update_take_profit: updateTakeProfit,
+      },
     })
   },
 

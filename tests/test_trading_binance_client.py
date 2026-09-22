@@ -1985,6 +1985,81 @@ def test_place_tp_sl_orders_can_place_basic_take_profit_limit(monkeypatch):
     assert created_orders[1]["order_type"] == "STOP_MARKET"
 
 
+def test_place_tp_sl_orders_stop_only_preserves_existing_limit_take_profit(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    canceled_regular_orders = []
+    canceled_algo_orders = []
+    created_orders = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            pass
+
+        def cancel_order(self, symbol, order_id):
+            canceled_regular_orders.append((symbol, order_id))
+            return {"status": "CANCELED"}
+
+        def cancel_algo_order(self, algo_id=None, client_algo_id=None, symbol=None, max_retries=None):
+            canceled_algo_orders.append((algo_id, symbol))
+            return {"success": True}
+
+        def place_stop_loss_order(self, symbol, side, stop_price, quantity, position_side):
+            return {"algoId": 3002, "clientAlgoId": "replacement-sl", "status": "NEW"}
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(
+        tpsl_service.db,
+        "query_orders",
+        lambda **kwargs: [
+            {
+                "id": 9017,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "trade_direction": "CLOSE",
+                "order_type": "TAKE_PROFIT",
+                "position_id": 6815,
+                "exchange_order_id": "77236097351",
+                "status": "NEW",
+            },
+            {
+                "id": 9018,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "trade_direction": "CLOSE",
+                "order_type": "STOP_MARKET",
+                "position_id": 6815,
+                "algo_id": "1000002579000000",
+                "status": "NEW",
+            },
+        ],
+    )
+    monkeypatch.setattr(tpsl_service.db, "update_order_status", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.01,
+        entry_price=85454.1,
+        tp_price=None,
+        sl_price=85539.55,
+        position_id=6815,
+        position_mode="DUAL",
+        current_price=85880.0,
+    )
+
+    assert errors == []
+    assert canceled_regular_orders == []
+    assert canceled_algo_orders == [(1000002579000000, "BTCUSDC")]
+    assert [order["order_type"] for order in created_orders] == ["STOP_MARKET"]
+
+
 def test_place_tp_sl_orders_persists_failed_stop_loss_as_failed(monkeypatch):
     from trade_relay.trading import tpsl_service
 
@@ -4469,6 +4544,52 @@ def test_positions_restore_tp_sl_by_symbol_side_when_position_id_missing(monkeyp
     assert restored_risks == [(15, 79450.0, 13.75)]
 
 
+def test_positions_do_not_restore_canceled_tp_from_memory_when_stop_is_active(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_positions",
+        lambda user_id=None, status=None: [{
+            "id": 6815,
+            "symbol": "BTCUSDC",
+            "position_side": "LONG",
+            "quantity": 0.01,
+            "avg_entry_price": 85454.1,
+            "unrealized_pnl": 4.5,
+            "leverage": 20,
+            "margin_type": "cross",
+            "planned_stop_price": 85050.0,
+            "initial_risk_usdc": 4.041,
+        }],
+    )
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: [{
+            "position_id": 6815,
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "trade_direction": "CLOSE",
+            "order_type": "STOP_MARKET",
+            "price": None,
+            "stop_price": 85539.55,
+            "status": "NEW",
+        }],
+    )
+
+    with positions_router._tpsl_store_lock:
+        positions_router._tpsl_store.clear()
+        positions_router._tpsl_store[6815] = (86262.3, 85050.0)
+
+    positions = positions_router._db_positions(user_id=5)
+
+    assert positions[0].tp_price is None
+    assert positions[0].sl_price == 85539.55
+    with positions_router._tpsl_store_lock:
+        assert positions_router._tpsl_store[6815] == (None, 85539.55)
+
+
 def test_positions_reconcile_stale_risk_after_legacy_increase(monkeypatch):
     from backend.routers import positions as positions_router
 
@@ -4572,6 +4693,47 @@ def test_setting_first_stop_replaces_orphan_risk(monkeypatch):
     expected_risk = (79740.0 - 79557.8) * 0.02
     assert result["initial_risk_usdc"] == pytest.approx(expected_risk)
     assert initialized == [(23, 79740.0, pytest.approx(expected_risk))]
+
+
+def test_stop_only_tpsl_update_does_not_recreate_take_profit(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 6815,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "position_mode": "DUAL",
+        "quantity": 0.01,
+        "avg_entry_price": 85454.1,
+        "planned_stop_price": 85050.0,
+        "initial_risk_usdc": 4.041,
+    }
+    placements = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(positions_router, "_fetch_current_trigger_price", lambda *args: 85880.0)
+    monkeypatch.setattr(
+        positions_router,
+        "place_tp_sl_orders",
+        lambda **kwargs: placements.append(kwargs) or [],
+    )
+    monkeypatch.setattr(positions_router, "_clear_positions_cache", lambda user_id: None)
+
+    result = positions_router.set_position_tpsl(
+        6815,
+        positions_router.TpSlIn(
+            tp_price=86262.3,
+            sl_price=85539.55,
+            update_take_profit=False,
+        ),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    assert placements[0]["tp_price"] is None
+    assert placements[0]["sl_price"] == 85539.55
+    assert result["tp_price"] is None
+    assert result["sl_price"] == 85539.55
 
 
 def test_initialize_position_risk_atomically_replaces_orphan_amount(monkeypatch):

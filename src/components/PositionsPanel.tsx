@@ -509,7 +509,10 @@ export function PositionsPanel({
 
       autoBreakevenInFlightRef.current.add(position.id)
       setAutoBreakevenMoving((current) => ({ ...current, [position.id]: true }))
-      void api.setPositionTpSl(position.id, position.tp_price ?? null, targetStop)
+      // Moving the stop must not replace, resurrect, or change the type of the
+      // existing take-profit order. In particular, a 2R TP remains a basic
+      // LIMIT order instead of being recreated as TAKE_PROFIT_MARKET.
+      void api.setPositionTpSl(position.id, null, targetStop, undefined, false)
         .then((result) => {
           const savedStop = typeof result.sl_price === 'number' ? result.sl_price : targetStop
           setPositions((current) => current.map((item) => item.id === position.id ? { ...item, sl_price: savedStop } : item))

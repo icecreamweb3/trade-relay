@@ -436,17 +436,13 @@ def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[Posi
         symbol = str(row.get("symbol", "") or "").upper()
         side = str(row.get("position_side", "") or "").upper()
         tp, sl = persisted_by_position_id.get(pos_id) or persisted_by_symbol_side.get((symbol, side)) or (None, None)
+        # Active order rows are authoritative. Do not overlay a cached TP/SL
+        # when only the other leg still exists: that can resurrect the price of
+        # a canceled 2R limit order during a later automatic stop update.
         with _tpsl_store_lock:
-            memory_tp, memory_sl = _tpsl_store.get(pos_id, (None, None))
-
-        has_persisted_tpsl = tp is not None or sl is not None
-        if has_persisted_tpsl:
-            if memory_tp is not None:
-                tp = memory_tp
-            if memory_sl is not None:
-                sl = memory_sl
-        elif memory_tp is not None or memory_sl is not None:
-            with _tpsl_store_lock:
+            if tp is not None or sl is not None:
+                _tpsl_store[pos_id] = (tp, sl)
+            else:
                 _tpsl_store.pop(pos_id, None)
 
         planned_stop_price, initial_risk_usdc = _restore_missing_position_risk(row, pos_id, sl)
@@ -804,6 +800,7 @@ class TpSlIn(BaseModel):
     tp_price: Optional[float] = None
     sl_price: Optional[float] = None
     tp_order_type: Optional[Literal["MARKET", "LIMIT"]] = None
+    update_take_profit: bool = True
 
 
 @router.post("/{position_id}/tpsl")
@@ -839,8 +836,9 @@ def set_position_tpsl(
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
     current_price = _fetch_current_trigger_price(user_id, username, symbol)
 
-    effective_tp_order_type = body.tp_order_type
-    if effective_tp_order_type is None and body.tp_price and body.tp_price > 0:
+    requested_tp_price = body.tp_price if body.update_take_profit else None
+    effective_tp_order_type = body.tp_order_type if body.update_take_profit else None
+    if effective_tp_order_type is None and requested_tp_price and requested_tp_price > 0:
         # Preserve an existing basic limit TP when another feature (for example
         # auto-breakeven) updates only the stop through the same endpoint.
         active_orders = db_module.query_orders(user_id=int(user["sub"]), status="NEW", limit=500)
@@ -856,7 +854,7 @@ def set_position_tpsl(
     validation_errors = validate_tpsl_prices(
         position_side=position_side,
         entry_price=entry_price,
-        tp_price=None if effective_tp_order_type == "LIMIT" else body.tp_price,
+        tp_price=None if effective_tp_order_type == "LIMIT" else requested_tp_price,
         sl_price=body.sl_price,
         current_price=current_price,
     )
@@ -864,7 +862,7 @@ def set_position_tpsl(
         raise HTTPException(status_code=400, detail="; ".join(validation_errors))
     _log.info(
         "[POSITION_SYNC] phase=tpsl_validated user=%s pos=%d symbol=%s side=%s entry_price=%s current_price=%s tp=%s sl=%s",
-        username, position_id, symbol, position_side, entry_price, current_price, body.tp_price, body.sl_price,
+        username, position_id, symbol, position_side, entry_price, current_price, requested_tp_price, body.sl_price,
     )
 
     db_user_id = int(user["sub"])
@@ -875,7 +873,7 @@ def set_position_tpsl(
         position_side=position_side,
         quantity=quantity,
         entry_price=entry_price,
-        tp_price=body.tp_price,
+        tp_price=requested_tp_price,
         sl_price=body.sl_price,
         position_id=position_id,
         position_mode=position_mode,
@@ -915,16 +913,19 @@ def set_position_tpsl(
     # Store the set prices in memory
     with _tpsl_store_lock:
         _tpsl_store[position_id] = (
-            body.tp_price if body.tp_price and body.tp_price > 0 else None,
+            requested_tp_price if requested_tp_price and requested_tp_price > 0 else None,
             body.sl_price if body.sl_price and body.sl_price > 0 else None,
         )
     # Invalidate position cache
     _clear_positions_cache(user_id)
 
-    _log.info("[POSITION_SYNC] phase=tpsl_set user=%s pos=%d symbol=%s tp=%s sl=%s", username, position_id, symbol, body.tp_price, body.sl_price)
+    _log.info(
+        "[POSITION_SYNC] phase=tpsl_set user=%s pos=%d symbol=%s tp=%s sl=%s update_tp=%s",
+        username, position_id, symbol, requested_tp_price, body.sl_price, body.update_take_profit,
+    )
     return {
         "ok": True,
-        "tp_price": body.tp_price,
+        "tp_price": requested_tp_price,
         "sl_price": body.sl_price,
         "initial_risk_usdc": effective_initial_risk,
     }
