@@ -431,7 +431,7 @@ const EMPTY_REVIEW: ReviewDraft = {
   signal_candle_interval: '', signal_candle_open_time: '', signal_candle_number: null,
   opportunity_grade: '', estimated_win_probability: '', first_target_price: '', is_planned_trade: '', first_entry_pnl_state: 'NOT_APPLICABLE',
   planned_stop_price: '', actual_stop_fill_price: '', first_target: '', structural_target: '',
-  final_exit_reason: '', discipline_trigger: '',
+  final_exit_reason: '', discipline_trigger: 'NONE',
 }
 
 interface OpportunityScoreResult {
@@ -562,7 +562,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
         first_target: review.first_target ?? '',
         structural_target: review.structural_target ?? '',
         final_exit_reason: review.final_exit_reason ?? '',
-        discipline_trigger: review.discipline_trigger ?? '',
+        discipline_trigger: review.discipline_trigger ?? 'NONE',
       })
     }).catch(() => {
       if (active) setStatus('error')
