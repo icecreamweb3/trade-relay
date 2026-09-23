@@ -15,7 +15,7 @@ export const translations: Record<Locale, Record<string, string>> = {
 
     // TitleBar
     'title.app': 'Trade Relay',
-    'title.tradeGoalHint': '今日已开仓成交 {count}/{limit} 笔',
+    'title.tradeGoalHint': 'UTC 今日已入场 {count}/{limit} 笔',
     'status.connected': '数据流实时',
     'status.disconnected': '等待数据...',
     'nav.back': '后退',
@@ -552,7 +552,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'config.riskWarnings.unit.minutes': '分钟',
     'config.riskWarnings.unit.trades': '笔',
     'config.riskWarnings.unit.times': '次',
-    'config.riskWarnings.parameterHint': '短时交易上限和每日目标均只统计实际开仓成交；每日目标按本地自然日零点重置。加仓上限不包含首次建仓，设置为 0 表示首次加仓即提醒。',
+    'config.riskWarnings.parameterHint': '短时交易上限和每日目标均只统计实际开仓成交；每日目标按入场时间归属 UTC 自然日（00:00–23:59）。加仓上限不包含首次建仓，设置为 0 表示首次加仓即提醒。',
     'config.riskWarnings.save': '保存告警参数',
     'config.riskWarnings.saved': '风险告警参数已更新',
     'config.riskWarnings.invalid': '请输入有效整数：统计窗口 5–1440 分钟、短时交易上限和每日目标 1–100 笔、冷静期 1–1440 分钟、连续亏损 1–20 笔、加仓上限 0–20 次。',
@@ -672,7 +672,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'login.error.failed': 'Invalid username or password',
 
     'title.app': 'Trade Relay',
-    'title.tradeGoalHint': '{count}/{limit} opening fills today',
+    'title.tradeGoalHint': '{count}/{limit} entries today (UTC)',
     'status.connected': 'Live',
     'status.disconnected': 'Waiting...',
     'nav.back': 'Back',
@@ -1201,7 +1201,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'config.riskWarnings.unit.minutes': 'min',
     'config.riskWarnings.unit.trades': 'trades',
     'config.riskWarnings.unit.times': 'times',
-    'config.riskWarnings.parameterHint': 'The short-term limit and daily target count only filled opening orders. The daily target resets at local midnight. Position additions exclude the initial entry; set the limit to 0 to warn on the first addition.',
+    'config.riskWarnings.parameterHint': 'The short-term limit and daily target count only filled opening orders. The daily target uses entry time within the UTC calendar day (00:00–23:59). Position additions exclude the initial entry; set the limit to 0 to warn on the first addition.',
     'config.riskWarnings.save': 'Save Warning Parameters',
     'config.riskWarnings.saved': 'Risk warning parameters updated',
     'config.riskWarnings.invalid': 'Enter valid integers: window 5–1440 minutes, short-term limit and daily target 1–100 trades, cooldown 1–1440 minutes, 1–20 consecutive losses, and 0–20 position additions.',
