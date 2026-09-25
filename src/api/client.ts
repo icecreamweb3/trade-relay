@@ -533,6 +533,10 @@ export const api = {
     return request<ApiOrder[]>('GET', '/api/orders', { params })
   },
 
+  async getDailyPositionCount(): Promise<{ count: number }> {
+    return request<{ count: number }>('GET', '/api/orders/daily-position-count')
+  },
+
   async getOrderUsers(): Promise<ApiOrderUser[]> {
     return request<ApiOrderUser[]>('GET', '/api/orders/users')
   },

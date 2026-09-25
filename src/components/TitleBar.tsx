@@ -5,7 +5,6 @@ import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { api } from '../api/client'
-import { parseUtcTimestamp } from '../utils/datetime'
 import {
   DEFAULT_RISK_WARNING_PARAMETERS,
   useRiskWarningSettingsStore,
@@ -74,22 +73,8 @@ export function TitleBar({
       if (inFlight) return
       inFlight = true
       try {
-        const now = new Date()
-        const todayStartedAtMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-        const tomorrowStartedAtMs = todayStartedAtMs + 24 * 60 * 60 * 1000
-        const orders = await api.getOrders({
-          limit: 500,
-          username: user.username,
-          trade_direction: 'OPEN',
-        })
-        const count = orders.filter((order) => {
-          if (order.username !== user.username || Number(order.filled_qty ?? 0) <= 0) return false
-          const entryTime = parseUtcTimestamp(order.filled_at)?.getTime()
-          return entryTime != null
-            && entryTime >= todayStartedAtMs
-            && entryTime < tomorrowStartedAtMs
-        }).length
-        if (alive) setOpeningTradeCount(count)
+        const result = await api.getDailyPositionCount()
+        if (alive) setOpeningTradeCount(result.count)
       } catch {
         // Keep the last known progress when order history is temporarily unavailable.
       } finally {

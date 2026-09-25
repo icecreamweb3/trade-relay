@@ -15,7 +15,7 @@ export const translations: Record<Locale, Record<string, string>> = {
 
     // TitleBar
     'title.app': 'Trade Relay',
-    'title.tradeGoalHint': 'UTC 今日已入场 {count}/{limit} 笔',
+    'title.tradeGoalHint': 'UTC 今日持仓头寸 {count}/{limit} 笔（加仓不重复计算）',
     'status.connected': '数据流实时',
     'status.disconnected': '等待数据...',
     'nav.back': '后退',
@@ -672,7 +672,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     'login.error.failed': 'Invalid username or password',
 
     'title.app': 'Trade Relay',
-    'title.tradeGoalHint': '{count}/{limit} entries today (UTC)',
+    'title.tradeGoalHint': '{count}/{limit} positions opened today (UTC; adds excluded)',
     'status.connected': 'Live',
     'status.disconnected': 'Waiting...',
     'nav.back': 'Back',

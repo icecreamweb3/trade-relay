@@ -8,7 +8,7 @@ import asyncio
 import math
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -111,6 +111,10 @@ class OrderOut(BaseModel):
 class OrderUserOption(BaseModel):
     id: int
     username: str
+
+
+class DailyPositionCountOut(BaseModel):
+    count: int
 
 
 class OrderMarkerOut(BaseModel):
@@ -391,6 +395,20 @@ def list_orders(
         sort_by_created_at=True,
     )
     return [_row_to_out(r) for r in rows]
+
+
+@router.get("/daily-position-count", response_model=DailyPositionCountOut)
+def get_daily_position_count(user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    start_time = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    end_time = start_time + timedelta(days=1)
+    return DailyPositionCountOut(
+        count=db_module.count_positions_opened_in_range(
+            username=user["username"],
+            start_time=start_time,
+            end_time=end_time,
+        )
+    )
 
 
 @router.get("/symbols", response_model=list[str])

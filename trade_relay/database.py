@@ -3585,6 +3585,27 @@ def query_orders(
         conn.close()
 
 
+def count_positions_opened_in_range(*, username: str, start_time, end_time) -> int:
+    """Count complete position cycles opened in [start_time, end_time)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS position_count
+                FROM positions
+                WHERE username = %s
+                  AND opened_at >= %s
+                  AND opened_at < %s
+                """,
+                (username, start_time, end_time),
+            )
+            row = cur.fetchone() or {}
+            return int(row.get("position_count") or 0)
+    finally:
+        conn.close()
+
+
 def get_distinct_order_symbols() -> list[str]:
     """Return normalized symbols that are present in the orders table."""
     conn = get_connection()
