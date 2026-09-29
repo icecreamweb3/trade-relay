@@ -154,6 +154,20 @@ class PositionReviewOut(PositionReviewIn):
     created_at: str
     updated_at: str
 
+
+def _normalize_and_validate_review_values(body: PositionReviewIn) -> dict:
+    values = body.model_dump()
+    for field, value in values.items():
+        if isinstance(value, str):
+            values[field] = value.strip() or None
+    if str(values.get("setup_name") or "").upper() in {"OTHER", "其他"} and not values.get("entry_rationale"):
+        raise HTTPException(
+            status_code=422,
+            detail="Entry rationale is required when setup name is OTHER",
+        )
+    return values
+
+
 # Per-user TTL cache: (user_id, status) (None = admin) → (timestamp, result)
 _positions_cache: dict[tuple[int | None, str], tuple[float, list]] = {}
 _POSITIONS_CACHE_TTL = 0.5  # seconds — short enough that an account_update fetch always sees fresh DB data
@@ -1068,6 +1082,7 @@ def get_position_records(
     username: Optional[str] = None,
     symbol: Optional[str] = None,
     side: Optional[str] = Query(None, pattern="^(LONG|SHORT)$"),
+    setup_name: Optional[str] = Query(None, max_length=255),
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     user: dict = Depends(get_current_user),
@@ -1080,6 +1095,7 @@ def get_position_records(
         username=username if user["role"] == "admin" else None,
         symbol=symbol,
         side=side,
+        setup_name=setup_name,
         start_time=start_time,
         end_time=end_time,
     )
@@ -1211,10 +1227,7 @@ def save_position_record_review(
     user: dict = Depends(get_current_user),
 ):
     owner_id = _position_record_review_owner(record_id, user)
-    values = body.model_dump()
-    for field, value in values.items():
-        if isinstance(value, str):
-            values[field] = value.strip() or None
+    values = _normalize_and_validate_review_values(body)
     context = db_module.get_position_record_review_scoring_context(record_id, owner_id) or {}
     authoritative_stop = context.get("planned_stop_price")
     if authoritative_stop is not None:
@@ -1287,10 +1300,7 @@ def save_position_review(
     user: dict = Depends(get_current_user),
 ):
     owner_id = _review_owner(position_id, user)
-    values = body.model_dump()
-    for field, value in values.items():
-        if isinstance(value, str):
-            values[field] = value.strip() or None
+    values = _normalize_and_validate_review_values(body)
     context = db_module.get_position_review_scoring_context(position_id, owner_id) or {}
     authoritative_stop = context.get("planned_stop_price")
     if authoritative_stop is not None:

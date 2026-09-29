@@ -675,6 +675,7 @@ export const api = {
     username?: string
     symbol?: string
     side?: 'LONG' | 'SHORT'
+    setup_name?: string
     start_time?: string
     end_time?: string
   }): Promise<ApiPositionRecord[]> {

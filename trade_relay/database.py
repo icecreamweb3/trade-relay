@@ -5286,6 +5286,7 @@ def query_position_records(
     username: Optional[str] = None,
     symbol: Optional[str] = None,
     side: Optional[str] = None,
+    setup_name: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
 ) -> list:
@@ -5366,6 +5367,10 @@ def query_position_records(
     if normalized_side in {"LONG", "SHORT"}:
         sql += " AND UPPER(f.side) = %s"
         params.append(normalized_side)
+    normalized_setup_name = str(setup_name or "").strip().upper()
+    if normalized_setup_name:
+        sql += " AND UPPER(TRIM(pr.setup_name)) = %s"
+        params.append(normalized_setup_name)
     if start_time:
         sql += " AND COALESCE(f.close_time, f.updated_at, f.created_at) >= %s"
         params.append(start_time)

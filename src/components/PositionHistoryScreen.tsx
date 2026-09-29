@@ -16,6 +16,7 @@ interface PositionHistoryFilters {
   username: string
   symbol: string
   side: '' | 'LONG' | 'SHORT'
+  setupName: string
   startTime: string
   endTime: string
 }
@@ -29,9 +30,25 @@ const INITIAL_FILTERS: PositionHistoryFilters = {
   username: '',
   symbol: '',
   side: '',
+  setupName: '',
   startTime: '',
   endTime: '',
 }
+
+const REVIEW_SETUP_OPTIONS = [
+  'SPIKE_AND_CHANNEL',
+  'WEDGE_REVERSAL_3_PUSH',
+  'TWENTY_GAP_BARS',
+  'TRIANGLES',
+  'EXPANDING_TRIANGLES',
+  'INSIDE_INSIDE',
+  'INSIDE_OUTSIDE_INSIDE',
+  'TWO_BAR_REVERSAL',
+  'BULL_BEAR_FLAG',
+  'DOUBLE_TOP_BOTTOM_FLAG',
+  'RANGE_BREAKOUT_EXTREME_CLOSE',
+  'OTHER',
+] as const
 
 const PAGE_LIMIT = 200
 const EXPORT_LIMIT = 5000
@@ -487,6 +504,18 @@ export function PositionHistoryScreen() {
             <option value="SHORT">{t('pos.short')}</option>
           </select>
         </FilterField>
+        <FilterField label={t('review.setupName')} className="w-[260px]">
+          <select
+            value={filters.setupName}
+            onChange={(event) => setFilters((current) => ({ ...current, setupName: event.target.value }))}
+            className={INPUT_CLS}
+          >
+            <option value="">{t('pos.historyFilter.allSetups')}</option>
+            {REVIEW_SETUP_OPTIONS.map((value) => (
+              <option key={value} value={value}>{t(`review.setup.${value}`)}</option>
+            ))}
+          </select>
+        </FilterField>
         <FilterField label={t('log.filter.startTime')} className="w-[220px]">
           <input
             type="datetime-local"
@@ -642,6 +671,7 @@ function buildQuery(filters: PositionHistoryFilters, limit: number) {
     username: filters.username.trim() || undefined,
     symbol: filters.symbol.trim() || undefined,
     side: filters.side || undefined,
+    setup_name: filters.setupName || undefined,
     start_time: toBackendDateTime(filters.startTime),
     end_time: toBackendDateTime(filters.endTime),
   }
@@ -709,12 +739,7 @@ function formatReviewMarketState(value: ApiPositionRecord['review_market_state']
 
 function formatReviewSetupName(value: string | null | undefined, t: (key: string) => string) {
   if (!value) return ''
-  const knownValues = new Set([
-    'SPIKE_AND_CHANNEL', 'WEDGE_REVERSAL_3_PUSH', 'TWENTY_GAP_BARS', 'TRIANGLES',
-    'EXPANDING_TRIANGLES', 'INSIDE_INSIDE', 'INSIDE_OUTSIDE_INSIDE', 'TWO_BAR_REVERSAL',
-    'BULL_BEAR_FLAG', 'DOUBLE_TOP_BOTTOM_FLAG', 'RANGE_BREAKOUT_EXTREME_CLOSE', 'OTHER',
-  ])
-  return knownValues.has(value) ? t(`review.setup.${value}`) : value
+  return REVIEW_SETUP_OPTIONS.some((knownValue) => knownValue === value) ? t(`review.setup.${value}`) : value
 }
 
 function formatSignalCandleAndTrigger(row: ApiPositionRecord, t: (key: string) => string) {

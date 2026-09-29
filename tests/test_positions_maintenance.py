@@ -76,17 +76,23 @@ def test_non_admin_cannot_maintain_another_user():
 
 
 def test_position_records_expose_saved_review_marker(monkeypatch):
-    monkeypatch.setattr(
-        positions_router.db_module,
-        "query_position_records",
-        lambda **_kwargs: [{
+    captured = {}
+
+    def query_position_records(**kwargs):
+        captured.update(kwargs)
+        return [{
             "id": 17,
             "position_id": 41,
             "username": "Will",
             "symbol": "BTCUSDC",
             "side": "LONG",
             "reviewed": 1,
-        }],
+        }]
+
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_position_records",
+        query_position_records,
     )
 
     result = positions_router.get_position_records(
@@ -95,6 +101,7 @@ def test_position_records_expose_saved_review_marker(monkeypatch):
         username=None,
         symbol=None,
         side=None,
+        setup_name="OTHER",
         start_time=None,
         end_time=None,
         user={"sub": "5", "username": "Will", "role": "user"},
@@ -102,6 +109,7 @@ def test_position_records_expose_saved_review_marker(monkeypatch):
 
     assert result[0].position_id == 41
     assert result[0].reviewed is True
+    assert captured["setup_name"] == "OTHER"
 
 
 def test_position_review_is_loaded_for_position_owner(monkeypatch):
@@ -203,13 +211,49 @@ def test_legacy_position_record_review_can_be_saved_without_initial_risk(monkeyp
 
     result = positions_router.save_position_record_review(
         73,
-        positions_router.PositionReviewIn(entry_rationale="breakdown"),
+        positions_router.PositionReviewIn(setup_name="OTHER", entry_rationale="breakdown"),
         {"sub": "5", "username": "Will", "role": "user"},
     )
 
     assert result.position_history_final_id == 73
     assert saved["entry_rationale"] == "breakdown"
     assert saved["planned_reward_risk"] is None
+
+
+def test_position_record_review_rejects_other_setup_without_entry_rationale(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_record_by_id",
+        lambda record_id: {"id": record_id, "position_id": None, "user_id": 5},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        positions_router.save_position_record_review(
+            73,
+            positions_router.PositionReviewIn(setup_name=" OTHER ", entry_rationale="  \n "),
+            {"sub": "5", "username": "Will", "role": "user"},
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "Entry rationale is required when setup name is OTHER"
+
+
+def test_position_review_rejects_other_setup_without_entry_rationale(monkeypatch):
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "get_position_by_id",
+        lambda position_id: {"id": position_id, "user_id": 5},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        positions_router.save_position_review(
+            41,
+            positions_router.PositionReviewIn(setup_name="other", entry_rationale=None),
+            {"sub": "5", "username": "Will", "role": "user"},
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "Entry rationale is required when setup name is OTHER"
 
 
 def test_position_review_cannot_be_accessed_by_another_user(monkeypatch):

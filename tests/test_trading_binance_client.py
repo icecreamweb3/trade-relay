@@ -3752,6 +3752,7 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
         offset=25,
         symbol="btc",
         side="SHORT",
+        setup_name=" other ",
         start_time="2026-09-01 00:00:00",
         end_time="2026-09-07 23:59:59",
     )
@@ -3782,11 +3783,13 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "f.user_id = %s" in sql
     assert "UPPER(f.symbol) LIKE %s" in sql
     assert "UPPER(f.side) = %s" in sql
+    assert "UPPER(TRIM(pr.setup_name)) = %s" in sql
     assert "ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at) DESC, f.id DESC LIMIT %s OFFSET %s" in sql
     assert params == [
         5,
         "%BTC%",
         "SHORT",
+        "OTHER",
         "2026-09-01 00:00:00",
         "2026-09-07 23:59:59",
         5000,
