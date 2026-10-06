@@ -13,14 +13,20 @@ import {
   type AutoBreakevenParameters,
   useAutoBreakevenSettingsStore,
 } from '../store/autoBreakevenSettingsStore'
+import {
+  DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS,
+  useAutoTakeProfitSettingsStore,
+} from '../store/autoTakeProfitSettingsStore'
+import { calculateTwoRTakeProfit } from '../utils/takeProfit'
 import { ChevronDown } from 'lucide-react'
+
+export { calculateTwoRTakeProfit } from '../utils/takeProfit'
 
 type Tab = 'positions' | 'openOrders' | 'history' | 'tradeHistory'
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
 const BINANCE_MARK_PRICE_STREAM_URL = 'wss://fstream.binance.com/market/stream?streams='
 const AUTO_BREAKEVEN_OFFSET = 0.001
 const AUTO_BREAKEVEN_RETRY_MS = 10_000
-const AUTO_TAKE_PROFIT_R_MULTIPLE = 2
 
 interface Position {
   id: number; symbol: string; side: string; quantity: number
@@ -74,20 +80,6 @@ export function calculateAutoBreakevenTriggerPrice(
     const trigger = entryPrice - triggerDistance
     return trigger > 0 ? trigger : null
   }
-  return null
-}
-
-export function calculateTwoRTakeProfit(
-  position: Pick<Position, 'side' | 'entry_price'>,
-  stopPrice: number | null,
-): number | null {
-  const entryPrice = position.entry_price
-  if (entryPrice == null || !Number.isFinite(entryPrice) || entryPrice <= 0) return null
-  if (stopPrice == null || !Number.isFinite(stopPrice) || stopPrice <= 0) return null
-  const riskDistance = Math.abs(entryPrice - stopPrice)
-  if (riskDistance <= 0) return null
-  if (position.side === 'LONG') return entryPrice + AUTO_TAKE_PROFIT_R_MULTIPLE * riskDistance
-  if (position.side === 'SHORT') return entryPrice - AUTO_TAKE_PROFIT_R_MULTIPLE * riskDistance
   return null
 }
 
@@ -207,6 +199,12 @@ export function PositionsPanel({
     Boolean(currentUser?.username && state.byUsername[currentUser.username])
   ))
   const loadAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.loadParameters)
+  const autoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => (
+    currentUser?.username
+      ? state.byUsername[currentUser.username] ?? DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS
+      : DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS
+  ))
+  const loadAutoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => state.loadParameters)
   const expireSession = useAuthStore((state) => state.expireSession)
   const showToast = useToastStore((state) => state.showToast)
   const [tab, setTab] = useState<Tab>('positions')
@@ -240,12 +238,17 @@ export function PositionsPanel({
   const autoBreakevenRetryAfterRef = useRef(new Map<number, number>())
 
   useEffect(() => {
-    if (currentUser?.username) loadAutoBreakevenParameters(currentUser.username)
-  }, [currentUser?.username, loadAutoBreakevenParameters])
+    if (!currentUser?.username) return
+    loadAutoBreakevenParameters(currentUser.username)
+    loadAutoTakeProfitParameters(currentUser.username)
+  }, [currentUser?.username, loadAutoBreakevenParameters, loadAutoTakeProfitParameters])
 
   const autoBreakevenHint = t('pos.autoBreakeven.hint', {
     r: autoBreakevenParameters.triggerRMultiple.toString(),
     percent: autoBreakevenParameters.minimumProfitPercent.toString(),
+  })
+  const autoTwoRTakeProfitHint = t('pos.autoTwoRTakeProfit.hint', {
+    points: autoTakeProfitParameters.minimumProfitPoints.toString(),
   })
 
   useEffect(() => {
@@ -889,7 +892,7 @@ export function PositionsPanel({
               <th title={t('pos.liveExcursionHint')}>{t('pos.liveExcursion')}</th>
               <th title={t('pos.initialMaxRiskHint')}>{t('pos.initialMaxRisk')}</th>
               <th>{t('pos.margin')}</th><th>{t('pos.tpSl')}</th><th className="min-w-[92px] text-center" title={autoBreakevenHint}>{t('pos.autoBreakeven')}</th>
-              <th className="min-w-[118px] text-center" title={t('pos.autoTwoRTakeProfit.hint')}>
+              <th className="min-w-[118px] text-center" title={autoTwoRTakeProfitHint}>
                 <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
                   <button
                     type="button"
@@ -1248,6 +1251,7 @@ export function PositionsPanel({
         position={tpslPosition}
         username={currentUser?.username ?? ''}
         autoTwoRTakeProfit={autoTwoRTakeProfit}
+        minimumTakeProfitPoints={autoTakeProfitParameters.minimumProfitPoints}
         onClose={() => setTpslPosition(null)}
         onSaved={(posId, tp, sl, initialRisk) => {
           setPositions(prev => prev.map(p => p.id === posId ? {
@@ -1641,6 +1645,7 @@ function TpSlModal({
   position,
   username,
   autoTwoRTakeProfit,
+  minimumTakeProfitPoints,
   onClose,
   onSaved,
   showToast,
@@ -1648,6 +1653,7 @@ function TpSlModal({
   position: Position
   username: string
   autoTwoRTakeProfit: boolean
+  minimumTakeProfitPoints: number
   onClose: () => void
   onSaved: (posId: number, tp: number | null, sl: number | null, initialRisk: number | null) => void
   showToast: (type: ToastKind, msg: string) => void
@@ -1705,7 +1711,7 @@ function TpSlModal({
     || position.initial_risk_usdc <= 0
   )
   const autoTp = autoTwoRTakeProfit && isInitialRiskUnset && manualTp == null
-    ? calculateTwoRTakeProfit(position, parsedStop)
+    ? calculateTwoRTakeProfit(position, parsedStop, minimumTakeProfitPoints)
     : null
   const displayedTp = manualTp ?? autoTp
   const tpPnl = displayedTp != null ? calcPnl(displayedTp) : null
@@ -1744,7 +1750,7 @@ function TpSlModal({
   const handleConfirm = async () => {
     const sl = parsedStop
     const generatedLimitTp = autoTwoRTakeProfit && isInitialRiskUnset && manualTp == null
-      ? calculateTwoRTakeProfit(position, sl)
+      ? calculateTwoRTakeProfit(position, sl, minimumTakeProfitPoints)
       : null
     const tp = manualTp ?? generatedLimitTp
     setSubmitting(true)

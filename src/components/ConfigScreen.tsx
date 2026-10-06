@@ -7,6 +7,11 @@ import {
   DEFAULT_AUTO_BREAKEVEN_PARAMETERS,
   useAutoBreakevenSettingsStore,
 } from '../store/autoBreakevenSettingsStore'
+import {
+  AUTO_TAKE_PROFIT_PARAMETER_LIMITS,
+  DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS,
+  useAutoTakeProfitSettingsStore,
+} from '../store/autoTakeProfitSettingsStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, translations, useTranslation } from '../i18n/translations'
 import { OrderBookDepthMode, useUiPreferencesStore } from '../store/uiPreferencesStore'
@@ -46,6 +51,16 @@ export function ConfigScreen() {
   const setAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.setParameters)
   const [triggerRMultiple, setTriggerRMultiple] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerRMultiple))
   const [minimumProfitPercent, setMinimumProfitPercent] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.minimumProfitPercent))
+  const autoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => (
+    username
+      ? state.byUsername[username] ?? DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS
+      : DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS
+  ))
+  const loadAutoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => state.loadParameters)
+  const setAutoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => state.setParameters)
+  const [minimumTakeProfitPoints, setMinimumTakeProfitPoints] = useState(
+    String(DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS.minimumProfitPoints),
+  )
   const riskWarningParameters = useRiskWarningSettingsStore((state) => (
     username
       ? state.byUsername[username] ?? DEFAULT_RISK_WARNING_PARAMETERS
@@ -72,20 +87,22 @@ export function ConfigScreen() {
   useEffect(() => {
     if (!username) return
     loadAutoBreakevenParameters(username)
+    loadAutoTakeProfitParameters(username)
     loadRiskWarningParameters(username)
-  }, [loadAutoBreakevenParameters, loadRiskWarningParameters, username])
+  }, [loadAutoBreakevenParameters, loadAutoTakeProfitParameters, loadRiskWarningParameters, username])
 
   useEffect(() => {
     if (activeCategory !== 'riskProtection') return
     setTriggerRMultiple(String(autoBreakevenParameters.triggerRMultiple))
     setMinimumProfitPercent(String(autoBreakevenParameters.minimumProfitPercent))
+    setMinimumTakeProfitPoints(String(autoTakeProfitParameters.minimumProfitPoints))
     setTradeWindowMinutes(String(riskWarningParameters.tradeWindowMinutes))
     setTradeLimit(String(riskWarningParameters.tradeLimit))
     setDailyTradeTarget(String(riskWarningParameters.dailyTradeTarget))
     setCooldownMinutes(String(riskWarningParameters.cooldownMinutes))
     setConsecutiveLossLimit(String(riskWarningParameters.consecutiveLossLimit))
     setAddPositionLimit(String(riskWarningParameters.addPositionLimit))
-  }, [activeCategory, autoBreakevenParameters, riskWarningParameters])
+  }, [activeCategory, autoBreakevenParameters, autoTakeProfitParameters, riskWarningParameters])
 
   useEffect(() => {
     if (activeCategory !== 'apikey') return
@@ -233,6 +250,24 @@ export function ConfigScreen() {
       minimumProfitPercent: nextMinimumProfitPercent,
     })
     showToast('success', t('config.riskProtection.saved'))
+  }
+
+  const handleSaveTakeProfitProtection = (e: React.FormEvent) => {
+    e.preventDefault()
+    const nextMinimumProfitPoints = Number(minimumTakeProfitPoints)
+    const limits = AUTO_TAKE_PROFIT_PARAMETER_LIMITS.minimumProfitPoints
+    if (
+      !username
+      || minimumTakeProfitPoints.trim() === ''
+      || !Number.isFinite(nextMinimumProfitPoints)
+      || nextMinimumProfitPoints < limits.min
+      || nextMinimumProfitPoints > limits.max
+    ) {
+      showToast('error', t('config.riskProtection.takeProfitInvalid'))
+      return
+    }
+    setAutoTakeProfitParameters(username, { minimumProfitPoints: nextMinimumProfitPoints })
+    showToast('success', t('config.riskProtection.takeProfitSaved'))
   }
 
   return (
@@ -474,6 +509,33 @@ export function ConfigScreen() {
                 <p className="text-xs leading-5 text-[#8b94a5]">{t('config.riskWarnings.parameterHint')}</p>
                 <button type="submit" className="rounded bg-[#007acc] px-6 py-2 text-sm text-white hover:bg-blue-600">
                   {t('config.riskWarnings.save')}
+                </button>
+              </form>
+              <div className="border-t border-[#2d3542] pt-4">
+                <h3 className="text-sm font-medium text-[#d6dbe4]">{t('config.riskProtection.autoTakeProfitTitle')}</h3>
+              </div>
+              <form onSubmit={handleSaveTakeProfitProtection} className="max-w-lg space-y-4">
+                <Field label={t('config.riskProtection.minimumTakeProfitPoints')}>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={AUTO_TAKE_PROFIT_PARAMETER_LIMITS.minimumProfitPoints.min}
+                      max={AUTO_TAKE_PROFIT_PARAMETER_LIMITS.minimumProfitPoints.max}
+                      step="1"
+                      value={minimumTakeProfitPoints}
+                      onChange={e => setMinimumTakeProfitPoints(e.target.value)}
+                      className={`${INPUT_CLS} pr-12`}
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#858585]">{t('config.riskProtection.unit.points')}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-[#697386]">{t('config.riskProtection.minimumTakeProfitPointsDescription')}</p>
+                </Field>
+                <div className="rounded border border-[#2d3542] bg-[#15191f] px-3 py-2.5 text-sm text-[#b7c0ce]">
+                  <span className="text-[#858f9f]">{t('config.riskProtection.takeProfitFormula')}:</span>
+                  <span className="ml-2 font-mono text-[#e6ebf2]">max(2R, {minimumTakeProfitPoints || '—'} {t('config.riskProtection.unit.points')})</span>
+                </div>
+                <button type="submit" className="rounded bg-[#007acc] px-6 py-2 text-sm text-white hover:bg-blue-600">
+                  {t('config.riskProtection.takeProfitSave')}
                 </button>
               </form>
               <div className="border-t border-[#2d3542] pt-4">
