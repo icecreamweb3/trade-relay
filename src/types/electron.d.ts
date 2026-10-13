@@ -40,6 +40,15 @@ interface ElectronAPI {
   binanceReload: () => Promise<void>
   setBinanceViewVisible: (visible: boolean) => Promise<void>
   openBinanceDevTools: () => Promise<void>
+  setChartQuickOrderSettings?: (settings: {
+    username: string
+    symbol: string
+    quantity: number
+    inputQuantity: number
+    sizeUnit: 'QUOTE' | 'BASE'
+    leverage: number
+    positionMode: 'SINGLE' | 'DUAL'
+  }) => Promise<{ ok: boolean; reason?: string }>
 
   // Market data events
   onMarketData: (callback: (data: import('./store/marketStore').MarketEvent) => void) => () => void

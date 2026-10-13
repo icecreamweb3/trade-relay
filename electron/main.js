@@ -10,6 +10,7 @@ const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
 const { ProxyAgent } = require('proxy-agent')
+const { buildQuickStop, resolveBaseQuantity, splitTradeSymbol } = require('./chart-quick-orders')
 function resolveEnvPath() {
   const candidates = [
     path.join(path.dirname(process.execPath), '.env.production'),
@@ -58,6 +59,8 @@ let _activeOrderLinesState = null
 let _activeOrderLinesRequestSequence = 0
 const _chartTpMenuTokens = new Map()
 const _chartTpOptionsClaims = new Map()
+const _chartQuickOrderSettings = new Map()
+const _chartCurrentPrices = new Map()
 
 function logBinanceView(action, extra = undefined) {
   logger.info(`[BINANCE_VIEW] action=${action}`, extra)
@@ -687,7 +690,11 @@ ipcMain.handle('auth-login', async (_event, { username, password }) => {
   }
 })
 
-ipcMain.handle('auth-logout', () => { clearToken(); return { ok: true } })
+ipcMain.handle('auth-logout', () => {
+  clearToken()
+  _chartQuickOrderSettings.clear()
+  return { ok: true }
+})
 ipcMain.handle('auth-get-token', () => getToken())
 
 ipcMain.handle('backend-request', async (_event, { method = 'GET', path, body = null, query = null }) => {
@@ -724,6 +731,30 @@ ipcMain.handle('set-ui-lang', (_event, locale) => {
 })
 ipcMain.handle('get-backend-base-url', () => BACKEND_BASE_URL)
 ipcMain.on('get-backend-base-url-sync', (event) => { event.returnValue = BACKEND_BASE_URL })
+
+ipcMain.handle('set-chart-quick-order-settings', (event, payload = {}) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return { ok: false, reason: 'invalid_sender' }
+  const tokenPayload = decodeJwtPayload(getToken())
+  const username = String(payload.username || '').trim()
+  const symbol = normalizeChartTradeSymbol(payload.symbol)
+  const quantity = Number(payload.quantity)
+  const leverage = Number(payload.leverage)
+  const positionMode = String(payload.positionMode || '').toUpperCase()
+  if (!tokenPayload || username !== String(tokenPayload.username || '')) {
+    return { ok: false, reason: 'not_authenticated' }
+  }
+  if (!symbol) return { ok: false, reason: 'invalid_symbol' }
+  _chartQuickOrderSettings.set(symbol, {
+    username,
+    symbol,
+    quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : null,
+    inputQuantity: Number(payload.inputQuantity),
+    sizeUnit: payload.sizeUnit === 'BASE' ? 'BASE' : 'QUOTE',
+    leverage: Number.isInteger(leverage) && leverage >= 1 && leverage <= 125 ? leverage : 10,
+    positionMode: positionMode === 'SINGLE' || positionMode === 'DUAL' ? positionMode : null,
+  })
+  return { ok: true }
+})
 
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(1, chartRatio))
@@ -781,6 +812,14 @@ ipcMain.handle('set-binance-view-visible', (_event, visible) => {
 
 ipcMain.on('market-data', (event, ...args) => {
   if (!binanceView || !mainWindow || event.sender !== binanceView.webContents) return
+  const marketEvent = args[0]
+  const symbol = normalizeChartTradeSymbol(marketEvent?.symbol)
+  const price = marketEvent?.type === 'trade'
+    ? Number(marketEvent.price)
+    : marketEvent?.type === 'kline'
+      ? Number(marketEvent.close)
+      : NaN
+  if (symbol && Number.isFinite(price) && price > 0) _chartCurrentPrices.set(symbol, price)
   mainWindow.webContents.send('market-data', ...args)
 })
 
@@ -897,17 +936,34 @@ async function getChartTakeProfitContext(symbol, price) {
     if (!existing || Number(position.id) > Number(existing.id)) positionsBySide.set(side, position)
   }
 
+  const quickSettings = _chartQuickOrderSettings.get(normalizedSymbol)
+  const tokenPayload = decodeJwtPayload(token)
+  const currentPrice = Number(_chartCurrentPrices.get(normalizedSymbol)) > 0
+    ? Number(_chartCurrentPrices.get(normalizedSymbol))
+    : markPrice
+  const quickStop = buildQuickStop(
+    limitPrice,
+    currentPrice,
+    quickSettings,
+    tokenPayload?.username,
+  )
+  const { baseAsset, quoteAsset } = splitTradeSymbol(normalizedSymbol)
+
   return {
     ok: true,
     symbol: normalizedSymbol,
     price: limitPrice,
     markPrice,
+    currentPrice,
+    baseAsset,
+    quoteAsset,
     positions: Array.from(positionsBySide.values()).map((position) => ({
       id: Number(position.id),
       symbol: normalizedSymbol,
       side: String(position.side || '').toUpperCase(),
       quantity: Number(position.quantity),
     })),
+    quickStop,
   }
 }
 
@@ -921,6 +977,7 @@ function issueChartTpMenuToken(context) {
     symbol: context.symbol,
     price: context.price,
     positionIds: new Set(context.positions.map((position) => position.id)),
+    quickStop: context.quickStop ? { ...context.quickStop } : null,
     expiresAt: now + 60_000,
   })
   return token
@@ -1032,7 +1089,7 @@ function chartTpFrameWatcherScript() {
         marker.remove()
         return
       }
-      if (!options?.ok || !Array.isArray(options.positions) || options.positions.length === 0) {
+      if (!options?.ok || !Array.isArray(options.positions) || (options.positions.length === 0 && !options.quickStop)) {
         marker.remove()
         return
       }
@@ -1102,6 +1159,60 @@ function chartTpFrameWatcherScript() {
         })
         group.appendChild(item)
       }
+      if (options.quickStop) {
+        const stop = options.quickStop
+        const locale = options.locale === 'en' ? 'en' : 'zh-CN'
+        const actionLabel = stop.side === 'BUY' ? 'Buy Stop' : 'Sell Stop'
+        const displayedQuantity = Number(stop.inputQuantity) > 0 ? stop.inputQuantity : stop.quantity
+        const displayedAsset = stop.sizeUnit === 'BASE' ? options.baseAsset : options.quoteAsset
+        const item = document.createElement('div')
+        item.setAttribute('role', 'menuitem')
+        item.tabIndex = 0
+        item.textContent = '◎  ' + actionLabel
+          + (displayedQuantity ? ' · ' + displayedQuantity + ' ' + displayedAsset : '')
+          + ' @ ' + price
+        Object.assign(item.style, {
+          display: 'flex', alignItems: 'center', minHeight: '42px', padding: '0 16px',
+          color: '#d1d4dc', background: '#1e1e1e', cursor: 'pointer', whiteSpace: 'nowrap',
+          font: '14px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+        })
+        item.addEventListener('mouseenter', () => { item.style.background = '#2a2e39' })
+        item.addEventListener('mouseleave', () => { item.style.background = '#1e1e1e' })
+        item.addEventListener('mousedown', (event) => { event.preventDefault(); event.stopPropagation() })
+        item.addEventListener('click', async (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          const confirmation = await requestTop('trade-relay-chart-tp-confirm', {
+            locale,
+            side: stop.side,
+            quantity: stop.quantity,
+            inputQuantity: stop.inputQuantity,
+            sizeUnit: stop.sizeUnit,
+            currentPrice: options.currentPrice,
+            baseAsset: options.baseAsset,
+            quoteAsset: options.quoteAsset,
+            symbol: options.symbol,
+            price,
+            actionLabel,
+            kind: 'stopMarket'
+          }, 'trade-relay-chart-tp-confirm-result')
+          if (!confirmation?.confirmed) return
+          const placed = await requestTop('trade-relay-chart-stop-place', {
+            side: stop.side,
+            symbol: options.symbol,
+            price,
+            menuToken: options.menuToken,
+            inputQuantity: confirmation.inputQuantity,
+            sizeUnit: confirmation.sizeUnit
+          }, 'trade-relay-chart-stop-result')
+          const message = placed?.ok
+            ? (locale === 'en' ? actionLabel + ' placed at ' + price : actionLabel + ' 已挂出：' + price)
+            : (locale === 'en' ? 'Failed: ' + (placed?.reason || 'unknown error') : '下单失败：' + (placed?.reason || '未知错误'))
+          toast(message, Boolean(placed?.ok))
+          menu.remove()
+        })
+        group.appendChild(item)
+      }
       const orderItems = Array.from(menu.querySelectorAll('[role="menuitem"]'))
       const anchor = orderItems.find((node) => /Add order|添加订单/i.test(String(node.innerText || '')))
       if (anchor) anchor.after(group)
@@ -1154,7 +1265,7 @@ ipcMain.handle('chart-take-profit-limit-options', async (event, payload = {}) =>
     _chartTpOptionsClaims.set(claimKey, now)
 
     const context = await getChartTakeProfitContext(payload.symbol, payload.price)
-    const menuToken = context.ok && context.positions.length > 0
+    const menuToken = context.ok && (context.positions.length > 0 || context.quickStop)
       ? issueChartTpMenuToken(context)
       : null
     return { ...context, menuToken, locale: runtimeUiLocale }
@@ -1227,6 +1338,79 @@ ipcMain.handle('chart-place-take-profit-limit', async (event, payload = {}) => {
     return { ok: true, position: selected, price: context.price }
   } catch (error) {
     logger.warn('[CHART_TP_LIMIT] phase=place-failed', { reason: error?.message || 'unknown_error' })
+    return { ok: false, reason: error?.message || 'place_failed' }
+  }
+})
+
+ipcMain.handle('chart-place-stop-market', async (event, payload = {}) => {
+  if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
+  try {
+    const menuToken = String(payload.menuToken || '')
+    const tokenRecord = _chartTpMenuTokens.get(menuToken)
+    const requestedSymbol = normalizeChartTradeSymbol(payload.symbol)
+    const requestedPrice = Number(payload.price)
+    const requestedSide = String(payload.side || '').toUpperCase()
+    const quickStop = tokenRecord?.quickStop
+    if (
+      !tokenRecord
+      || tokenRecord.expiresAt <= Date.now()
+      || tokenRecord.symbol !== requestedSymbol
+      || tokenRecord.price !== requestedPrice
+      || !quickStop
+      || quickStop.side !== requestedSide
+    ) {
+      _chartTpMenuTokens.delete(menuToken)
+      return { ok: false, reason: 'menu_request_expired' }
+    }
+    _chartTpMenuTokens.delete(menuToken)
+
+    const context = await getChartTakeProfitContext(requestedSymbol, requestedPrice)
+    if (!context.ok) return context
+    if (!context.quickStop || context.quickStop.side !== requestedSide) {
+      return { ok: false, reason: 'trigger_price_no_longer_valid' }
+    }
+    const sizeUnit = payload.sizeUnit === 'BASE' ? 'BASE' : payload.sizeUnit === 'QUOTE' ? 'QUOTE' : null
+    const quantity = sizeUnit
+      ? resolveBaseQuantity(payload.inputQuantity, sizeUnit, context.currentPrice)
+      : null
+    if (!(Number(quantity) > 0)) return { ok: false, reason: 'invalid_order_quantity' }
+    const token = getToken()
+    const response = await httpRequest(
+      'POST',
+      '/api/orders',
+      {
+        symbol: context.symbol,
+        side: requestedSide,
+        order_type: 'STOP_MARKET',
+        quantity,
+        stop_price: context.price,
+        leverage: Number(quickStop.leverage) || 10,
+        position_direction: 'OPEN',
+      },
+      token,
+    )
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
+    }
+    logger.info('[CHART_STOP_MARKET] phase=placed', {
+      symbol: context.symbol,
+      side: requestedSide,
+      triggerPrice: context.price,
+      quantity,
+      inputQuantity: Number(payload.inputQuantity),
+      sizeUnit,
+      orderId: response.body?.order_id || null,
+    })
+    return {
+      ok: true,
+      side: requestedSide,
+      symbol: context.symbol,
+      triggerPrice: context.price,
+      quantity,
+      orderId: response.body?.order_id || null,
+    }
+  } catch (error) {
+    logger.warn('[CHART_STOP_MARKET] phase=place-failed', { reason: error?.message || 'unknown_error' })
     return { ok: false, reason: error?.message || 'place_failed' }
   }
 })

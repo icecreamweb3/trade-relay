@@ -390,6 +390,39 @@ export function OrderFormWidget({
     setQty(username ? readStoredOrderSize(username, symbol, sizeUnit) : '')
   }, [user?.username, symbol, sizeUnit])
 
+  const quickOrderBaseQuantity = useMemo(() => {
+    const inputQuantity = Number(qty)
+    const referencePrice = currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0
+    const unroundedBaseQuantity = sizeUnit === 'QUOTE'
+      ? inputQuantity / referencePrice
+      : inputQuantity
+    return Number.isFinite(unroundedBaseQuantity) && unroundedBaseQuantity > 0
+      ? Math.floor(unroundedBaseQuantity * 1000) / 1000
+      : 0
+  }, [accountSummary?.rest_mark_price, currentPrice, markPrice, qty, sizeUnit])
+
+  useEffect(() => {
+    if (!user?.username || !window.electronAPI?.setChartQuickOrderSettings) return
+    const inputQuantity = Number(qty)
+    void window.electronAPI.setChartQuickOrderSettings({
+      username: user.username,
+      symbol,
+      quantity: quickOrderBaseQuantity,
+      inputQuantity,
+      sizeUnit,
+      leverage,
+      positionMode,
+    })
+  }, [
+    leverage,
+    positionMode,
+    qty,
+    quickOrderBaseQuantity,
+    sizeUnit,
+    symbol,
+    user?.username,
+  ])
+
   useEffect(() => {
     let alive = true
 

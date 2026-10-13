@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   binanceReload: () => ipcRenderer.invoke('binance-reload'),
   setBinanceViewVisible: (visible) => ipcRenderer.invoke('set-binance-view-visible', visible),
   openBinanceDevTools: () => ipcRenderer.invoke('open-binance-devtools'),
+  setChartQuickOrderSettings: (settings) => ipcRenderer.invoke('set-chart-quick-order-settings', settings),
 
   // ── Market data events ────────────────────────────────────────────────────
   onMarketData: (callback) => {
