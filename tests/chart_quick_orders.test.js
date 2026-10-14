@@ -3,11 +3,48 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
+  buildQuickLimit,
   buildQuickStop,
+  getLimitSide,
   getStopSide,
   resolveBaseQuantity,
   splitTradeSymbol,
 } = require('../electron/chart-quick-orders')
+
+test('limit shortcut is the passive counterpart to the stop shortcut', () => {
+  assert.equal(getLimitSide(101, 100), 'SELL')
+  assert.equal(getLimitSide(99, 100), 'BUY')
+  assert.equal(getLimitSide(100, 100), null)
+  assert.deepEqual(
+    buildQuickLimit(99, 100, {
+      username: 'will',
+      quantity: 0.005,
+      inputQuantity: 500,
+      sizeUnit: 'QUOTE',
+      leverage: 10,
+      positionMode: 'DUAL',
+    }, 'will'),
+    {
+      side: 'BUY',
+      quantity: 0.005,
+      inputQuantity: 500,
+      sizeUnit: 'QUOTE',
+      leverage: 10,
+      positionMode: 'DUAL',
+    },
+  )
+})
+
+test('limit shortcut remains editable when no panel quantity is configured', () => {
+  assert.deepEqual(buildQuickLimit(101, 100, null, 'will'), {
+    side: 'SELL',
+    quantity: null,
+    inputQuantity: null,
+    sizeUnit: 'QUOTE',
+    leverage: 10,
+    unavailableReason: 'order_quantity_required',
+  })
+})
 
 test('price above current price offers Buy Stop only', () => {
   assert.equal(getStopSide(101, 100), 'BUY')

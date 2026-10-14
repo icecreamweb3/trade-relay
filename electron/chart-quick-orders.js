@@ -34,8 +34,13 @@ function getStopSide(triggerPrice, currentPrice) {
   return trigger > current ? 'BUY' : 'SELL'
 }
 
-function buildQuickStop(triggerPrice, currentPrice, settings, username) {
-  const side = getStopSide(triggerPrice, currentPrice)
+function getLimitSide(limitPrice, currentPrice) {
+  const stopSide = getStopSide(limitPrice, currentPrice)
+  if (!stopSide) return null
+  return stopSide === 'BUY' ? 'SELL' : 'BUY'
+}
+
+function buildQuickOrder(side, settings, username) {
   if (!side) return null
   const settingsAreCurrent = settings
     && settings.username === String(username || '')
@@ -50,6 +55,7 @@ function buildQuickStop(triggerPrice, currentPrice, settings, username) {
         : null,
       sizeUnit: belongsToUser && settings.sizeUnit === 'BASE' ? 'BASE' : 'QUOTE',
       leverage: belongsToUser ? settings.leverage : 10,
+      ...(belongsToUser && settings.positionMode ? { positionMode: settings.positionMode } : {}),
       unavailableReason: 'order_quantity_required',
     }
   }
@@ -63,4 +69,19 @@ function buildQuickStop(triggerPrice, currentPrice, settings, username) {
   }
 }
 
-module.exports = { buildQuickStop, getStopSide, resolveBaseQuantity, splitTradeSymbol }
+function buildQuickStop(triggerPrice, currentPrice, settings, username) {
+  return buildQuickOrder(getStopSide(triggerPrice, currentPrice), settings, username)
+}
+
+function buildQuickLimit(limitPrice, currentPrice, settings, username) {
+  return buildQuickOrder(getLimitSide(limitPrice, currentPrice), settings, username)
+}
+
+module.exports = {
+  buildQuickLimit,
+  buildQuickStop,
+  getLimitSide,
+  getStopSide,
+  resolveBaseQuantity,
+  splitTradeSymbol,
+}

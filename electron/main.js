@@ -10,7 +10,12 @@ const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
 const { ProxyAgent } = require('proxy-agent')
-const { buildQuickStop, resolveBaseQuantity, splitTradeSymbol } = require('./chart-quick-orders')
+const {
+  buildQuickLimit,
+  buildQuickStop,
+  resolveBaseQuantity,
+  splitTradeSymbol,
+} = require('./chart-quick-orders')
 function resolveEnvPath() {
   const candidates = [
     path.join(path.dirname(process.execPath), '.env.production'),
@@ -947,6 +952,12 @@ async function getChartTakeProfitContext(symbol, price) {
     quickSettings,
     tokenPayload?.username,
   )
+  const quickLimit = buildQuickLimit(
+    limitPrice,
+    currentPrice,
+    quickSettings,
+    tokenPayload?.username,
+  )
   const { baseAsset, quoteAsset } = splitTradeSymbol(normalizedSymbol)
 
   return {
@@ -963,6 +974,7 @@ async function getChartTakeProfitContext(symbol, price) {
       side: String(position.side || '').toUpperCase(),
       quantity: Number(position.quantity),
     })),
+    quickLimit,
     quickStop,
   }
 }
@@ -977,6 +989,7 @@ function issueChartTpMenuToken(context) {
     symbol: context.symbol,
     price: context.price,
     positionIds: new Set(context.positions.map((position) => position.id)),
+    quickLimit: context.quickLimit ? { ...context.quickLimit } : null,
     quickStop: context.quickStop ? { ...context.quickStop } : null,
     expiresAt: now + 60_000,
   })
@@ -1089,7 +1102,7 @@ function chartTpFrameWatcherScript() {
         marker.remove()
         return
       }
-      if (!options?.ok || !Array.isArray(options.positions) || (options.positions.length === 0 && !options.quickStop)) {
+      if (!options?.ok || !Array.isArray(options.positions) || (options.positions.length === 0 && !options.quickLimit && !options.quickStop)) {
         marker.remove()
         return
       }
@@ -1153,6 +1166,60 @@ function chartTpFrameWatcherScript() {
           }, 'trade-relay-chart-tp-result')
           const message = placed?.ok
             ? (locale === 'en' ? 'Take-profit limit placed at ' + price : '止盈限价单已挂出：' + price)
+            : (locale === 'en' ? 'Failed: ' + (placed?.reason || 'unknown error') : '下单失败：' + (placed?.reason || '未知错误'))
+          toast(message, Boolean(placed?.ok))
+          menu.remove()
+        })
+        group.appendChild(item)
+      }
+      if (options.quickLimit) {
+        const limit = options.quickLimit
+        const locale = options.locale === 'en' ? 'en' : 'zh-CN'
+        const actionLabel = limit.side === 'BUY' ? 'Buy Limit' : 'Sell Limit'
+        const displayedQuantity = Number(limit.inputQuantity) > 0 ? limit.inputQuantity : limit.quantity
+        const displayedAsset = limit.sizeUnit === 'BASE' ? options.baseAsset : options.quoteAsset
+        const item = document.createElement('div')
+        item.setAttribute('role', 'menuitem')
+        item.tabIndex = 0
+        item.textContent = '◎  ' + actionLabel
+          + (displayedQuantity ? ' · ' + displayedQuantity + ' ' + displayedAsset : '')
+          + ' @ ' + price
+        Object.assign(item.style, {
+          display: 'flex', alignItems: 'center', minHeight: '42px', padding: '0 16px',
+          color: '#d1d4dc', background: '#1e1e1e', cursor: 'pointer', whiteSpace: 'nowrap',
+          font: '14px/1.3 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif'
+        })
+        item.addEventListener('mouseenter', () => { item.style.background = '#2a2e39' })
+        item.addEventListener('mouseleave', () => { item.style.background = '#1e1e1e' })
+        item.addEventListener('mousedown', (event) => { event.preventDefault(); event.stopPropagation() })
+        item.addEventListener('click', async (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          const confirmation = await requestTop('trade-relay-chart-tp-confirm', {
+            locale,
+            side: limit.side,
+            quantity: limit.quantity,
+            inputQuantity: limit.inputQuantity,
+            sizeUnit: limit.sizeUnit,
+            currentPrice: price,
+            baseAsset: options.baseAsset,
+            quoteAsset: options.quoteAsset,
+            symbol: options.symbol,
+            price,
+            actionLabel,
+            kind: 'limit'
+          }, 'trade-relay-chart-tp-confirm-result')
+          if (!confirmation?.confirmed) return
+          const placed = await requestTop('trade-relay-chart-limit-place', {
+            side: limit.side,
+            symbol: options.symbol,
+            price,
+            menuToken: options.menuToken,
+            inputQuantity: confirmation.inputQuantity,
+            sizeUnit: confirmation.sizeUnit
+          }, 'trade-relay-chart-limit-result')
+          const message = placed?.ok
+            ? (locale === 'en' ? actionLabel + ' placed at ' + price : actionLabel + ' 已挂出：' + price)
             : (locale === 'en' ? 'Failed: ' + (placed?.reason || 'unknown error') : '下单失败：' + (placed?.reason || '未知错误'))
           toast(message, Boolean(placed?.ok))
           menu.remove()
@@ -1265,7 +1332,7 @@ ipcMain.handle('chart-take-profit-limit-options', async (event, payload = {}) =>
     _chartTpOptionsClaims.set(claimKey, now)
 
     const context = await getChartTakeProfitContext(payload.symbol, payload.price)
-    const menuToken = context.ok && (context.positions.length > 0 || context.quickStop)
+    const menuToken = context.ok && (context.positions.length > 0 || context.quickLimit || context.quickStop)
       ? issueChartTpMenuToken(context)
       : null
     return { ...context, menuToken, locale: runtimeUiLocale }
@@ -1338,6 +1405,80 @@ ipcMain.handle('chart-place-take-profit-limit', async (event, payload = {}) => {
     return { ok: true, position: selected, price: context.price }
   } catch (error) {
     logger.warn('[CHART_TP_LIMIT] phase=place-failed', { reason: error?.message || 'unknown_error' })
+    return { ok: false, reason: error?.message || 'place_failed' }
+  }
+})
+
+ipcMain.handle('chart-place-limit', async (event, payload = {}) => {
+  if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
+  try {
+    const menuToken = String(payload.menuToken || '')
+    const tokenRecord = _chartTpMenuTokens.get(menuToken)
+    const requestedSymbol = normalizeChartTradeSymbol(payload.symbol)
+    const requestedPrice = Number(payload.price)
+    const requestedSide = String(payload.side || '').toUpperCase()
+    const quickLimit = tokenRecord?.quickLimit
+    if (
+      !tokenRecord
+      || tokenRecord.expiresAt <= Date.now()
+      || tokenRecord.symbol !== requestedSymbol
+      || tokenRecord.price !== requestedPrice
+      || !quickLimit
+      || quickLimit.side !== requestedSide
+    ) {
+      _chartTpMenuTokens.delete(menuToken)
+      return { ok: false, reason: 'menu_request_expired' }
+    }
+    _chartTpMenuTokens.delete(menuToken)
+
+    const context = await getChartTakeProfitContext(requestedSymbol, requestedPrice)
+    if (!context.ok) return context
+    if (!context.quickLimit || context.quickLimit.side !== requestedSide) {
+      return { ok: false, reason: 'limit_price_no_longer_valid' }
+    }
+    const sizeUnit = payload.sizeUnit === 'BASE' ? 'BASE' : payload.sizeUnit === 'QUOTE' ? 'QUOTE' : null
+    const quantity = sizeUnit
+      ? resolveBaseQuantity(payload.inputQuantity, sizeUnit, context.price)
+      : null
+    if (!(Number(quantity) > 0)) return { ok: false, reason: 'invalid_order_quantity' }
+    const token = getToken()
+    const response = await httpRequest(
+      'POST',
+      '/api/orders',
+      {
+        symbol: context.symbol,
+        side: requestedSide,
+        order_type: 'LIMIT',
+        quantity,
+        price: context.price,
+        leverage: Number(quickLimit.leverage) || 10,
+        position_direction: 'OPEN',
+        position_mode: quickLimit.positionMode || undefined,
+      },
+      token,
+    )
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
+    }
+    logger.info('[CHART_LIMIT] phase=placed', {
+      symbol: context.symbol,
+      side: requestedSide,
+      price: context.price,
+      quantity,
+      inputQuantity: Number(payload.inputQuantity),
+      sizeUnit,
+      orderId: response.body?.order_id || null,
+    })
+    return {
+      ok: true,
+      side: requestedSide,
+      symbol: context.symbol,
+      price: context.price,
+      quantity,
+      orderId: response.body?.order_id || null,
+    }
+  } catch (error) {
+    logger.warn('[CHART_LIMIT] phase=place-failed', { reason: error?.message || 'unknown_error' })
     return { ok: false, reason: error?.message || 'place_failed' }
   }
 })

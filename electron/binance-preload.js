@@ -78,10 +78,12 @@ function _chartTpConfirm({
   _chartTpConfirmCancel?.()
   const isEnglish = locale === 'en'
   const isStopMarket = kind === 'stopMarket'
+  const isLimit = kind === 'limit'
+  const isQuickEntry = isStopMarket || isLimit
   const referencePrice = Number(currentPrice)
   const normalizedBaseAsset = String(baseAsset || symbol || '').toUpperCase()
   const normalizedQuoteAsset = String(quoteAsset || 'QUOTE').toUpperCase()
-  const isSell = isStopMarket
+  const isSell = isQuickEntry
     ? String(side || '').toUpperCase() === 'SELL'
     : String(side || '').toUpperCase() === 'LONG'
   const accent = isSell ? '#F6465D' : '#0ECB81'
@@ -112,7 +114,7 @@ function _chartTpConfirm({
     borderBottom: '1px solid #2B313B', background: '#1B2027',
   })
   const icon = document.createElement('div')
-  icon.textContent = isStopMarket ? 'STOP' : 'TP'
+  icon.textContent = isStopMarket ? 'STOP' : isLimit ? 'LMT' : 'TP'
   Object.assign(icon.style, {
     display: 'grid', placeItems: 'center', width: '32px', height: '32px',
     flex: '0 0 32px', borderRadius: '8px', border: `1px solid ${accent}66`,
@@ -123,14 +125,16 @@ function _chartTpConfirm({
   heading.style.flex = '1'
   const title = document.createElement('div')
   title.id = titleId
-  title.textContent = isStopMarket
+  title.textContent = isQuickEntry
     ? (isEnglish ? `Confirm ${actionLabel}` : `确认 ${actionLabel}`)
     : (isEnglish ? 'Confirm Take-Profit Order' : '确认止盈委托')
   Object.assign(title.style, { fontSize: '14px', lineHeight: '20px', fontWeight: '650' })
   const subtitle = document.createElement('div')
   subtitle.textContent = isStopMarket
     ? (isEnglish ? 'Open position · Stop Market' : '开仓 · 条件市价单')
-    : (isEnglish ? 'Reduce-only · Limit' : '只减仓 · 限价单')
+    : isLimit
+      ? (isEnglish ? 'Open position · Limit' : '开仓 · 限价单')
+      : (isEnglish ? 'Reduce-only · Limit' : '只减仓 · 限价单')
   Object.assign(subtitle.style, { marginTop: '2px', color: '#848E9C', fontSize: '11px', lineHeight: '16px' })
   heading.append(title, subtitle)
   const close = document.createElement('button')
@@ -157,7 +161,7 @@ function _chartTpConfirm({
     [isEnglish ? 'Symbol' : '交易对', symbol],
     [isEnglish ? 'Direction' : '方向', actionLabel],
     [isEnglish ? (isStopMarket ? 'Trigger price' : 'Order price') : (isStopMarket ? '触发价格' : '委托价格'), String(price)],
-    [isEnglish ? (isStopMarket ? 'Order quantity' : 'Close quantity') : (isStopMarket ? '下单数量' : '平仓数量'), `${quantity} ${symbol}`],
+    [isEnglish ? (isQuickEntry ? 'Order quantity' : 'Close quantity') : (isQuickEntry ? '下单数量' : '平仓数量'), `${quantity} ${symbol}`],
   ]
   let quantityInput = null
   let unitSelect = null
@@ -174,7 +178,7 @@ function _chartTpConfirm({
       fontFamily: index >= 2 ? 'ui-monospace, SFMono-Regular, Consolas, monospace' : 'inherit',
       fontSize: '12px', fontWeight: '600', lineHeight: '18px', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     })
-    if (isStopMarket && index === 3) {
+    if (isQuickEntry && index === 3) {
       const initialUnit = sizeUnit === 'BASE' ? 'BASE' : 'QUOTE'
       const initialInput = Number(inputQuantity) > 0
         ? Number(inputQuantity)
@@ -233,7 +237,7 @@ function _chartTpConfirm({
       content.textContent = value
     }
     cell.append(key, content)
-    if (isStopMarket && index === 3) {
+    if (isQuickEntry && index === 3) {
       quantityError = document.createElement('div')
       Object.assign(quantityError.style, {
         minHeight: '14px', marginTop: '3px', color: '#F6465D', fontSize: '9px', lineHeight: '14px',
@@ -247,9 +251,13 @@ function _chartTpConfirm({
     ? (isEnglish
         ? `When triggered, this opens at market. ${normalizedQuoteAsset}/${normalizedBaseAsset} conversion uses the latest trade price; base quantity is truncated to 0.001.`
         : `触及所选价格后将以市价单开仓；${normalizedQuoteAsset}/${normalizedBaseAsset} 按最新成交价换算，基础币数量按 0.001 精度截断。`)
-    : (isEnglish
-        ? 'This places a reduce-only order on the exchange and will not increase a reverse position.'
-        : '提交后将在交易所挂出只减仓委托，不会增加反向仓位。')
+    : isLimit
+      ? (isEnglish
+          ? `This opens with a limit order. ${normalizedQuoteAsset}/${normalizedBaseAsset} conversion uses the selected limit price; base quantity is truncated to 0.001.`
+          : `提交后将挂出限价开仓委托；${normalizedQuoteAsset}/${normalizedBaseAsset} 按所选限价换算，基础币数量按 0.001 精度截断。`)
+      : (isEnglish
+          ? 'This places a reduce-only order on the exchange and will not increase a reverse position.'
+          : '提交后将在交易所挂出只减仓委托，不会增加反向仓位。')
   Object.assign(note.style, {
     marginTop: '12px', padding: '9px 11px', border: '1px solid #353B45',
     borderRadius: '7px', background: '#1D2229', color: '#A8B0BC',
@@ -300,9 +308,9 @@ function _chartTpConfirm({
       if (_chartTpConfirmCancel === cancelCurrent) _chartTpConfirmCancel = null
       resolve(result)
     }
-    const cancelCurrent = () => finish(isStopMarket ? { confirmed: false } : false)
+    const cancelCurrent = () => finish(isQuickEntry ? { confirmed: false } : false)
     const submitCurrent = () => {
-      if (!isStopMarket) {
+      if (!isQuickEntry) {
         finish(true)
         return
       }
@@ -329,7 +337,7 @@ function _chartTpConfirm({
     const onKeyDown = (event) => {
       if (event.key === 'Escape') { event.preventDefault(); cancelCurrent() }
       if (event.key === 'Enter') { event.preventDefault(); submitCurrent() }
-      if (event.key === 'Tab' && !isStopMarket) {
+      if (event.key === 'Tab' && !isQuickEntry) {
         event.preventDefault()
         ;(document.activeElement === confirm ? cancel : confirm).focus()
       }
@@ -341,7 +349,7 @@ function _chartTpConfirm({
     overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) finish(false) })
     panel.addEventListener('mousedown', (event) => event.stopPropagation())
     window.addEventListener('keydown', onKeyDown, true)
-    ;(isStopMarket ? quantityInput : confirm)?.focus()
+    ;(isQuickEntry ? quantityInput : confirm)?.focus()
   })
 }
 
@@ -445,7 +453,7 @@ async function _enhanceChartContextMenu() {
   if (
     !result?.ok
     || !Array.isArray(result.positions)
-    || (result.positions.length === 0 && !result.quickStop)
+    || (result.positions.length === 0 && !result.quickLimit && !result.quickStop)
   ) return
 
   const locale = result.locale === 'en' ? 'en' : 'zh-CN'
@@ -476,6 +484,50 @@ async function _enhanceChartContextMenu() {
       const message = placed?.ok
         ? (locale === 'en' ? `Take-profit limit placed at ${price}` : `止盈限价单已挂出：${price}`)
         : (locale === 'en' ? `Failed: ${placed?.reason || 'unknown error'}` : `下单失败：${placed?.reason || '未知错误'}`)
+      _chartTpToast(message, Boolean(placed?.ok))
+      menu.remove()
+    }))
+  }
+
+  if (result.quickLimit) {
+    const limit = result.quickLimit
+    const actionLabel = limit.side === 'BUY' ? 'Buy Limit' : 'Sell Limit'
+    const displayedQuantity = Number(limit.inputQuantity) > 0 ? limit.inputQuantity : limit.quantity
+    const displayedAsset = limit.sizeUnit === 'BASE' ? result.baseAsset : result.quoteAsset
+    const label = displayedQuantity
+      ? `${actionLabel} · ${displayedQuantity} ${displayedAsset} @ ${price}`
+      : `${actionLabel} @ ${price}`
+    group.appendChild(_chartTpMenuItem(label, async () => {
+      const confirmation = await _chartTpConfirm({
+        locale,
+        side: limit.side,
+        quantity: limit.quantity,
+        inputQuantity: limit.inputQuantity,
+        sizeUnit: limit.sizeUnit,
+        currentPrice: price,
+        baseAsset: result.baseAsset,
+        quoteAsset: result.quoteAsset,
+        symbol,
+        price,
+        actionLabel,
+        kind: 'limit',
+      })
+      if (!confirmation?.confirmed) return
+      const placed = await ipcRenderer.invoke('chart-place-limit', {
+        side: limit.side,
+        symbol,
+        price,
+        menuToken: result.menuToken,
+        inputQuantity: confirmation.inputQuantity,
+        sizeUnit: confirmation.sizeUnit,
+      })
+      const message = placed?.ok
+        ? (locale === 'en'
+            ? `${actionLabel} placed at ${price}`
+            : `${actionLabel} 已挂出：${price}`)
+        : (locale === 'en'
+            ? `Failed: ${placed?.reason || 'unknown error'}`
+            : `下单失败：${placed?.reason || '未知错误'}`)
       _chartTpToast(message, Boolean(placed?.ok))
       menu.remove()
     }))
@@ -551,6 +603,7 @@ window.addEventListener('message', async (event) => {
     'trade-relay-chart-tp-options',
     'trade-relay-chart-tp-confirm',
     'trade-relay-chart-tp-place',
+    'trade-relay-chart-limit-place',
     'trade-relay-chart-stop-place',
   ].includes(request.type)) return
   if (request.type === 'trade-relay-chart-tp-confirm') {
@@ -593,18 +646,22 @@ window.addEventListener('message', async (event) => {
   const result = await ipcRenderer.invoke(
     isOptionsRequest
       ? 'chart-take-profit-limit-options'
-      : request.type === 'trade-relay-chart-stop-place'
-        ? 'chart-place-stop-market'
-        : 'chart-place-take-profit-limit',
+      : request.type === 'trade-relay-chart-limit-place'
+        ? 'chart-place-limit'
+        : request.type === 'trade-relay-chart-stop-place'
+          ? 'chart-place-stop-market'
+          : 'chart-place-take-profit-limit',
     payload,
   )
   try {
     event.source?.postMessage({
       type: isOptionsRequest
         ? 'trade-relay-chart-tp-options-result'
-        : request.type === 'trade-relay-chart-stop-place'
-          ? 'trade-relay-chart-stop-result'
-          : 'trade-relay-chart-tp-result',
+        : request.type === 'trade-relay-chart-limit-place'
+          ? 'trade-relay-chart-limit-result'
+          : request.type === 'trade-relay-chart-stop-place'
+            ? 'trade-relay-chart-stop-result'
+            : 'trade-relay-chart-tp-result',
       requestId: request.requestId,
       result,
     }, '*')
