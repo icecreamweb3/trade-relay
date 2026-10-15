@@ -32,7 +32,10 @@ export function TitleBar({
   const locale = useUiPreferencesStore((state) => state.locale)
   const setChartOrderMarkersVisible = useUiPreferencesStore((state) => state.setChartOrderMarkersVisible)
   const { t } = useTranslation(locale)
-  const { symbol, isConnected, isChartExpanded, setChartExpanded } = useMarketStore()
+  const symbol = useMarketStore((state) => state.symbol)
+  const isConnected = useMarketStore((state) => state.isConnected)
+  const isChartExpanded = useMarketStore((state) => state.isChartExpanded)
+  const setChartExpanded = useMarketStore((state) => state.setChartExpanded)
   const { user, logout } = useAuthStore()
   const riskWarningParameters = useRiskWarningSettingsStore((state) => (
     user?.username

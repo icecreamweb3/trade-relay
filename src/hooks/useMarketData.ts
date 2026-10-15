@@ -137,24 +137,33 @@ export function useMarketData() {
   const chartOrderMarkersVisible = useUiPreferencesStore((state) => state.chartOrderMarkersVisible)
   const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
   const uiLocale = useUiPreferencesStore((state) => state.locale)
-  const {
-    processMarketEvent,
-    setSymbol,
-    setChartInterval,
-    setChartExpanded,
-    symbol,
-    chartInterval,
-    currentPrice,
-    dayOpenPrice,
-    dayPriceChange,
-    dayPriceChangePercent,
-  } = useMarketStore()
+  const processMarketEvent = useMarketStore((state) => state.processMarketEvent)
+  const setSymbol = useMarketStore((state) => state.setSymbol)
+  const setChartInterval = useMarketStore((state) => state.setChartInterval)
+  const setChartExpanded = useMarketStore((state) => state.setChartExpanded)
+  const symbol = useMarketStore((state) => state.symbol)
+  const chartInterval = useMarketStore((state) => state.chartInterval)
 
   // Stable ref so WS callbacks always call the latest action without re-running effects
   const processRef = useRef(processMarketEvent)
   useEffect(() => { processRef.current = processMarketEvent })
   const tickerStreamLoggedSymbolRef = useRef<string | null>(null)
   const derivedLoggedSymbolRef = useRef<string | null>(null)
+  const directMarketSeenAtRef = useRef(new Map<string, number>())
+
+  const marketEventKey = (eventSymbol: unknown, eventType: unknown) => {
+    const normalizedSymbol = String(eventSymbol || symbol).trim().toUpperCase()
+    const normalizedType = String(eventType || '')
+      .replace('aggTrade', 'trade')
+      .replace('markPriceUpdate', 'markPrice')
+      .replace('24hrTicker', 'ticker24h')
+    return normalizedSymbol && normalizedType ? `${normalizedSymbol}:${normalizedType}` : ''
+  }
+
+  const recordDirectMarketEvent = (eventSymbol: unknown, eventType: unknown) => {
+    const key = marketEventKey(eventSymbol, eventType)
+    if (key) directMarketSeenAtRef.current.set(key, Date.now())
+  }
 
   const syncSymbolFromEvent = (event: { symbol?: string } | null | undefined) => {
     const nextSymbol = event?.symbol?.toUpperCase()
@@ -172,6 +181,11 @@ export function useMarketData() {
 
     const unsubMarket = window.electronAPI.onMarketData?.((data: MarketEvent) => {
       syncSymbolFromEvent(data)
+      const eventKey = marketEventKey(data?.symbol, data?.type)
+      const lastDirectEventAt = directMarketSeenAtRef.current.get(eventKey) ?? 0
+      // BrowserView interception is a fallback source. Avoid publishing the same
+      // Binance event twice while the renderer's direct stream is healthy.
+      if (eventKey && Date.now() - lastDirectEventAt < 3000) return
       processRef.current(data)
     })
     if (unsubMarket) cleanups.push(unsubMarket)
@@ -194,15 +208,12 @@ export function useMarketData() {
     return () => cleanups.forEach(fn => fn())
   }, [setSymbol, setChartInterval, setChartExpanded])
 
-  // ── kline + aggTrade: combined stream with depth20 keep-alive ────────────
-  // Including @depth20@100ms forces the proxy to flush TCP buffers every 100ms,
-  // ensuring kline and aggTrade frames are not stuck in proxy buffers.
+  // ── kline + aggTrade ─────────────────────────────────────────────────────
   useEffect(() => {
     const s = symbol.toLowerCase()
     const streams = [
       `${s}@kline_${chartInterval}`,
       `${s}@aggTrade`,
-      `${s}@depth20@100ms`,   // keep-alive: 10 msgs/sec forces proxy flush
     ].join('/')
     const url = `${FSTREAM_MARKET_BASE}/stream?streams=${streams}`
 
@@ -211,6 +222,7 @@ export function useMarketData() {
       // Combined stream wraps: { stream: "...", data: { e: "...", ... } }
       const data = (envelope.data ?? envelope) as Record<string, unknown>
       if (!data?.e) return
+      recordDirectMarketEvent(data.s, data.e)
 
       if (data.e === 'kline' && data.k) {
         const k = data.k as Record<string, unknown>
@@ -237,7 +249,6 @@ export function useMarketData() {
           timestamp: data.T as number,
         })
       }
-      // depth20 frames are intentionally discarded (OrderBook has its own WS)
     }, `kline+trade(${symbol})`)
 
     return () => {
@@ -261,6 +272,7 @@ export function useMarketData() {
       const envelope = raw as Record<string, unknown>
       const data = (envelope.data ?? envelope) as Record<string, unknown>
       if (!data?.e) return
+      recordDirectMarketEvent(data.s, data.e)
 
       if (data.e === 'markPriceUpdate') {
         processRef.current({
@@ -312,32 +324,28 @@ export function useMarketData() {
     }
   }, [symbol])
 
-  useEffect(() => {
+  useEffect(() => useMarketStore.subscribe((state) => {
     if (
-      !symbol ||
-      dayOpenPrice == null ||
-      currentPrice == null ||
-      dayPriceChange == null ||
-      dayPriceChangePercent == null
-    ) {
-      return
-    }
+      !state.symbol ||
+      state.dayOpenPrice == null ||
+      state.currentPrice == null ||
+      state.dayPriceChange == null ||
+      state.dayPriceChangePercent == null
+    ) return
 
-    const normalizedSymbol = symbol.toUpperCase()
-    if (derivedLoggedSymbolRef.current === normalizedSymbol) {
-      return
-    }
+    const normalizedSymbol = state.symbol.toUpperCase()
+    if (derivedLoggedSymbolRef.current === normalizedSymbol) return
 
     derivedLoggedSymbolRef.current = normalizedSymbol
     window.electronAPI?.logToMain?.('info', '24h auto-calc derived from live price', {
       symbol: normalizedSymbol,
       source: 'local-derived',
-      openPrice: dayOpenPrice,
-      currentPrice,
-      dayPriceChange,
-      dayPriceChangePercent,
+      openPrice: state.dayOpenPrice,
+      currentPrice: state.currentPrice,
+      dayPriceChange: state.dayPriceChange,
+      dayPriceChangePercent: state.dayPriceChangePercent,
     })
-  }, [symbol, dayOpenPrice, currentPrice, dayPriceChange, dayPriceChangePercent])
+  }), [])
 
   useEffect(() => {
     const clearOverlay = async () => {

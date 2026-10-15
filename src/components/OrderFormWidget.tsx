@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { api, getBackendWebSocketUrl } from '../api/client'
-import { useMarketStore } from '../store/marketStore'
+import { getLatestTradePrice, useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -278,7 +278,10 @@ function writeStoredOrderSize(username: string, symbol: string, sizeUnit: 'QUOTE
 function TickerStrip() {
   const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, dayPriceChange, dayPriceChangePercent } = useMarketStore()
+  const symbol = useMarketStore((state) => state.symbol)
+  const currentPrice = useMarketStore((state) => state.currentPrice)
+  const dayPriceChange = useMarketStore((state) => state.dayPriceChange)
+  const dayPriceChangePercent = useMarketStore((state) => state.dayPriceChangePercent)
 
   const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
   const isUp = hasDayTicker ? (dayPriceChange ?? 0) >= 0 : null
@@ -329,7 +332,9 @@ export function OrderFormWidget({
 }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, markPrice } = useMarketStore()
+  const symbol = useMarketStore((state) => state.symbol)
+  const currentPrice = useMarketStore((state) => state.currentPrice)
+  const markPrice = useMarketStore((state) => state.markPrice)
   const { user } = useAuthStore()
   const expireSession = useAuthStore((state) => state.expireSession)
   const { baseAsset, quoteAsset } = useMemo(() => splitTradingSymbol(symbol), [symbol])
@@ -1139,6 +1144,9 @@ export function OrderFormWidget({
   const handleSubmit = async (submitSide: Side) => {
     const qtyNum = parseFloat(qty)
     if (!qtyNum || qtyNum <= 0) { showToast('error', t('order.error.invalidQuantity')); return }
+    // UI price updates are intentionally coalesced for responsiveness. Order
+    // sizing still reads the latest raw trade received from Binance.
+    const latestTradePrice = getLatestTradePrice(symbol) ?? currentPrice
     const sizeSnapshot: SubmittedSizeSnapshot = {
       username: user?.username,
       symbol,
@@ -1151,8 +1159,8 @@ export function OrderFormWidget({
     if (sizeUnit === 'QUOTE') {
       let refPrice = orderType === 'MARKET'
         // For market orders use the best available price: WS last price → mark price → REST mark price
-        ? (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0)
-        : (parseFloat(price) || (currentPrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0))
+        ? (latestTradePrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0)
+        : (parseFloat(price) || (latestTradePrice ?? markPrice ?? accountSummary?.rest_mark_price ?? 0))
       // If still no price (WS not ready and account summary stale), fetch a fresh mark price
       if (!refPrice && orderType === 'MARKET') {
         try {
@@ -1174,7 +1182,7 @@ export function OrderFormWidget({
 
     if (riskWarningsEnabled && user?.username && posDir === 'OPEN' && liveSymbolPositions) {
       const targetSide = submitSide === 'BUY' ? 'LONG' : 'SHORT'
-      const livePrice = markPrice ?? currentPrice
+      const livePrice = markPrice ?? latestTradePrice
       let matchingQuantity = 0
       let matchingPnl = 0
       for (const position of liveSymbolPositions) {

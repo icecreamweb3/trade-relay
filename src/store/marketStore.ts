@@ -4,6 +4,24 @@ function normalizeSymbol(symbol: string): string {
   return symbol.trim().toUpperCase()
 }
 
+const TRADE_UI_PUBLISH_INTERVAL_MS = 100
+const latestTradePriceBySymbol = new Map<string, number>()
+let pendingTrade: TradeData | null = null
+let pendingTradeTimer: ReturnType<typeof setTimeout> | null = null
+
+export function getLatestTradePrice(symbol: string): number | null {
+  const price = latestTradePriceBySymbol.get(normalizeSymbol(symbol))
+  return price != null && Number.isFinite(price) && price > 0 ? price : null
+}
+
+function clearPendingTrade() {
+  pendingTrade = null
+  if (pendingTradeTimer != null) {
+    clearTimeout(pendingTradeTimer)
+    pendingTradeTimer = null
+  }
+}
+
 export interface OHLCVBar {
   time: number; open: number; high: number; low: number; close: number; volume: number
 }
@@ -78,7 +96,7 @@ interface MarketStore {
   processMarketEvent: (event: MarketEvent) => void
 }
 
-export const useMarketStore = create<MarketStore>((set) => ({
+export const useMarketStore = create<MarketStore>((set, get) => ({
   symbol: 'BTCUSDC',
   currentPrice: null,
   dayOpenPrice: null,
@@ -96,7 +114,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   setSymbol: (symbol) => set((state) => {
     const nextSymbol = normalizeSymbol(symbol)
-    if (!nextSymbol || nextSymbol === state.symbol) return {}
+    if (!nextSymbol || nextSymbol === state.symbol) return state
+    clearPendingTrade()
     return {
       symbol: nextSymbol,
       currentPrice: null,
@@ -115,7 +134,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
   setConnected: (connected) => set({ isConnected: connected }),
   setCurrentPrice: (symbol, price) => set((state) => {
     const nextSymbol = normalizeSymbol(symbol)
-    if (!Number.isFinite(price) || !nextSymbol || nextSymbol !== state.symbol) return {}
+    if (!Number.isFinite(price) || !nextSymbol || nextSymbol !== state.symbol) return state
+    latestTradePriceBySymbol.set(nextSymbol, price)
     return {
       currentPrice: price,
       ...deriveDayChange(price, state.dayOpenPrice),
@@ -130,7 +150,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
     if (event.type === 'kline') {
       const kline = event as KlineData
       set((state) => {
-        if (eventSymbol !== state.symbol) return {}
+        if (eventSymbol !== state.symbol) return state
         const newBar: OHLCVBar = {
           time: kline.openTime, open: kline.open, high: kline.high,
           low: kline.low, close: kline.close, volume: kline.volume,
@@ -157,23 +177,38 @@ export const useMarketStore = create<MarketStore>((set) => ({
     } else if (event.type === 'markPrice') {
       const mp = event as MarkPriceData
       set((state) => {
-        if (eventSymbol !== state.symbol) return {}
+        if (eventSymbol !== state.symbol) return state
         return { markPrice: mp.markPrice, fundingRate: mp.fundingRate, nextFundingTime: mp.nextFundingTime, isConnected: true }
       })
     } else if (event.type === 'trade') {
       const trade = event as TradeData
-      set((state) => ({
-        ...(eventSymbol !== state.symbol ? {} : {
-        recentTrades: [trade, ...state.recentTrades].slice(0, 50),
-        currentPrice: trade.price,
-        ...deriveDayChange(trade.price, state.dayOpenPrice),
-        isConnected: true,
-        }),
-      }))
+      if (!Number.isFinite(trade.price) || trade.price <= 0) return
+      latestTradePriceBySymbol.set(eventSymbol, trade.price)
+      if (eventSymbol !== get().symbol) return
+      pendingTrade = trade
+      if (pendingTradeTimer != null) return
+
+      pendingTradeTimer = setTimeout(() => {
+        const nextTrade = pendingTrade
+        pendingTrade = null
+        pendingTradeTimer = null
+        if (!nextTrade) return
+
+        const nextSymbol = normalizeSymbol(nextTrade.symbol)
+        set((state) => {
+          if (nextSymbol !== state.symbol) return state
+          return {
+            recentTrades: [nextTrade, ...state.recentTrades].slice(0, 50),
+            currentPrice: nextTrade.price,
+            ...deriveDayChange(nextTrade.price, state.dayOpenPrice),
+            isConnected: true,
+          }
+        })
+      }, TRADE_UI_PUBLISH_INTERVAL_MS)
     } else if (event.type === 'ticker24h') {
       const ticker = event as Ticker24hData
       set((state) => {
-        if (eventSymbol !== state.symbol) return {}
+        if (eventSymbol !== state.symbol) return state
         const nextCurrentPrice = state.currentPrice ?? ticker.lastPrice
         return {
           currentPrice: nextCurrentPrice,

@@ -182,11 +182,13 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
   // Subscribe to currentPrice outside React — write directly to DOM on every tick
   useEffect(() => {
     const initial = useMarketStore.getState().currentPrice
+    let lastRenderedPrice = initial
     if (centerPriceRef.current) {
       centerPriceRef.current.textContent = initial != null ? fmt(initial, priceDpRef.current) : '—'
     }
     return useMarketStore.subscribe((state) => {
-      if (centerPriceRef.current && state.currentPrice != null) {
+      if (centerPriceRef.current && state.currentPrice != null && state.currentPrice !== lastRenderedPrice) {
+        lastRenderedPrice = state.currentPrice
         centerPriceRef.current.textContent = fmt(state.currentPrice, priceDpRef.current)
       }
     })

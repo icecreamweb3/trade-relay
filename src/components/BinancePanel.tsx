@@ -6,7 +6,9 @@ import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 export function BinancePanel() {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
-  const { symbol, currentPrice, isConnected } = useMarketStore()
+  const symbol = useMarketStore((state) => state.symbol)
+  const currentPrice = useMarketStore((state) => state.currentPrice)
+  const isConnected = useMarketStore((state) => state.isConnected)
 
   return (
     <div className="h-full bg-[#1a1a2e] flex items-center justify-center text-center">

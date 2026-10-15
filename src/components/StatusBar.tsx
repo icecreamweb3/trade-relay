@@ -27,15 +27,13 @@ export function StatusBar({
 } = {}) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
-  const {
-    symbol,
-    currentPrice,
-    dayPriceChange,
-    dayPriceChangePercent,
-    markPrice,
-    fundingRate,
-    isConnected,
-  } = useMarketStore()
+  const symbol = useMarketStore((state) => state.symbol)
+  const currentPrice = useMarketStore((state) => state.currentPrice)
+  const dayPriceChange = useMarketStore((state) => state.dayPriceChange)
+  const dayPriceChangePercent = useMarketStore((state) => state.dayPriceChangePercent)
+  const markPrice = useMarketStore((state) => state.markPrice)
+  const fundingRate = useMarketStore((state) => state.fundingRate)
+  const isConnected = useMarketStore((state) => state.isConnected)
   const buildTime = formatBuildTime(__BUILD_TIME__, locale)
   const hasDayTicker = dayPriceChange !== null && dayPriceChangePercent !== null
   const priceChange = dayPriceChange ?? 0

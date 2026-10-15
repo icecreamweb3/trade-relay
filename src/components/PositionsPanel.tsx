@@ -186,7 +186,9 @@ export function PositionsPanel({
 }) {
   const locale = useUiPreferencesStore((state) => state.locale)
   const { t } = useTranslation(locale)
-  const { symbol: activeSymbol, currentPrice, markPrice, setSymbol } = useMarketStore()
+  const activeSymbol = useMarketStore((state) => state.symbol)
+  const positionReferencePrice = useMarketStore((state) => state.markPrice ?? state.currentPrice)
+  const setSymbol = useMarketStore((state) => state.setSymbol)
   const { baseAsset: activeBaseAsset, quoteAsset: activeQuoteAsset } = splitTradingSymbol(activeSymbol)
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
   const currentUser = useAuthStore((state) => state.user)
@@ -463,7 +465,7 @@ export function PositionsPanel({
           position,
           positionMarkPrices,
           activeSymbol,
-          markPrice ?? currentPrice,
+          positionReferencePrice,
         )
         const unrealizedPnl = getLiveUnrealizedPnl(position, rowMarkPrice) ?? 0
         const previous = current[position.id]
@@ -476,7 +478,7 @@ export function PositionsPanel({
       }
       return changed ? next : current
     })
-  }, [activeSymbol, currentPrice, markPrice, positionMarkPrices, positions])
+  }, [activeSymbol, positionReferencePrice, positionMarkPrices, positions])
 
   useEffect(() => {
     if (!isActive || !isAuthenticated || !autoBreakevenParametersLoaded) return
@@ -503,7 +505,7 @@ export function PositionsPanel({
       if (alreadyProtected || autoBreakevenInFlightRef.current.has(position.id)) continue
       if ((autoBreakevenRetryAfterRef.current.get(position.id) ?? 0) > Date.now()) continue
 
-      const rowMarkPrice = getPositionMarkPrice(position, positionMarkPrices, activeSymbol, markPrice ?? currentPrice)
+      const rowMarkPrice = getPositionMarkPrice(position, positionMarkPrices, activeSymbol, positionReferencePrice)
       const hasFullRiskBuffer = rowMarkPrice != null && (
         (position.side === 'LONG' && rowMarkPrice >= triggerPrice)
         || (position.side === 'SHORT' && rowMarkPrice <= triggerPrice)
@@ -531,7 +533,7 @@ export function PositionsPanel({
           setAutoBreakevenMoving((current) => ({ ...current, [position.id]: false }))
         })
     }
-  }, [activeSymbol, autoBreakevenEnabled, autoBreakevenParameters, autoBreakevenParametersLoaded, currentPrice, isActive, isAuthenticated, markPrice, positionExcursions, positionMarkPrices, positions, showToast, t])
+  }, [activeSymbol, autoBreakevenEnabled, autoBreakevenParameters, autoBreakevenParametersLoaded, isActive, isAuthenticated, positionExcursions, positionMarkPrices, positionReferencePrice, positions, showToast, t])
 
   const toggleAutoBreakeven = useCallback((positionId: number, enabled: boolean) => {
     const nextEnabled = !enabled
@@ -919,7 +921,7 @@ export function PositionsPanel({
                     p,
                     positionMarkPrices,
                     activeSymbol,
-                    markPrice ?? currentPrice,
+                    positionReferencePrice,
                   )
                   const rowUnrealizedPnl = getLiveUnrealizedPnl(p, rowMarkPrice)
                   const rowMfe = positionExcursions[p.id]?.mfe ?? Math.max(p.live_mfe_usdc ?? 0, rowUnrealizedPnl ?? 0, 0)
@@ -1101,7 +1103,7 @@ export function PositionsPanel({
                       <td className={o.side === 'BUY' ? 'text-buy' : 'text-sell'}>{o.side === 'BUY' ? t('side.buy') : t('side.sell')}</td>
                       <td className="text-[#858585]">{formatOrderType(o.order_type, t)}</td>
                       {tab === 'history' && <td className="text-[#858585]">{formatTradeDirection(o.trade_direction, t)}</td>}
-                      <td className="font-mono">{formatOrderSize(o, sizeUnit, activeSymbol, markPrice ?? currentPrice)}</td>
+                      <td className="font-mono">{formatOrderSize(o, sizeUnit, activeSymbol, positionReferencePrice)}</td>
                       <td className="font-mono">{o.price ? o.price.toFixed(2) : t('log.market')}</td>
                       {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission != null ? o.commission.toFixed(4) : '—'}</td>}
                       {tab === 'history' && <td className="font-mono text-[#858585]">{o.commission_asset ?? '—'}</td>}
@@ -1176,7 +1178,7 @@ export function PositionsPanel({
                           {actionLabel}
                         </td>
                         <td className="font-mono">
-                          {formatConditionalOrderSize(o, sizeUnit, activeSymbol, markPrice ?? currentPrice)}
+                          {formatConditionalOrderSize(o, sizeUnit, activeSymbol, positionReferencePrice)}
                         </td>
                         <td className="font-mono">{o.price != null && o.price > 0 ? o.price.toFixed(2) : t('log.market')}</td>
                         <td className="font-mono text-[11px]">
@@ -1660,7 +1662,8 @@ function TpSlModal({
 }) {
   const locale = getPreferredLocale()
   const { t } = useTranslation(locale)
-  const { symbol: activeSymbol, currentPrice, markPrice } = useMarketStore()
+  const activeSymbol = useMarketStore((state) => state.symbol)
+  const activeSymbolReferencePrice = useMarketStore((state) => state.markPrice ?? state.currentPrice)
   const { quoteAsset } = splitTradingSymbol(position.symbol)
   const leverage = readStoredLeverage(username, position.symbol) ?? position.leverage
   const [tpInput, setTpInput] = useState(position.tp_price ? String(position.tp_price) : '')
@@ -1677,7 +1680,7 @@ function TpSlModal({
 
   const entryPrice = position.entry_price
   const sameSymbolAsLiveFeed = position.symbol.toUpperCase() === String(activeSymbol || '').toUpperCase()
-  const referencePrice = fetchedMarkPrice ?? (sameSymbolAsLiveFeed ? (markPrice ?? currentPrice) : null)
+  const referencePrice = fetchedMarkPrice ?? (sameSymbolAsLiveFeed ? activeSymbolReferencePrice : null)
 
   useEffect(() => {
     let alive = true
