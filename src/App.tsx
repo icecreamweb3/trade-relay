@@ -25,8 +25,6 @@ type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings
 type WorkspaceTab = { id: Screen; screen: Screen; title: string; closable: boolean }
 
 function MainApp() {
-  useMarketData()
-
   const appLocale = useUiPreferencesStore((state) => state.locale)
 
   useEffect(() => {
@@ -57,6 +55,9 @@ function MainApp() {
   const [selectedOrderBookPrice, setSelectedOrderBookPrice] = useState<{ value: number; token: number } | null>(null)
   const [tradeSizeUnit, setTradeSizeUnit] = useState<'QUOTE' | 'BASE'>('QUOTE')
   const [positionsCollapsed, setPositionsCollapsed] = useState(false)
+
+  // Refresh chart order lines immediately after an order-panel submission.
+  useMarketData(orderRefresh)
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? { id: 'trade', screen: 'trade', title: getScreenTitle('trade'), closable: false }
   const activeScreen = activeTab.screen

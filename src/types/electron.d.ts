@@ -74,6 +74,7 @@ interface ElectronAPI {
     inputQuantity: number
     sizeUnit: 'QUOTE' | 'BASE'
   }) => void) => () => void
+  onChartActiveOrdersRefresh?: (callback: (symbol?: string) => void) => () => void
 
   // Market data events
   onMarketData: (callback: (data: import('./store/marketStore').MarketEvent) => void) => () => void

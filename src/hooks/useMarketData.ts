@@ -4,6 +4,7 @@ import { api, type ApiOrderMarker } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import { useUiPreferencesStore } from '../store/uiPreferencesStore'
 import { parseUtcTimestamp } from '../utils/datetime'
+import { selectChartActiveOrders } from '../utils/chartActiveOrders'
 
 // ── Direct Binance Futures WebSocket subscription ─────────────────────────────
 // Use Binance's migrated /market websocket base for regular market streams.
@@ -132,7 +133,7 @@ function makeWs(
   }
 }
 
-export function useMarketData() {
+export function useMarketData(activeOrderRefreshTrigger = 0) {
   const user = useAuthStore((state) => state.user)
   const chartOrderMarkersVisible = useUiPreferencesStore((state) => state.chartOrderMarkersVisible)
   const chartOrderMarkerLabelsVisible = useUiPreferencesStore((state) => state.chartOrderMarkerLabelsVisible)
@@ -446,30 +447,18 @@ export function useMarketData() {
     const syncActiveOrderLines = async () => {
       const currentRequest = ++requestSequence
       try {
-        const orders = await api.getOpenOrders()
+        const [orders, conditionalOrders] = await Promise.all([
+          api.getOpenOrders(),
+          api.getConditionalOrders().catch((error) => {
+            window.electronAPI?.logToMain?.('warn', 'load chart stop order lines failed', {
+              symbol: normalizedSymbol,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return []
+          }),
+        ])
         if (!alive || currentRequest !== requestSequence) return
-        const activeLimitOrders = orders
-          .filter((order) => {
-            const orderType = String(order.order_type || '').toUpperCase()
-            const status = String(order.status || '').toUpperCase()
-            return order.symbol.toUpperCase() === normalizedSymbol
-              && ['LIMIT', 'TAKE_PROFIT'].includes(orderType)
-              && ['NEW', 'PARTIALLY_FILLED'].includes(status)
-              && Number(order.price) > 0
-              && Number(order.quantity) > Number(order.filled_qty || 0)
-          })
-          .map((order) => ({
-            id: order.id,
-            symbol: order.symbol,
-            exchange_order_id: order.exchange_order_id,
-            side: order.side,
-            order_type: order.order_type,
-            trade_direction: order.trade_direction,
-            reduce_only: Boolean(order.reduce_only),
-            price: Number(order.price),
-            quantity: Number(order.quantity),
-            remaining_quantity: Math.max(0, Number(order.quantity) - Number(order.filled_qty || 0)),
-          }))
+        const activeLimitOrders = selectChartActiveOrders(orders, normalizedSymbol, conditionalOrders)
         const linesKey = JSON.stringify(activeLimitOrders)
         if (linesKey === lastLinesKey) return
         const result = await window.electronAPI?.setChartActiveOrderLines?.(activeLimitOrders, uiLocale)
@@ -493,13 +482,19 @@ export function useMarketData() {
 
     void syncActiveOrderLines()
     const timer = setInterval(() => { void syncActiveOrderLines() }, 5_000)
+    const removeRefreshListener = window.electronAPI?.onChartActiveOrdersRefresh?.((refreshSymbol) => {
+      if (!refreshSymbol || refreshSymbol.toUpperCase() === normalizedSymbol) {
+        void syncActiveOrderLines()
+      }
+    })
     return () => {
       alive = false
       requestSequence += 1
       clearInterval(timer)
+      removeRefreshListener?.()
       void clearActiveLines()
     }
   // Binance may rebuild drawings without replacing the public chart adapter
   // when the interval changes. Re-send unchanged orders for that resolution.
-  }, [uiLocale, user, symbol, chartInterval])
+  }, [uiLocale, user, symbol, chartInterval, activeOrderRefreshTrigger])
 }

@@ -61,6 +61,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('order-size-preference-changed', handler)
     return () => ipcRenderer.removeListener('order-size-preference-changed', handler)
   },
+  onChartActiveOrdersRefresh: (callback) => {
+    const handler = (_event, symbol) => callback(symbol)
+    ipcRenderer.on('chart-active-orders-refresh', handler)
+    return () => ipcRenderer.removeListener('chart-active-orders-refresh', handler)
+  },
 
   // ── Market data events ────────────────────────────────────────────────────
   onMarketData: (callback) => {

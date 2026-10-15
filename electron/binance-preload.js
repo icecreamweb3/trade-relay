@@ -2365,9 +2365,14 @@ function drawSignalsOnChart(chart, signals) {
 function _activeOrderLabel(order, locale) {
   const isEnglish = locale === 'en'
   const side = String(order.side || '').toUpperCase()
+  const orderType = String(order.order_type || '').toUpperCase()
+  if (orderType === 'STOP' || orderType === 'STOP_MARKET') {
+    if (side === 'BUY') return isEnglish ? 'Buy Stop' : '买入 Stop'
+    return isEnglish ? 'Sell Stop' : '卖出 Stop'
+  }
   const isClose = String(order.trade_direction || '').toUpperCase() === 'CLOSE'
     || Boolean(order.reduce_only)
-    || String(order.order_type || '').toUpperCase() === 'TAKE_PROFIT'
+    || orderType === 'TAKE_PROFIT'
   if (isClose) {
     if (side === 'SELL') return isEnglish ? 'Sell Take-Profit Limit' : '卖出限价止盈'
     return isEnglish ? 'Buy Take-Profit Limit' : '买入限价止盈'
@@ -2377,22 +2382,31 @@ function _activeOrderLabel(order, locale) {
 }
 
 async function _cancelActiveOrderFromChart(order, line, locale) {
+  const cancelKind = order?.cancel_kind === 'conditional' ? 'conditional' : 'basic'
   const orderId = Number(order?.id)
+  const algoId = Number(order?.algo_id)
   const symbol = String(order?.symbol || '').trim().toUpperCase()
   const exchangeOrderId = String(order?.exchange_order_id || '').trim()
-  if (!Number.isInteger(orderId) || orderId <= 0 || !symbol || !exchangeOrderId) {
+  if (
+    !symbol
+    || (cancelKind === 'basic' && (!Number.isInteger(orderId) || orderId <= 0 || !exchangeOrderId))
+    || (cancelKind === 'conditional' && (!Number.isInteger(algoId) || algoId <= 0))
+  ) {
     _chartTpToast(locale === 'en' ? 'Unable to identify this order' : '无法识别该委托', false)
     return
   }
-  if (_activeOrderCancelPending.has(orderId)) return
+  const pendingKey = cancelKind === 'conditional' ? `conditional:${algoId}` : `basic:${orderId}`
+  if (_activeOrderCancelPending.has(pendingKey)) return
 
-  _activeOrderCancelPending.add(orderId)
+  _activeOrderCancelPending.add(pendingKey)
   const originalLabel = _activeOrderLabel(order, locale)
   try {
     try { line?.setCancellable?.(false) } catch {}
     try { line?.setText?.(locale === 'en' ? 'Canceling…' : '撤单中…') } catch {}
     const result = await ipcRenderer.invoke('chart-cancel-active-order', {
+      cancelKind,
       orderId,
+      algoId,
       symbol,
       exchangeOrderId,
     })
@@ -2408,11 +2422,13 @@ async function _cancelActiveOrderFromChart(order, line, locale) {
     }
 
     _cachedActiveOrderLines = _cachedActiveOrderLines.filter(
-      (candidate) => Number(candidate?.id) !== orderId,
+      (candidate) => cancelKind === 'conditional'
+        ? !(candidate?.cancel_kind === 'conditional' && Number(candidate?.algo_id) === algoId)
+        : !(candidate?.cancel_kind !== 'conditional' && Number(candidate?.id) === orderId),
     )
     _orderLines = _orderLines.filter((candidate) => candidate !== line)
     try { line?.remove?.() } catch {}
-    _chartTpToast(locale === 'en' ? 'Order canceled' : '止盈委托已取消', true)
+    _chartTpToast(locale === 'en' ? 'Order canceled' : '委托已取消', true)
   } catch (error) {
     try { line?.setCancellable?.(true) } catch {}
     try { line?.setText?.(originalLabel) } catch {}
@@ -2423,7 +2439,7 @@ async function _cancelActiveOrderFromChart(order, line, locale) {
       false,
     )
   } finally {
-    _activeOrderCancelPending.delete(orderId)
+    _activeOrderCancelPending.delete(pendingKey)
   }
 }
 
@@ -2477,7 +2493,7 @@ async function drawActiveOrderLines(chart, orders, locale) {
           ['setQuantityBackgroundColor', color],
           ['setCancelButtonBorderColor', color],
           ['setCancelButtonIconColor', color],
-          ['setCancelTooltip', locale === 'en' ? 'Cancel order' : '取消止盈委托'],
+          ['setCancelTooltip', locale === 'en' ? 'Cancel order' : '取消委托'],
           ['setCancellable', true],
           ['setLineLength', 35],
           ['setLineWidth', 1],

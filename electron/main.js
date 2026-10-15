@@ -1711,6 +1711,9 @@ ipcMain.handle('chart-place-stop-market', async (event, payload = {}) => {
       sizeUnit,
       orderId: response.body?.order_id || null,
     })
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('chart-active-orders-refresh', context.symbol)
+    }
     return {
       ok: true,
       side: requestedSide,
@@ -1728,10 +1731,16 @@ ipcMain.handle('chart-place-stop-market', async (event, payload = {}) => {
 ipcMain.handle('chart-cancel-active-order', async (event, payload = {}) => {
   if (!isBinanceViewSender(event)) return { ok: false, reason: 'invalid_sender' }
   try {
+    const cancelKind = payload.cancelKind === 'conditional' ? 'conditional' : 'basic'
     const orderId = Number(payload.orderId)
+    const algoId = Number(payload.algoId)
     const symbol = normalizeChartTradeSymbol(payload.symbol)
     const exchangeOrderId = String(payload.exchangeOrderId || '').trim()
-    if (!Number.isInteger(orderId) || orderId <= 0 || !symbol || !exchangeOrderId) {
+    if (
+      !symbol
+      || (cancelKind === 'basic' && (!Number.isInteger(orderId) || orderId <= 0 || !exchangeOrderId))
+      || (cancelKind === 'conditional' && (!Number.isInteger(algoId) || algoId <= 0))
+    ) {
       return { ok: false, reason: 'invalid_request' }
     }
 
@@ -1741,35 +1750,43 @@ ipcMain.handle('chart-cancel-active-order', async (event, payload = {}) => {
     const activeOrders = Array.isArray(_activeOrderLinesState?.orders)
       ? _activeOrderLinesState.orders
       : []
-    const activeOrder = activeOrders.find((order) => (
-      Number(order?.id) === orderId
-      && normalizeChartTradeSymbol(order?.symbol) === symbol
-      && String(order?.exchange_order_id || '').trim() === exchangeOrderId
-    ))
+    const activeOrder = activeOrders.find((order) => {
+      if (normalizeChartTradeSymbol(order?.symbol) !== symbol) return false
+      if (cancelKind === 'conditional') {
+        return order?.cancel_kind === 'conditional' && Number(order?.algo_id) === algoId
+      }
+      return order?.cancel_kind !== 'conditional'
+        && Number(order?.id) === orderId
+        && String(order?.exchange_order_id || '').trim() === exchangeOrderId
+    })
     if (!activeOrder) return { ok: false, reason: 'order_no_longer_active' }
 
     const token = getToken()
     if (!token) return { ok: false, reason: 'not_authenticated' }
-    const response = await httpRequest(
-      'POST',
-      `/api/orders/${orderId}/cancel`,
-      { symbol, exchange_order_id: exchangeOrderId },
-      token,
-    )
+    const response = cancelKind === 'conditional'
+      ? await httpRequest('POST', '/api/orders/conditional/cancel', { algo_id: algoId }, token)
+      : await httpRequest(
+        'POST',
+        `/api/orders/${orderId}/cancel`,
+        { symbol, exchange_order_id: exchangeOrderId },
+        token,
+      )
     if (response.status < 200 || response.status >= 300) {
       return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
     }
 
     _activeOrderLinesState = {
       ..._activeOrderLinesState,
-      orders: activeOrders.filter((order) => Number(order?.id) !== orderId),
+      orders: activeOrders.filter((order) => order !== activeOrder),
     }
     logger.info('[ACTIVE_ORDER_LINES] phase=chart-cancel-success', {
       orderId,
+      algoId: cancelKind === 'conditional' ? algoId : null,
+      cancelKind,
       symbol,
       exchangeOrderId,
     })
-    return { ok: true, orderId }
+    return { ok: true, orderId, algoId: cancelKind === 'conditional' ? algoId : null }
   } catch (error) {
     logger.warn('[ACTIVE_ORDER_LINES] phase=chart-cancel-failed', {
       orderId: Number(payload.orderId) || null,
