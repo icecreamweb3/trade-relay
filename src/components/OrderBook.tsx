@@ -2,7 +2,7 @@
  * OrderBook — Binance Futures real-time depth (asks/bids)
  * Maintains a local order book from a REST snapshot plus diff depth stream.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useMarketStore } from '../store/marketStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -45,6 +45,7 @@ const BOOK_SNAPSHOT_LIMIT = 1000
 const VISIBLE_LEVEL_COUNT = 19
 const FSTREAM_COMBINED_STREAM_BASE = 'wss://fstream.binance.com/stream?streams='
 const ORDER_BOOK_DIAGNOSTIC_INTERVAL_MS = 5000
+const ORDER_BOOK_UI_PUBLISH_INTERVAL_MS = 200
 
 interface OrderBookDiagnosticsSnapshot {
   symbol: string
@@ -172,8 +173,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
   const { baseAsset, quoteAsset } = splitTradingSymbol(symbol)
   const [spreadStep, setSpreadStep] = useState<number>(SPREAD_OPTIONS[0].step)
   const [isSpreadMenuOpen, setIsSpreadMenuOpen] = useState(false)
-  const [rawAsks, setRawAsks] = useState<RawLevel[]>([])
-  const [rawBids, setRawBids] = useState<RawLevel[]>([])
+  const [visibleBook, setVisibleBook] = useState<{ asks: RawLevel[]; bids: RawLevel[] }>({ asks: [], bids: [] })
   const spreadMenuRef = useRef<HTMLDivElement | null>(null)
   // Ref for direct DOM updates of center price — bypasses React render cycle entirely
   const centerPriceRef = useRef<HTMLSpanElement>(null)
@@ -216,7 +216,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     let lastAppliedUpdateId = 0
     let snapshotLoaded = false
     let snapshotRequestId = 0
-    let publishFrameId: number | null = null
+    let publishTimerId: number | null = null
     let diagnosticsTimer: number | null = null
     let pendingPublishEvents = 0
     let firstPendingPublishAt = 0
@@ -245,10 +245,10 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       }
     }
 
-    const clearPublishFrame = () => {
-      if (publishFrameId != null) {
-        window.cancelAnimationFrame(publishFrameId)
-        publishFrameId = null
+    const clearPublishTimer = () => {
+      if (publishTimerId != null) {
+        window.clearTimeout(publishTimerId)
+        publishTimerId = null
       }
     }
 
@@ -275,6 +275,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
         maxBufferedEvents: diagnostics.maxBufferedEvents,
         maxCoalescedEventsPerFrame: diagnostics.maxCoalescedEventsPerFrame,
         maxPublishDelayMs: diagnostics.maxPublishDelayMs,
+        uiPublishIntervalMs: ORDER_BOOK_UI_PUBLISH_INTERVAL_MS,
       })
       diagnostics.receivedEvents = 0
       diagnostics.bufferedEvents = 0
@@ -312,8 +313,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     const publishOrderBook = () => {
       const nextAsks = sortBook(asksBook, 'ask')
       const nextBids = sortBook(bidsBook, 'bid')
-      setRawAsks(nextAsks)
-      setRawBids(nextBids)
+      setVisibleBook({ asks: nextAsks, bids: nextBids })
       diagnostics.publishCount += 1
       diagnostics.maxCoalescedEventsPerFrame = Math.max(diagnostics.maxCoalescedEventsPerFrame, pendingPublishEvents)
       if (firstPendingPublishAt > 0) {
@@ -324,7 +324,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
       }
       pendingPublishEvents = 0
       firstPendingPublishAt = 0
-      publishFrameId = null
+      publishTimerId = null
 
       if (!alive) {
         return
@@ -338,14 +338,17 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     }
 
     const schedulePublishOrderBook = () => {
-      if (!alive || publishFrameId != null) {
+      if (!alive || publishTimerId != null) {
         diagnostics.coalescedEvents += 1
         return
       }
-      if (pendingPublishEvents === 0) {
+      if (firstPendingPublishAt === 0) {
         firstPendingPublishAt = performance.now()
       }
-      publishFrameId = window.requestAnimationFrame(publishOrderBook)
+      // Depth updates must all be merged to preserve a correct local book, but
+      // React only needs the newest consolidated snapshot. A single trailing
+      // timer prevents old renders from queueing up during volatile periods.
+      publishTimerId = window.setTimeout(publishOrderBook, ORDER_BOOK_UI_PUBLISH_INTERVAL_MS)
     }
 
     const applyDepthEvent = (event: DepthEvent): boolean => {
@@ -401,7 +404,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
         applyBookUpdates(bidsBook, snapshot.bids)
         applyBookUpdates(asksBook, snapshot.asks)
         lastAppliedUpdateId = snapshot.lastUpdateId ?? 0
-        clearPublishFrame()
+        clearPublishTimer()
         publishOrderBook()
 
         const pendingEvents = bufferedEvents
@@ -501,7 +504,7 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     return () => {
       alive = false
       clearRetryTimer()
-      clearPublishFrame()
+      clearPublishTimer()
       clearDiagnosticsTimer()
       flushDiagnostics('cleanup')
       ws?.close()
@@ -517,8 +520,14 @@ export function OrderBook({ onPriceSelect }: { onPriceSelect?: (price: number) =
     }
   }, [spreadStep])
 
-  const asks = [...buildLevels(rawAsks, 'ask', spreadStep)].reverse()
-  const bids = buildLevels(rawBids, 'bid', spreadStep)
+  const asks = useMemo(
+    () => [...buildLevels(visibleBook.asks, 'ask', spreadStep)].reverse(),
+    [spreadStep, visibleBook.asks],
+  )
+  const bids = useMemo(
+    () => buildLevels(visibleBook.bids, 'bid', spreadStep),
+    [spreadStep, visibleBook.bids],
+  )
   const getDepthValue = (level: Level) => orderBookDepthMode === 'level' ? level.quoteQty : level.sum
   const maxSum = Math.max(
     ...asks.map(getDepthValue),
