@@ -48,6 +48,27 @@ export function calculateAutoBreakevenStop(position: Pick<Position, 'side' | 'en
   return null
 }
 
+function isStopAtOrBeyondTarget(
+  side: string,
+  existingStop: number | null | undefined,
+  targetStop: number,
+): boolean {
+  if (existingStop == null || !Number.isFinite(existingStop)) return false
+  return side === 'LONG' ? existingStop >= targetStop : existingStop <= targetStop
+}
+
+function moreProtectiveStop(
+  side: string,
+  reportedStop: number | null | undefined,
+  confirmedStop: number | null | undefined,
+): number | null {
+  const reported = reportedStop != null && Number.isFinite(reportedStop) ? reportedStop : null
+  const confirmed = confirmedStop != null && Number.isFinite(confirmedStop) ? confirmedStop : null
+  if (reported == null) return confirmed
+  if (confirmed == null) return reported
+  return side === 'LONG' ? Math.max(reported, confirmed) : Math.min(reported, confirmed)
+}
+
 export function calculateAutoBreakevenTriggerPrice(
   position: Pick<Position, 'side' | 'entry_price' | 'planned_stop_price' | 'initial_risk_usdc' | 'quantity'>,
   parameters: AutoBreakevenParameters = DEFAULT_AUTO_BREAKEVEN_PARAMETERS,
@@ -221,6 +242,7 @@ export function PositionsPanel({
   const [autoBreakevenDefaultEnabled, setAutoBreakevenDefaultEnabled] = useState(true)
   const [autoBreakevenSettingsOwner, setAutoBreakevenSettingsOwner] = useState('')
   const [autoBreakevenMoving, setAutoBreakevenMoving] = useState<Record<number, boolean>>({})
+  const [autoBreakevenConfirmedStops, setAutoBreakevenConfirmedStops] = useState<Record<number, number>>({})
   const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(false)
   const [autoTwoRSettingsOwner, setAutoTwoRSettingsOwner] = useState('')
   const [loading, setLoading] = useState(false)
@@ -260,6 +282,7 @@ export function PositionsPanel({
     setAutoBreakevenSettingsOwner(username)
     autoBreakevenInFlightRef.current.clear()
     autoBreakevenRetryAfterRef.current.clear()
+    setAutoBreakevenConfirmedStops({})
     setAutoTwoRTakeProfit(readAutoTwoRTakeProfitSetting(username))
     setAutoTwoRSettingsOwner(username)
   }, [currentUser?.username])
@@ -497,11 +520,12 @@ export function PositionsPanel({
         || triggerPrice == null
       ) continue
 
-      const existingStop = position.sl_price
-      const alreadyProtected = existingStop != null && (
-        (position.side === 'LONG' && existingStop >= targetStop)
-        || (position.side === 'SHORT' && existingStop <= targetStop)
+      const existingStop = moreProtectiveStop(
+        position.side,
+        position.sl_price,
+        autoBreakevenConfirmedStops[position.id],
       )
+      const alreadyProtected = isStopAtOrBeyondTarget(position.side, existingStop, targetStop)
       if (alreadyProtected || autoBreakevenInFlightRef.current.has(position.id)) continue
       if ((autoBreakevenRetryAfterRef.current.get(position.id) ?? 0) > Date.now()) continue
 
@@ -520,9 +544,12 @@ export function PositionsPanel({
       void api.setPositionTpSl(position.id, null, targetStop, undefined, false)
         .then((result) => {
           const savedStop = typeof result.sl_price === 'number' ? result.sl_price : targetStop
+          setAutoBreakevenConfirmedStops((current) => ({ ...current, [position.id]: savedStop }))
           setPositions((current) => current.map((item) => item.id === position.id ? { ...item, sl_price: savedStop } : item))
           autoBreakevenRetryAfterRef.current.delete(position.id)
-          showToast('success', t('pos.autoBreakeven.success', { price: savedStop.toFixed(2) }))
+          if (result.unchanged !== true) {
+            showToast('success', t('pos.autoBreakeven.success', { price: savedStop.toFixed(2) }))
+          }
         })
         .catch((error: unknown) => {
           autoBreakevenRetryAfterRef.current.set(position.id, Date.now() + AUTO_BREAKEVEN_RETRY_MS)
@@ -533,13 +560,21 @@ export function PositionsPanel({
           setAutoBreakevenMoving((current) => ({ ...current, [position.id]: false }))
         })
     }
-  }, [activeSymbol, autoBreakevenEnabled, autoBreakevenParameters, autoBreakevenParametersLoaded, isActive, isAuthenticated, positionExcursions, positionMarkPrices, positionReferencePrice, positions, showToast, t])
+  }, [activeSymbol, autoBreakevenConfirmedStops, autoBreakevenEnabled, autoBreakevenParameters, autoBreakevenParametersLoaded, isActive, isAuthenticated, positionExcursions, positionMarkPrices, positionReferencePrice, positions, showToast, t])
 
   const toggleAutoBreakeven = useCallback((positionId: number, enabled: boolean) => {
     const nextEnabled = !enabled
     setAutoBreakevenEnabled((current) => ({ ...current, [positionId]: nextEnabled }))
     setAutoBreakevenDefaultEnabled(nextEnabled)
     autoBreakevenRetryAfterRef.current.delete(positionId)
+    if (!nextEnabled) {
+      setAutoBreakevenConfirmedStops((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, positionId)) return current
+        const next = { ...current }
+        delete next[positionId]
+        return next
+      })
+    }
   }, [])
 
   useEffect(() => {
@@ -997,10 +1032,13 @@ export function PositionsPanel({
                     <td>
                       {(() => {
                         const targetStop = calculateAutoBreakevenStop(p)
-                        const protectedAtTarget = targetStop != null && p.sl_price != null && (
-                          (p.side === 'LONG' && p.sl_price >= targetStop)
-                          || (p.side === 'SHORT' && p.sl_price <= targetStop)
+                        const effectiveStop = moreProtectiveStop(
+                          p.side,
+                          p.sl_price,
+                          autoBreakevenConfirmedStops[p.id],
                         )
+                        const protectedAtTarget = targetStop != null
+                          && isStopAtOrBeyondTarget(p.side, effectiveStop, targetStop)
                         const moving = Boolean(autoBreakevenMoving[p.id])
                         const enabled = Boolean(autoBreakevenEnabled[p.id])
                         return <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
@@ -1256,6 +1294,12 @@ export function PositionsPanel({
         minimumTakeProfitPoints={autoTakeProfitParameters.minimumProfitPoints}
         onClose={() => setTpslPosition(null)}
         onSaved={(posId, tp, sl, initialRisk) => {
+          setAutoBreakevenConfirmedStops((current) => {
+            if (!Object.prototype.hasOwnProperty.call(current, posId)) return current
+            const next = { ...current }
+            delete next[posId]
+            return next
+          })
           setPositions(prev => prev.map(p => p.id === posId ? {
             ...p,
             tp_price: tp,

@@ -4715,6 +4715,7 @@ def test_stop_only_tpsl_update_does_not_recreate_take_profit(monkeypatch):
     monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
     monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(positions_router.db_module, "query_orders", lambda **kwargs: [])
     monkeypatch.setattr(positions_router, "_fetch_current_trigger_price", lambda *args: 85880.0)
     monkeypatch.setattr(
         positions_router,
@@ -4737,6 +4738,64 @@ def test_stop_only_tpsl_update_does_not_recreate_take_profit(monkeypatch):
     assert placements[0]["sl_price"] == 85539.55
     assert result["tp_price"] is None
     assert result["sl_price"] == 85539.55
+
+
+def test_stop_only_tpsl_update_is_idempotent_when_active_stop_is_already_protected(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 6816,
+        "symbol": "BTCUSDC",
+        "position_side": "SHORT",
+        "position_mode": "DUAL",
+        "quantity": 0.005,
+        "avg_entry_price": 81178.4,
+        "planned_stop_price": 81907.22,
+        "initial_risk_usdc": 3.6441,
+    }
+    placements = []
+    mark_price_fetches = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: [{
+            "position_id": 6816,
+            "order_type": "STOP_MARKET",
+            "stop_price": 81097.22,
+        }],
+    )
+    monkeypatch.setattr(
+        positions_router,
+        "_fetch_current_trigger_price",
+        lambda *args: mark_price_fetches.append(args) or 80600.0,
+    )
+    monkeypatch.setattr(
+        positions_router,
+        "place_tp_sl_orders",
+        lambda **kwargs: placements.append(kwargs) or [],
+    )
+
+    result = positions_router.set_position_tpsl(
+        6816,
+        positions_router.TpSlIn(
+            sl_price=81097.22,
+            update_take_profit=False,
+        ),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    assert result == {
+        "ok": True,
+        "unchanged": True,
+        "tp_price": None,
+        "sl_price": 81097.22,
+        "initial_risk_usdc": 3.6441,
+    }
+    assert placements == []
+    assert mark_price_fetches == []
 
 
 def test_initialize_position_risk_atomically_replaces_orphan_amount(monkeypatch):

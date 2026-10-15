@@ -848,6 +848,54 @@ def set_position_tpsl(
     position_mode = str(position_row.get("position_mode", "") or "UNKNOWN").upper()
     quantity = float(position_row.get("quantity") or 0)
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
+    db_user_id = int(user["sub"])
+
+    # Automatic 1R protection is a stop-only update. WebSocket and polling
+    # snapshots can briefly race with the newly created stop and repeat the same
+    # request, so make this path idempotent before canceling any live order.
+    if not body.update_take_profit and body.sl_price is not None and body.sl_price > 0:
+        active_orders = db_module.query_orders(
+            user_id=db_user_id,
+            symbol=symbol,
+            status="NEW",
+            limit=500,
+        )
+        active_stop_prices = [
+            float(order["stop_price"])
+            for order in active_orders
+            if str(order.get("order_type") or "").upper() == "STOP_MARKET"
+            and order.get("position_id") is not None
+            and int(order["position_id"]) == position_id
+            and order.get("stop_price") is not None
+            and math.isfinite(float(order["stop_price"]))
+            and float(order["stop_price"]) > 0
+        ]
+        if active_stop_prices:
+            active_stop = max(active_stop_prices) if position_side == "LONG" else min(active_stop_prices)
+            already_protected = (
+                (position_side == "LONG" and active_stop >= body.sl_price)
+                or (position_side == "SHORT" and active_stop <= body.sl_price)
+            )
+            if already_protected:
+                with _tpsl_store_lock:
+                    cached_tp, _cached_sl = _tpsl_store.get(position_id, (None, None))
+                    _tpsl_store[position_id] = (cached_tp, active_stop)
+                _log.info(
+                    "[POSITION_SYNC] phase=tpsl_unchanged user=%s pos=%d symbol=%s sl=%s requested_sl=%s",
+                    username,
+                    position_id,
+                    symbol,
+                    active_stop,
+                    body.sl_price,
+                )
+                return {
+                    "ok": True,
+                    "unchanged": True,
+                    "tp_price": None,
+                    "sl_price": active_stop,
+                    "initial_risk_usdc": position_row.get("initial_risk_usdc"),
+                }
+
     current_price = _fetch_current_trigger_price(user_id, username, symbol)
 
     requested_tp_price = body.tp_price if body.update_take_profit else None
@@ -879,7 +927,6 @@ def set_position_tpsl(
         username, position_id, symbol, position_side, entry_price, current_price, requested_tp_price, body.sl_price,
     )
 
-    db_user_id = int(user["sub"])
     errors = place_tp_sl_orders(
         username=username,
         user_id=db_user_id,
