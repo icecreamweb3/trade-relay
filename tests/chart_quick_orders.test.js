@@ -3,10 +3,12 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
+  applyQuickOrderPreference,
   buildQuickLimit,
   buildQuickStop,
   getLimitSide,
   getStopSide,
+  normalizeQuickOrderPreference,
   resolveBaseQuantity,
   splitTradeSymbol,
 } = require('../electron/chart-quick-orders')
@@ -123,4 +125,60 @@ test('edited quote or base quantities normalize to exchange base quantity', () =
 
 test('symbol assets support BTCUSDC quantity-unit switching', () => {
   assert.deepEqual(splitTradeSymbol('BTCUSDC'), { baseAsset: 'BTC', quoteAsset: 'USDC' })
+})
+
+test('last successful chart quantity and unit override the panel size for the next shortcut', () => {
+  assert.deepEqual(
+    applyQuickOrderPreference(
+      {
+        username: 'will',
+        quantity: 0.005,
+        inputQuantity: 500,
+        sizeUnit: 'QUOTE',
+        leverage: 20,
+        positionMode: 'DUAL',
+      },
+      { inputQuantity: 0.0079, sizeUnit: 'BASE' },
+      'will',
+      83_000,
+    ),
+    {
+      username: 'will',
+      quantity: 0.007,
+      inputQuantity: 0.0079,
+      sizeUnit: 'BASE',
+      leverage: 20,
+      positionMode: 'DUAL',
+    },
+  )
+})
+
+test('stored quote quantity is recalculated with the latest reference price', () => {
+  const settings = applyQuickOrderPreference(
+    null,
+    { inputQuantity: 500, sizeUnit: 'QUOTE' },
+    'will',
+    100_000,
+  )
+  assert.deepEqual(settings, {
+    username: 'will',
+    quantity: 0.005,
+    inputQuantity: 500,
+    sizeUnit: 'QUOTE',
+    leverage: 10,
+  })
+  assert.deepEqual(buildQuickStop(101, 100, settings, 'will'), {
+    side: 'BUY',
+    quantity: 0.005,
+    inputQuantity: 500,
+    sizeUnit: 'QUOTE',
+    leverage: 10,
+  })
+})
+
+test('invalid chart quantity preferences are ignored', () => {
+  assert.equal(normalizeQuickOrderPreference(0, 'QUOTE'), null)
+  assert.equal(normalizeQuickOrderPreference(10, 'INVALID'), null)
+  const settings = { username: 'will', quantity: 0.01 }
+  assert.equal(applyQuickOrderPreference(settings, null, 'will', 100), settings)
 })

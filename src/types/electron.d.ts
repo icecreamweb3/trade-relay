@@ -49,6 +49,31 @@ interface ElectronAPI {
     leverage: number
     positionMode: 'SINGLE' | 'DUAL'
   }) => Promise<{ ok: boolean; reason?: string }>
+  getOrderSizePreference?: (payload: {
+    username: string
+    symbol: string
+  }) => Promise<{
+    ok: boolean
+    reason?: string
+    preference?: {
+      username: string
+      symbol: string
+      inputQuantity: number
+      sizeUnit: 'QUOTE' | 'BASE'
+    } | null
+  }>
+  saveOrderSizePreference?: (payload: {
+    username: string
+    symbol: string
+    inputQuantity: number
+    sizeUnit: 'QUOTE' | 'BASE'
+  }) => Promise<{ ok: boolean; reason?: string }>
+  onOrderSizePreferenceChanged?: (callback: (preference: {
+    username: string
+    symbol: string
+    inputQuantity: number
+    sizeUnit: 'QUOTE' | 'BASE'
+  }) => void) => () => void
 
   // Market data events
   onMarketData: (callback: (data: import('./store/marketStore').MarketEvent) => void) => () => void

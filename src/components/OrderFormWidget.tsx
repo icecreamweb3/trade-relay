@@ -387,8 +387,50 @@ export function OrderFormWidget({
 
   useEffect(() => {
     const username = user?.username
-    setQty(username ? readStoredOrderSize(username, symbol, sizeUnit) : '')
-  }, [user?.username, symbol, sizeUnit])
+    if (!username) {
+      setQty('')
+      return
+    }
+
+    let alive = true
+    const loadPreference = async () => {
+      try {
+        const result = await window.electronAPI?.getOrderSizePreference?.({ username, symbol })
+        if (!alive) return
+        const preference = result?.ok ? result.preference : null
+        if (
+          preference
+          && Number.isFinite(preference.inputQuantity)
+          && preference.inputQuantity > 0
+          && (preference.sizeUnit === 'QUOTE' || preference.sizeUnit === 'BASE')
+        ) {
+          onSizeUnitChange(preference.sizeUnit)
+          setQty(String(preference.inputQuantity))
+          return
+        }
+      } catch {
+        // Fall through to legacy renderer storage when Electron persistence is unavailable.
+      }
+      if (alive) setQty(readStoredOrderSize(username, symbol, sizeUnit))
+    }
+    void loadPreference()
+    return () => { alive = false }
+  }, [onSizeUnitChange, symbol, user?.username])
+
+  useEffect(() => {
+    const username = user?.username
+    if (!username || !window.electronAPI?.onOrderSizePreferenceChanged) return
+    return window.electronAPI.onOrderSizePreferenceChanged((preference) => {
+      if (
+        preference.username !== username
+        || preference.symbol.toUpperCase() !== symbol.toUpperCase()
+        || !Number.isFinite(preference.inputQuantity)
+        || preference.inputQuantity <= 0
+      ) return
+      onSizeUnitChange(preference.sizeUnit)
+      setQty(String(preference.inputQuantity))
+    })
+  }, [onSizeUnitChange, symbol, user?.username])
 
   const quickOrderBaseQuantity = useMemo(() => {
     const inputQuantity = Number(qty)
@@ -1262,12 +1304,26 @@ export function OrderFormWidget({
         showToast('success', t('order.success'))
       }
       if (sizeSnapshot.username) {
-        writeStoredOrderSize(
-          sizeSnapshot.username,
-          sizeSnapshot.symbol,
-          sizeSnapshot.sizeUnit,
-          sizeSnapshot.quantity,
-        )
+        let sharedPreferenceSaved = false
+        try {
+          const preferenceResult = await window.electronAPI?.saveOrderSizePreference?.({
+            username: sizeSnapshot.username,
+            symbol: sizeSnapshot.symbol,
+            inputQuantity: Number(sizeSnapshot.quantity),
+            sizeUnit: sizeSnapshot.sizeUnit,
+          })
+          sharedPreferenceSaved = preferenceResult?.ok === true
+        } catch {
+          // Keep order success independent from non-critical local preference persistence.
+        }
+        if (!sharedPreferenceSaved) {
+          writeStoredOrderSize(
+            sizeSnapshot.username,
+            sizeSnapshot.symbol,
+            sizeSnapshot.sizeUnit,
+            sizeSnapshot.quantity,
+          )
+        }
       }
       onOrderPlaced?.()
     } catch (err: unknown) {
@@ -1541,7 +1597,11 @@ export function OrderFormWidget({
               className="flex-1 min-w-0 bg-[#1E2026] border border-[#2B2F36] border-r-0 focus:border-[#F0B90B] text-[13px] text-[#EAECEF] rounded-l px-2.5 py-1.5 outline-none selectable" />
             <select
               value={sizeUnit}
-              onChange={e => onSizeUnitChange(e.target.value as 'QUOTE' | 'BASE')}
+              onChange={e => {
+                const nextUnit = e.target.value as 'QUOTE' | 'BASE'
+                onSizeUnitChange(nextUnit)
+                setQty(user?.username ? readStoredOrderSize(user.username, symbol, nextUnit) : '')
+              }}
               className="bg-[#2B2F36] border border-[#2B2F36] text-[#EAECEF] text-[11px] rounded-r px-2 py-1.5 outline-none cursor-pointer shrink-0">
               <option value="QUOTE">{quoteAsset}</option>
               <option value="BASE">{baseTicker}</option>

@@ -54,6 +54,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setBinanceViewVisible: (visible) => ipcRenderer.invoke('set-binance-view-visible', visible),
   openBinanceDevTools: () => ipcRenderer.invoke('open-binance-devtools'),
   setChartQuickOrderSettings: (settings) => ipcRenderer.invoke('set-chart-quick-order-settings', settings),
+  getOrderSizePreference: (payload) => ipcRenderer.invoke('get-order-size-preference', payload),
+  saveOrderSizePreference: (payload) => ipcRenderer.invoke('save-order-size-preference', payload),
+  onOrderSizePreferenceChanged: (callback) => {
+    const handler = (_event, preference) => callback(preference)
+    ipcRenderer.on('order-size-preference-changed', handler)
+    return () => ipcRenderer.removeListener('order-size-preference-changed', handler)
+  },
 
   // ── Market data events ────────────────────────────────────────────────────
   onMarketData: (callback) => {

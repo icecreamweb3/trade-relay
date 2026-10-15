@@ -26,6 +26,35 @@ function resolveBaseQuantity(inputQuantity, sizeUnit, currentPrice) {
   return quantity > 0 ? quantity : null
 }
 
+function normalizeQuickOrderPreference(inputQuantity, sizeUnit) {
+  const quantity = Number(inputQuantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) return null
+  if (sizeUnit !== 'BASE' && sizeUnit !== 'QUOTE') return null
+  return { inputQuantity: quantity, sizeUnit }
+}
+
+function applyQuickOrderPreference(settings, preference, username, referencePrice) {
+  const normalized = normalizeQuickOrderPreference(
+    preference?.inputQuantity,
+    preference?.sizeUnit,
+  )
+  if (!normalized) return settings
+
+  const belongsToUser = settings?.username === String(username || '')
+  return {
+    username: String(username || ''),
+    quantity: resolveBaseQuantity(
+      normalized.inputQuantity,
+      normalized.sizeUnit,
+      referencePrice,
+    ),
+    inputQuantity: normalized.inputQuantity,
+    sizeUnit: normalized.sizeUnit,
+    leverage: belongsToUser ? settings.leverage : 10,
+    ...(belongsToUser && settings.positionMode ? { positionMode: settings.positionMode } : {}),
+  }
+}
+
 function getStopSide(triggerPrice, currentPrice) {
   const trigger = Number(triggerPrice)
   const current = Number(currentPrice)
@@ -65,7 +94,7 @@ function buildQuickOrder(side, settings, username) {
     inputQuantity: Number(settings.inputQuantity),
     sizeUnit: settings.sizeUnit,
     leverage: settings.leverage,
-    positionMode: settings.positionMode,
+    ...(settings.positionMode ? { positionMode: settings.positionMode } : {}),
   }
 }
 
@@ -78,10 +107,12 @@ function buildQuickLimit(limitPrice, currentPrice, settings, username) {
 }
 
 module.exports = {
+  applyQuickOrderPreference,
   buildQuickLimit,
   buildQuickStop,
   getLimitSide,
   getStopSide,
+  normalizeQuickOrderPreference,
   resolveBaseQuantity,
   splitTradeSymbol,
 }

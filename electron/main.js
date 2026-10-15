@@ -11,8 +11,10 @@ const https = require('https')
 const crypto = require('crypto')
 const { ProxyAgent } = require('proxy-agent')
 const {
+  applyQuickOrderPreference,
   buildQuickLimit,
   buildQuickStop,
+  normalizeQuickOrderPreference,
   resolveBaseQuantity,
   splitTradeSymbol,
 } = require('./chart-quick-orders')
@@ -65,6 +67,7 @@ let _activeOrderLinesRequestSequence = 0
 const _chartTpMenuTokens = new Map()
 const _chartTpOptionsClaims = new Map()
 const _chartQuickOrderSettings = new Map()
+let _chartQuickOrderPreferences = null
 const _chartCurrentPrices = new Map()
 
 function logBinanceView(action, extra = undefined) {
@@ -761,6 +764,40 @@ ipcMain.handle('set-chart-quick-order-settings', (event, payload = {}) => {
   return { ok: true }
 })
 
+ipcMain.handle('get-order-size-preference', (event, payload = {}) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return { ok: false, reason: 'invalid_sender' }
+  const tokenPayload = decodeJwtPayload(getToken())
+  const username = String(payload.username || '').trim()
+  const symbol = normalizeChartTradeSymbol(payload.symbol)
+  if (!tokenPayload || username !== String(tokenPayload.username || '')) {
+    return { ok: false, reason: 'not_authenticated' }
+  }
+  if (!symbol) return { ok: false, reason: 'invalid_symbol' }
+  return {
+    ok: true,
+    preference: getChartQuickOrderPreference(username, symbol),
+  }
+})
+
+ipcMain.handle('save-order-size-preference', (event, payload = {}) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return { ok: false, reason: 'invalid_sender' }
+  const tokenPayload = decodeJwtPayload(getToken())
+  const username = String(payload.username || '').trim()
+  const symbol = normalizeChartTradeSymbol(payload.symbol)
+  if (!tokenPayload || username !== String(tokenPayload.username || '')) {
+    return { ok: false, reason: 'not_authenticated' }
+  }
+  if (!symbol) return { ok: false, reason: 'invalid_symbol' }
+  return saveChartQuickOrderPreference(
+    username,
+    symbol,
+    payload.inputQuantity,
+    payload.sizeUnit,
+  )
+    ? { ok: true }
+    : { ok: false, reason: 'preference_save_failed' }
+})
+
 ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(1, chartRatio))
   if (splitRatio === 0) {
@@ -897,6 +934,88 @@ function normalizeChartTradeSymbol(symbol) {
     .replace(/[^A-Z0-9]/g, '')
 }
 
+function chartQuickOrderPreferencesPath() {
+  return path.join(app.getPath('userData'), 'chart-quick-order-preferences.json')
+}
+
+function chartQuickOrderPreferenceKey(username, symbol) {
+  return JSON.stringify([String(username || ''), normalizeChartTradeSymbol(symbol)])
+}
+
+function loadChartQuickOrderPreferences() {
+  if (_chartQuickOrderPreferences) return _chartQuickOrderPreferences
+  const preferences = new Map()
+  try {
+    const parsed = JSON.parse(fs.readFileSync(chartQuickOrderPreferencesPath(), 'utf8'))
+    for (const entry of Array.isArray(parsed?.preferences) ? parsed.preferences : []) {
+      const username = String(entry?.username || '')
+      const symbol = normalizeChartTradeSymbol(entry?.symbol)
+      const preference = normalizeQuickOrderPreference(entry?.inputQuantity, entry?.sizeUnit)
+      if (username && symbol && preference) {
+        preferences.set(chartQuickOrderPreferenceKey(username, symbol), {
+          username,
+          symbol,
+          ...preference,
+        })
+      }
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      logger.warn('[CHART_QUICK_ORDER] phase=preferences-load-failed', {
+        reason: error?.message || 'unknown_error',
+      })
+    }
+  }
+  _chartQuickOrderPreferences = preferences
+  return preferences
+}
+
+function getChartQuickOrderPreference(username, symbol) {
+  return loadChartQuickOrderPreferences().get(chartQuickOrderPreferenceKey(username, symbol)) || null
+}
+
+function saveChartQuickOrderPreference(username, symbol, inputQuantity, sizeUnit) {
+  const normalizedUsername = String(username || '')
+  const normalizedSymbol = normalizeChartTradeSymbol(symbol)
+  const preference = normalizeQuickOrderPreference(inputQuantity, sizeUnit)
+  if (!normalizedUsername || !normalizedSymbol || !preference) return false
+
+  const preferences = loadChartQuickOrderPreferences()
+  const preferenceKey = chartQuickOrderPreferenceKey(normalizedUsername, normalizedSymbol)
+  const previousPreference = preferences.get(preferenceKey)
+  preferences.set(preferenceKey, {
+    username: normalizedUsername,
+    symbol: normalizedSymbol,
+    ...preference,
+  })
+  try {
+    const targetPath = chartQuickOrderPreferencesPath()
+    const temporaryPath = `${targetPath}.tmp`
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+    fs.writeFileSync(temporaryPath, JSON.stringify({
+      version: 1,
+      preferences: Array.from(preferences.values()),
+    }, null, 2))
+    fs.renameSync(temporaryPath, targetPath)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('order-size-preference-changed', {
+        username: normalizedUsername,
+        symbol: normalizedSymbol,
+        ...preference,
+      })
+    }
+    return true
+  } catch (error) {
+    if (previousPreference) preferences.set(preferenceKey, previousPreference)
+    else preferences.delete(preferenceKey)
+    logger.warn('[CHART_QUICK_ORDER] phase=preferences-save-failed', {
+      symbol: normalizedSymbol,
+      reason: error?.message || 'unknown_error',
+    })
+    return false
+  }
+}
+
 async function getChartTakeProfitContext(symbol, price) {
   const normalizedSymbol = normalizeChartTradeSymbol(symbol)
   const limitPrice = Number(price)
@@ -941,11 +1060,16 @@ async function getChartTakeProfitContext(symbol, price) {
     if (!existing || Number(position.id) > Number(existing.id)) positionsBySide.set(side, position)
   }
 
-  const quickSettings = _chartQuickOrderSettings.get(normalizedSymbol)
   const tokenPayload = decodeJwtPayload(token)
   const currentPrice = Number(_chartCurrentPrices.get(normalizedSymbol)) > 0
     ? Number(_chartCurrentPrices.get(normalizedSymbol))
     : markPrice
+  const quickSettings = applyQuickOrderPreference(
+    _chartQuickOrderSettings.get(normalizedSymbol),
+    getChartQuickOrderPreference(tokenPayload?.username, normalizedSymbol),
+    tokenPayload?.username,
+    currentPrice,
+  )
   const quickStop = buildQuickStop(
     limitPrice,
     currentPrice,
@@ -1460,6 +1584,12 @@ ipcMain.handle('chart-place-limit', async (event, payload = {}) => {
     if (response.status < 200 || response.status >= 300) {
       return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
     }
+    saveChartQuickOrderPreference(
+      decodeJwtPayload(token)?.username,
+      context.symbol,
+      payload.inputQuantity,
+      sizeUnit,
+    )
     logger.info('[CHART_LIMIT] phase=placed', {
       symbol: context.symbol,
       side: requestedSide,
@@ -1533,6 +1663,12 @@ ipcMain.handle('chart-place-stop-market', async (event, payload = {}) => {
     if (response.status < 200 || response.status >= 300) {
       return { ok: false, reason: response.body?.detail || `request_failed_${response.status}` }
     }
+    saveChartQuickOrderPreference(
+      decodeJwtPayload(token)?.username,
+      context.symbol,
+      payload.inputQuantity,
+      sizeUnit,
+    )
     logger.info('[CHART_STOP_MARKET] phase=placed', {
       symbol: context.symbol,
       side: requestedSide,
