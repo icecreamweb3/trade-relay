@@ -1744,7 +1744,10 @@ function _captureOverlayShapesByDiff(chart, baseShapeIds) {
     if (!nextShapeIds) return
 
     for (const id of nextShapeIds) {
-      if (baseShapeIds.has(id) || _drawnShapes.includes(id)) continue
+      // Active-order fallback lines are also TradingView shapes. They may finish
+      // creating while this marker diff is in flight, so never adopt them as
+      // marker-overlay shapes (the next marker refresh would delete them).
+      if (baseShapeIds.has(id) || _activeOrderShapeIds.includes(id) || _drawnShapes.includes(id)) continue
       _drawnShapes.push(id)
     }
   }
@@ -2430,6 +2433,11 @@ function clearActiveOrderLines(chart = _getActiveOverlayChart()) {
     try { line?.remove?.() } catch { /* stale line */ }
   }
   _orderLines = []
+  if (_activeOrderShapeIds.length > 0) {
+    const activeShapeIds = new Set(_activeOrderShapeIds)
+    _drawnShapes = _drawnShapes.filter((id) => !activeShapeIds.has(id))
+    for (const id of activeShapeIds) _overlayShapeSignals.delete(id)
+  }
   if (chart) {
     for (const id of _activeOrderShapeIds) {
       try { chart.removeEntity(id) } catch { /* stale shape */ }
@@ -2441,6 +2449,7 @@ function clearActiveOrderLines(chart = _getActiveOverlayChart()) {
 async function drawActiveOrderLines(chart, orders, locale) {
   clearActiveOrderLines(chart)
   const generation = _activeOrderLineGeneration
+  let renderedCount = 0
   for (const order of orders) {
     const price = Number(order.price)
     const quantity = Number(order.remaining_quantity ?? order.quantity)
@@ -2482,6 +2491,7 @@ async function drawActiveOrderLines(chart, orders, locale) {
           }
         } catch {}
         _orderLines.push(line)
+        renderedCount += 1
         continue
       } catch (error) {
         _logOverlayToMain('debug', 'createOrderLine unavailable; using horizontal-line fallback', {
@@ -2491,7 +2501,7 @@ async function drawActiveOrderLines(chart, orders, locale) {
     }
 
     try {
-      const id = chart.createShape(
+      const id = await Promise.resolve(chart.createShape(
         { time: Math.floor(Date.now() / 1000), price },
         {
           shape: 'horizontal_line',
@@ -2508,26 +2518,52 @@ async function drawActiveOrderLines(chart, orders, locale) {
             textcolor: color,
           },
         },
-      )
-      if (id) _activeOrderShapeIds.push(id)
-    } catch { /* chart API variant does not support this fallback */ }
+      ))
+      if (id && generation === _activeOrderLineGeneration) {
+        // A concurrent marker redraw can see this shape just before this async
+        // continuation. Remove any accidental marker ownership first.
+        _drawnShapes = _drawnShapes.filter((shapeId) => shapeId !== id)
+        _overlayShapeSignals.delete(id)
+        _activeOrderShapeIds.push(id)
+        renderedCount += 1
+      } else if (id) {
+        try { chart.removeEntity(id) } catch { /* stale generation */ }
+      }
+    } catch (error) {
+      _logOverlayToMain('warn', 'active order fallback line failed', {
+        orderId: Number(order?.id) || null,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
+  return renderedCount
+}
+
+function _activeOrderFallbackShapesMissing(chart) {
+  if (_activeOrderShapeIds.length === 0) return false
+  const chartShapeIds = _getChartShapeIdSet(chart)
+  if (!chartShapeIds) return false
+  return _activeOrderShapeIds.some((id) => !chartShapeIds.has(id))
 }
 
 async function _restoreCachedActiveOrderLines(reason, force = false) {
   if (_activeOrderLinesRefreshInFlight || _cachedActiveOrderLines.length === 0) return
   const chart = findTvChart()
-  if (!chart || (!force && chart === _activeOrderLinesChart)) return
+  if (!chart) return
+  const chartChanged = chart !== _activeOrderLinesChart
+  const fallbackMissing = !chartChanged && _activeOrderFallbackShapesMissing(chart)
+  if (!force && !chartChanged && !fallbackMissing) return
 
   _activeOrderLinesRefreshInFlight = true
   try {
     const orders = _cachedActiveOrderLines.slice()
-    await drawActiveOrderLines(chart, orders, _cachedActiveOrderLinesLocale)
+    const renderedCount = await drawActiveOrderLines(chart, orders, _cachedActiveOrderLinesLocale)
     _tvChart = chart
     _activeOrderLinesChart = chart
     _logOverlayToMain('info', 'active order lines restored', {
       reason,
       count: orders.length,
+      renderedCount,
       nativeLineCount: _orderLines.length,
       fallbackShapeCount: _activeOrderShapeIds.length,
     })
@@ -2866,14 +2902,21 @@ ipcRenderer.on('active-order-lines', async (_event, orders, locale, requestId) =
   }
   _tvChart = chart
   try {
-    await drawActiveOrderLines(chart, messageOrders, locale || _uiLocale)
+    const renderedCount = await drawActiveOrderLines(chart, messageOrders, locale || _uiLocale)
     _activeOrderLinesChart = chart
     _logOverlayToMain('info', 'active order lines drawn', {
       count: messageOrders.length,
+      renderedCount,
       nativeLineCount: _orderLines.length,
       fallbackShapeCount: _activeOrderShapeIds.length,
     })
-    ipcRenderer.send('active-order-lines-status', { requestId, ok: true, count: messageOrders.length })
+    const allRendered = renderedCount === messageOrders.length
+    ipcRenderer.send('active-order-lines-status', {
+      requestId,
+      ok: allRendered,
+      count: renderedCount,
+      reason: allRendered ? undefined : 'partial_draw',
+    })
   } catch (error) {
     _logOverlayToMain('warn', 'active order lines failed', {
       count: messageOrders.length,

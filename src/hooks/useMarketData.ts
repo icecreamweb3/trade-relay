@@ -499,5 +499,7 @@ export function useMarketData() {
       clearInterval(timer)
       void clearActiveLines()
     }
-  }, [uiLocale, user, symbol])
+  // Binance may rebuild drawings without replacing the public chart adapter
+  // when the interval changes. Re-send unchanged orders for that resolution.
+  }, [uiLocale, user, symbol, chartInterval])
 }
