@@ -64,6 +64,7 @@ let _binanceViewAttached = false
 let _lastBinanceViewBoundsKey = null
 let _activeOrderLinesState = null
 let _activeOrderLinesRequestSequence = 0
+let _activeOrderLinesLayoutReplayGeneration = 0
 const _chartTpMenuTokens = new Map()
 const _chartTpOptionsClaims = new Map()
 const _chartQuickOrderSettings = new Map()
@@ -387,6 +388,26 @@ async function sendActiveOrderLinesToChart(orders, locale, reason) {
   }
 }
 
+function scheduleActiveOrderLinesLayoutReplay(reason) {
+  const generation = ++_activeOrderLinesLayoutReplayGeneration
+  if (!_activeOrderLinesState) return
+
+  // BrowserView resizing returns before Binance/TradingView has finished
+  // rebuilding its drawing layer. Replay once after the immediate resize and
+  // once after layout settles; the generation guard collapses resize storms.
+  for (const delayMs of [250, 1_500]) {
+    setTimeout(() => {
+      if (generation !== _activeOrderLinesLayoutReplayGeneration) return
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) return
+      if (!binanceView || binanceView.webContents.isDestroyed()) return
+      if (!_binanceViewVisible || !_binanceViewAttached) return
+      if (!_activeOrderLinesState) return
+      const { orders, locale } = _activeOrderLinesState
+      void sendActiveOrderLinesToChart(orders, locale, `layout-${reason}-${delayMs}ms`)
+    }, delayMs)
+  }
+}
+
 // ── Retryable load ────────────────────────────────────────────────────────────
 const RETRYABLE_ERRORS = new Set([-21, -2, -7, -100, -101, -102, -105, -106])
 
@@ -429,13 +450,20 @@ function createMainWindow() {
   }
 
   mainWindow.on('closed', () => {
+    _activeOrderLinesLayoutReplayGeneration += 1
     if (orderKlineWindow && !orderKlineWindow.isDestroyed()) orderKlineWindow.close()
     orderKlineWindow = null
     orderKlinePayload = null
     mainWindow = null
   })
   mainWindow.webContents.on('did-finish-load', () => updateBinanceViewBounds())
-  mainWindow.on('resize', () => updateBinanceViewBounds())
+  mainWindow.on('resize', () => {
+    updateBinanceViewBounds()
+    scheduleActiveOrderLinesLayoutReplay('resize')
+  })
+  mainWindow.on('maximize', () => scheduleActiveOrderLinesLayoutReplay('maximize'))
+  mainWindow.on('unmaximize', () => scheduleActiveOrderLinesLayoutReplay('unmaximize'))
+  mainWindow.on('restore', () => scheduleActiveOrderLinesLayoutReplay('restore'))
 
   mainWindow.webContents.on('before-input-event', (_event, input) => {
     if (input.type === 'keyDown' && input.key === 'F12') {
@@ -802,6 +830,7 @@ ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   if (chartRatio != null) _chartRatio = Math.max(0.1, Math.min(1, chartRatio))
   if (splitRatio === 0) {
     // Hide BrowserView by moving it off-screen
+    _activeOrderLinesLayoutReplayGeneration += 1
     _splitRatio = 0
     hideBinanceView()
     return
@@ -809,6 +838,7 @@ ipcMain.handle('resize-binance-panel', (_event, splitRatio, chartRatio) => {
   _splitRatio = Math.max(0.1, Math.min(0.95, splitRatio))
   if (!binanceView || !mainWindow) return
   updateBinanceViewBounds()
+  scheduleActiveOrderLinesLayoutReplay('panel-resize')
 })
 
 ipcMain.handle('navigate-binance', (_event, symbol) => {
@@ -846,7 +876,9 @@ ipcMain.handle('set-binance-view-visible', (_event, visible) => {
   if (!binanceView || !mainWindow) return
   if (nextVisible) {
     updateBinanceViewBounds()
+    scheduleActiveOrderLinesLayoutReplay('view-shown')
   } else {
+    _activeOrderLinesLayoutReplayGeneration += 1
     // Move off-screen to hide without destroying the view
     hideBinanceView()
   }
@@ -873,6 +905,7 @@ ipcMain.on('chart-interval-change', (event, interval) => {
 ipcMain.on('chart-expand-state-change', (event, expanded) => {
   if (!binanceView || !mainWindow || event.sender !== binanceView.webContents) return
   mainWindow.webContents.send('chart-expand-state-change', expanded)
+  scheduleActiveOrderLinesLayoutReplay(expanded ? 'chart-expand' : 'chart-collapse')
 })
 
 ipcMain.handle('chart-toggle-fullscreen', async () => {
