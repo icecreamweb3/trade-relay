@@ -992,6 +992,7 @@ def _create_positions_table(cur: pymysql.cursors.Cursor) -> None:
             opened_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）',
             planned_stop_price DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价',
             initial_risk_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC）',
+            auto_breakeven_triggered_at DATETIME(3) DEFAULT NULL COMMENT '本轮持仓1R自动保护首次成功触发时间（UTC）',
             live_mfe_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '实时采样最大浮盈（USDC）',
             live_mae_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '实时采样最大浮亏绝对值（USDC）',
             live_mfe_at     DATETIME(3)     DEFAULT NULL,
@@ -1074,6 +1075,7 @@ def _migrate_positions_table(cur: pymysql.cursors.Cursor) -> None:
         "opened_at": "DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）'",
         "planned_stop_price": "DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价'",
         "initial_risk_usdc": "DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC）'",
+        "auto_breakeven_triggered_at": "DATETIME(3) DEFAULT NULL COMMENT '本轮持仓1R自动保护首次成功触发时间（UTC）'",
         "live_mfe_usdc": "DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '实时采样最大浮盈（USDC）'",
         "live_mae_usdc": "DECIMAL(30,10) NOT NULL DEFAULT 0 COMMENT '实时采样最大浮亏绝对值（USDC）'",
         "live_mfe_at": "DATETIME(3) DEFAULT NULL",
@@ -5490,6 +5492,23 @@ def update_position_initial_risk(position_id: int, initial_risk_usdc: float) -> 
                    WHERE id = %s
                      AND planned_stop_price IS NOT NULL""",
                 (initial_risk_usdc, position_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_position_auto_breakeven_triggered(position_id: int) -> bool:
+    """Persist the one-shot 1R protection state for this position cycle."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE positions
+                   SET auto_breakeven_triggered_at = COALESCE(auto_breakeven_triggered_at, UTC_TIMESTAMP(3))
+                   WHERE id = %s""",
+                (position_id,),
             )
             conn.commit()
             return cur.rowcount > 0

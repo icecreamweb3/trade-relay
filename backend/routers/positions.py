@@ -232,6 +232,7 @@ class PositionOut(BaseModel):
     sl_price: Optional[float] = None
     planned_stop_price: Optional[float] = None
     initial_risk_usdc: Optional[float] = None
+    auto_breakeven_triggered_at: Optional[str] = None
     live_mfe_usdc: float = 0.0
     live_mae_usdc: float = 0.0
     live_mfe_at: Optional[str] = None
@@ -480,6 +481,7 @@ def _db_positions(user_id: int | None, status: str | None = "OPEN") -> list[Posi
                 sl_price=sl,
                 planned_stop_price=planned_stop_price,
                 initial_risk_usdc=initial_risk_usdc,
+                auto_breakeven_triggered_at=serialize_utc_timestamp(row.get("auto_breakeven_triggered_at")),
                 live_mfe_usdc=float(row.get("live_mfe_usdc") or 0),
                 live_mae_usdc=float(row.get("live_mae_usdc") or 0),
                 live_mfe_at=serialize_utc_timestamp(row.get("live_mfe_at")),
@@ -815,6 +817,7 @@ class TpSlIn(BaseModel):
     sl_price: Optional[float] = None
     tp_order_type: Optional[Literal["MARKET", "LIMIT"]] = None
     update_take_profit: bool = True
+    auto_breakeven: bool = False
 
 
 @router.post("/{position_id}/tpsl")
@@ -850,6 +853,19 @@ def set_position_tpsl(
     entry_price = float(position_row["avg_entry_price"]) if position_row.get("avg_entry_price") is not None else None
     db_user_id = int(user["sub"])
 
+    # 1R protection belongs to a position cycle and is deliberately one-shot.
+    # A later manual stop change must not re-arm it, including after an app or
+    # backend restart.
+    if body.auto_breakeven and position_row.get("auto_breakeven_triggered_at") is not None:
+        return {
+            "ok": True,
+            "unchanged": True,
+            "tp_price": None,
+            "sl_price": body.sl_price,
+            "initial_risk_usdc": position_row.get("initial_risk_usdc"),
+            "auto_breakeven_triggered": True,
+        }
+
     # Automatic 1R protection is a stop-only update. WebSocket and polling
     # snapshots can briefly race with the newly created stop and repeat the same
     # request, so make this path idempotent before canceling any live order.
@@ -877,6 +893,8 @@ def set_position_tpsl(
                 or (position_side == "SHORT" and active_stop <= body.sl_price)
             )
             if already_protected:
+                if body.auto_breakeven:
+                    db_module.mark_position_auto_breakeven_triggered(position_id)
                 with _tpsl_store_lock:
                     cached_tp, _cached_sl = _tpsl_store.get(position_id, (None, None))
                     _tpsl_store[position_id] = (cached_tp, active_stop)
@@ -943,6 +961,9 @@ def set_position_tpsl(
     )
     if errors:
         raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    if body.auto_breakeven:
+        db_module.mark_position_auto_breakeven_triggered(position_id)
 
     stored_planned_stop = (
         float(position_row["planned_stop_price"])

@@ -3,11 +3,13 @@ import { create } from 'zustand'
 export interface AutoBreakevenParameters {
   triggerRMultiple: number
   minimumProfitPercent: number
+  triggerOnce: boolean
 }
 
 export const DEFAULT_AUTO_BREAKEVEN_PARAMETERS: AutoBreakevenParameters = {
   triggerRMultiple: 1,
   minimumProfitPercent: 0.4,
+  triggerOnce: true,
 }
 
 export const AUTO_BREAKEVEN_PARAMETER_LIMITS = {
@@ -37,6 +39,9 @@ export function normalizeAutoBreakevenParameters(value: Partial<AutoBreakevenPar
       AUTO_BREAKEVEN_PARAMETER_LIMITS.minimumProfitPercent.min,
       AUTO_BREAKEVEN_PARAMETER_LIMITS.minimumProfitPercent.max,
     ) ? minimumProfitPercent : DEFAULT_AUTO_BREAKEVEN_PARAMETERS.minimumProfitPercent,
+    triggerOnce: typeof value.triggerOnce === 'boolean'
+      ? value.triggerOnce
+      : DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerOnce,
   }
 }
 

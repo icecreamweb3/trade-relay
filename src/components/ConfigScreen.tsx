@@ -51,6 +51,7 @@ export function ConfigScreen() {
   const setAutoBreakevenParameters = useAutoBreakevenSettingsStore((state) => state.setParameters)
   const [triggerRMultiple, setTriggerRMultiple] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerRMultiple))
   const [minimumProfitPercent, setMinimumProfitPercent] = useState(String(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.minimumProfitPercent))
+  const [triggerOnce, setTriggerOnce] = useState(DEFAULT_AUTO_BREAKEVEN_PARAMETERS.triggerOnce)
   const autoTakeProfitParameters = useAutoTakeProfitSettingsStore((state) => (
     username
       ? state.byUsername[username] ?? DEFAULT_AUTO_TAKE_PROFIT_PARAMETERS
@@ -95,6 +96,7 @@ export function ConfigScreen() {
     if (activeCategory !== 'riskProtection') return
     setTriggerRMultiple(String(autoBreakevenParameters.triggerRMultiple))
     setMinimumProfitPercent(String(autoBreakevenParameters.minimumProfitPercent))
+    setTriggerOnce(autoBreakevenParameters.triggerOnce)
     setMinimumTakeProfitPoints(String(autoTakeProfitParameters.minimumProfitPoints))
     setTradeWindowMinutes(String(riskWarningParameters.tradeWindowMinutes))
     setTradeLimit(String(riskWarningParameters.tradeLimit))
@@ -248,6 +250,7 @@ export function ConfigScreen() {
     setAutoBreakevenParameters(username, {
       triggerRMultiple: nextTriggerRMultiple,
       minimumProfitPercent: nextMinimumProfitPercent,
+      triggerOnce,
     })
     showToast('success', t('config.riskProtection.saved'))
   }
@@ -572,6 +575,34 @@ export function ConfigScreen() {
                   </div>
                   <p className="mt-1 text-xs text-[#697386]">{t('config.riskProtection.minimumProfitPercentDescription')}</p>
                 </Field>
+                <div className="rounded border border-[#2d3542] bg-[#15191f] px-3 py-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm text-[#c5ccd8]">{t('config.riskProtection.triggerMode')}</div>
+                      <p className="mt-1 text-xs text-[#697386]">
+                        {t(triggerOnce
+                          ? 'config.riskProtection.triggerModeOnceDescription'
+                          : 'config.riskProtection.triggerModeAlwaysDescription')}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={!triggerOnce}
+                      onClick={() => setTriggerOnce(value => !value)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border transition-colors ${triggerOnce ? 'border-[#69717e] bg-[#303640]' : 'border-[#0ecb81] bg-[#0b6b4a]'}`}
+                      title={t(triggerOnce
+                        ? 'config.riskProtection.triggerModeOnce'
+                        : 'config.riskProtection.triggerModeAlways')}
+                    >
+                      <span className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-white shadow transition-all ${triggerOnce ? 'left-0.5' : 'left-[21px]'}`} />
+                    </button>
+                  </div>
+                  <div className="mt-2 flex justify-between text-[11px]">
+                    <span className={triggerOnce ? 'text-[#d6dbe4]' : 'text-[#697386]'}>{t('config.riskProtection.triggerModeOnce')}</span>
+                    <span className={!triggerOnce ? 'text-[#8ee8c2]' : 'text-[#697386]'}>{t('config.riskProtection.triggerModeAlways')}</span>
+                  </div>
+                </div>
                 <div className="rounded border border-[#2d3542] bg-[#15191f] px-3 py-2.5 text-sm text-[#b7c0ce]">
                   <div>
                     <span className="text-[#858f9f]">{t('config.riskProtection.formula')}:</span>

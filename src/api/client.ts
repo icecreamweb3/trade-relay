@@ -67,6 +67,7 @@ interface ApiPosition {
   sl_price?: number | null
   planned_stop_price?: number | null
   initial_risk_usdc?: number | null
+  auto_breakeven_triggered_at?: string | null
   live_mfe_usdc: number
   live_mae_usdc: number
   live_mfe_at?: string | null
@@ -611,6 +612,7 @@ export const api = {
     slPrice: number | null,
     tpOrderType?: 'MARKET' | 'LIMIT',
     updateTakeProfit = true,
+    autoBreakeven = false,
   ): Promise<ApiResult> {
     return request<ApiResult>('POST', `/api/positions/${positionId}/tpsl`, {
       body: {
@@ -618,6 +620,7 @@ export const api = {
         sl_price: slPrice,
         tp_order_type: tpOrderType,
         update_take_profit: updateTakeProfit,
+        auto_breakeven: autoBreakeven,
       },
     })
   },

@@ -4798,6 +4798,97 @@ def test_stop_only_tpsl_update_is_idempotent_when_active_stop_is_already_protect
     assert mark_price_fetches == []
 
 
+def test_auto_breakeven_does_not_run_again_after_position_cycle_was_triggered(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 6817,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "position_mode": "DUAL",
+        "quantity": 0.005,
+        "avg_entry_price": 82000.0,
+        "planned_stop_price": 81500.0,
+        "initial_risk_usdc": 2.5,
+        "auto_breakeven_triggered_at": "2026-10-16 01:02:03.000",
+    }
+    downstream_calls = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "query_orders",
+        lambda **kwargs: downstream_calls.append("query_orders") or [],
+    )
+    monkeypatch.setattr(
+        positions_router,
+        "_fetch_current_trigger_price",
+        lambda *args: downstream_calls.append("fetch_price") or 83000.0,
+    )
+    monkeypatch.setattr(
+        positions_router,
+        "place_tp_sl_orders",
+        lambda **kwargs: downstream_calls.append("place") or [],
+    )
+
+    result = positions_router.set_position_tpsl(
+        6817,
+        positions_router.TpSlIn(
+            sl_price=82082.0,
+            update_take_profit=False,
+            auto_breakeven=True,
+        ),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    assert result["unchanged"] is True
+    assert result["auto_breakeven_triggered"] is True
+    assert downstream_calls == []
+
+
+def test_auto_breakeven_marks_position_cycle_after_success(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 6818,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "position_mode": "DUAL",
+        "quantity": 0.005,
+        "avg_entry_price": 82000.0,
+        "planned_stop_price": 81500.0,
+        "initial_risk_usdc": 2.5,
+        "auto_breakeven_triggered_at": None,
+    }
+    marked = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(positions_router.db_module, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(positions_router, "_fetch_current_trigger_price", lambda *args: 83000.0)
+    monkeypatch.setattr(positions_router, "place_tp_sl_orders", lambda **kwargs: [])
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "mark_position_auto_breakeven_triggered",
+        lambda position_id: marked.append(position_id) or True,
+    )
+    monkeypatch.setattr(positions_router, "_clear_positions_cache", lambda user_id: None)
+
+    result = positions_router.set_position_tpsl(
+        6818,
+        positions_router.TpSlIn(
+            sl_price=82082.0,
+            update_take_profit=False,
+            auto_breakeven=True,
+        ),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    assert result["sl_price"] == 82082.0
+    assert marked == [6818]
+
+
 def test_initialize_position_risk_atomically_replaces_orphan_amount(monkeypatch):
     from trade_relay import database as db_module
 

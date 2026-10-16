@@ -36,6 +36,7 @@ interface Position {
   leverage: number; margin_type: string; margin: number | null
   tp_price?: number | null; sl_price?: number | null
   planned_stop_price?: number | null; initial_risk_usdc?: number | null
+  auto_breakeven_triggered_at?: string | null
   live_mfe_usdc?: number; live_mae_usdc?: number
   live_mfe_at?: string | null; live_mae_at?: string | null
 }
@@ -507,6 +508,7 @@ export function PositionsPanel({
     if (!isActive || !isAuthenticated || !autoBreakevenParametersLoaded) return
     for (const position of positions) {
       if (!autoBreakevenEnabled[position.id] || position.status !== 'OPEN') continue
+      if (autoBreakevenParameters.triggerOnce && position.auto_breakeven_triggered_at) continue
       const initialRisk = position.initial_risk_usdc
       const mfe = positionExcursions[position.id]?.mfe ?? position.live_mfe_usdc ?? 0
       const targetStop = calculateAutoBreakevenStop(position)
@@ -526,7 +528,8 @@ export function PositionsPanel({
         autoBreakevenConfirmedStops[position.id],
       )
       const alreadyProtected = isStopAtOrBeyondTarget(position.side, existingStop, targetStop)
-      if (alreadyProtected || autoBreakevenInFlightRef.current.has(position.id)) continue
+      if (alreadyProtected && !autoBreakevenParameters.triggerOnce) continue
+      if (autoBreakevenInFlightRef.current.has(position.id)) continue
       if ((autoBreakevenRetryAfterRef.current.get(position.id) ?? 0) > Date.now()) continue
 
       const rowMarkPrice = getPositionMarkPrice(position, positionMarkPrices, activeSymbol, positionReferencePrice)
@@ -534,18 +537,33 @@ export function PositionsPanel({
         (position.side === 'LONG' && rowMarkPrice >= triggerPrice)
         || (position.side === 'SHORT' && rowMarkPrice <= triggerPrice)
       )
-      if (!hasFullRiskBuffer) continue
+      // Older versions did not persist the one-shot state. If their active stop
+      // is already protected, this request only records the trigger server-side.
+      if (!alreadyProtected && !hasFullRiskBuffer) continue
 
       autoBreakevenInFlightRef.current.add(position.id)
       setAutoBreakevenMoving((current) => ({ ...current, [position.id]: true }))
       // Moving the stop must not replace, resurrect, or change the type of the
       // existing take-profit order. In particular, a 2R TP remains a basic
       // LIMIT order instead of being recreated as TAKE_PROFIT_MARKET.
-      void api.setPositionTpSl(position.id, null, targetStop, undefined, false)
+      void api.setPositionTpSl(
+        position.id,
+        null,
+        targetStop,
+        undefined,
+        false,
+        autoBreakevenParameters.triggerOnce,
+      )
         .then((result) => {
           const savedStop = typeof result.sl_price === 'number' ? result.sl_price : targetStop
           setAutoBreakevenConfirmedStops((current) => ({ ...current, [position.id]: savedStop }))
-          setPositions((current) => current.map((item) => item.id === position.id ? { ...item, sl_price: savedStop } : item))
+          setPositions((current) => current.map((item) => item.id === position.id ? {
+            ...item,
+            sl_price: savedStop,
+            auto_breakeven_triggered_at: autoBreakevenParameters.triggerOnce
+              ? item.auto_breakeven_triggered_at ?? new Date().toISOString()
+              : item.auto_breakeven_triggered_at,
+          } : item))
           autoBreakevenRetryAfterRef.current.delete(position.id)
           if (result.unchanged !== true) {
             showToast('success', t('pos.autoBreakeven.success', { price: savedStop.toFixed(2) }))
@@ -1039,6 +1057,8 @@ export function PositionsPanel({
                         )
                         const protectedAtTarget = targetStop != null
                           && isStopAtOrBeyondTarget(p.side, effectiveStop, targetStop)
+                        const protectionTriggered = autoBreakevenParameters.triggerOnce
+                          && Boolean(p.auto_breakeven_triggered_at)
                         const moving = Boolean(autoBreakevenMoving[p.id])
                         const enabled = Boolean(autoBreakevenEnabled[p.id])
                         return <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
@@ -1052,12 +1072,12 @@ export function PositionsPanel({
                               toggleAutoBreakeven(p.id, enabled)
                             }}
                             className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${enabled ? 'border-[#0ecb81] bg-[#0b6b4a]' : 'border-[#69717e] bg-[#303640]'}`}
-                            title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : autoBreakevenHint}
+                            title={p.initial_risk_usdc == null || p.initial_risk_usdc <= 0 ? t('pos.autoBreakeven.noRisk') : protectionTriggered ? t('pos.autoBreakeven.triggered') : protectedAtTarget ? t('pos.autoBreakeven.protected') : moving ? t('pos.autoBreakeven.moving') : autoBreakevenHint}
                           >
                             <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all ${enabled ? 'left-[18px]' : 'left-0.5'}`} />
                           </button>
-                          <span className={`text-[10px] ${protectedAtTarget ? 'text-[#0ecb81]' : enabled ? 'text-[#8ee8c2]' : 'text-[#8b94a5]'}`}>
-                            {moving ? t('pos.autoBreakeven.movingShort') : protectedAtTarget ? t('pos.autoBreakeven.protectedShort') : enabled ? t('common.on') : t('common.off')}
+                          <span className={`text-[10px] ${protectionTriggered || protectedAtTarget ? 'text-[#0ecb81]' : enabled ? 'text-[#8ee8c2]' : 'text-[#8b94a5]'}`}>
+                            {moving ? t('pos.autoBreakeven.movingShort') : protectionTriggered ? t('pos.autoBreakeven.triggeredShort') : protectedAtTarget ? t('pos.autoBreakeven.protectedShort') : enabled ? t('common.on') : t('common.off')}
                           </span>
                         </div>
                       })()}

@@ -83,6 +83,7 @@ CREATE TABLE positions (
     opened_at       DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '本轮持仓开始时间（UTC）',
     planned_stop_price DECIMAL(30,10) DEFAULT NULL COMMENT '本轮持仓初始计划止损价',
     initial_risk_usdc DECIMAL(30,10) DEFAULT NULL COMMENT '初始风险 1R（USDC，含开仓手续费）',
+    auto_breakeven_triggered_at DATETIME(3) DEFAULT NULL COMMENT '本轮持仓1R自动保护首次成功触发时间（UTC）',
     live_mfe_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮盈（USDC）',
     live_mae_usdc   DECIMAL(30,10)  NOT NULL DEFAULT 0 COMMENT '持仓期间实时采样最大浮亏绝对值（USDC）',
     live_mfe_at     DATETIME(3)     DEFAULT NULL COMMENT '实时最大浮盈发生时间（UTC）',
