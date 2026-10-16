@@ -51,6 +51,24 @@ bool showOpeningRange = input.bool(
      group = GROUP_DISPLAY
 )
 
+int horizontalBorderTransparency = input.int(
+     0,
+     "Box 横向边框透明度",
+     minval = 0,
+     maxval = 100,
+     tooltip = "控制黄色区间上、下边框及其向右延伸线的透明度；0 为不透明，100 为完全透明。",
+     group = GROUP_DISPLAY
+)
+
+int verticalBorderTransparency = input.int(
+     0,
+     "Box 竖向边框透明度",
+     minval = 0,
+     maxval = 100,
+     tooltip = "控制黄色区间左、右边框的透明度；0 为不透明，100 为完全透明。",
+     group = GROUP_DISPLAY
+)
+
 bool showUpperTargets = input.bool(
      false,
      "显示上方 1×/2× TR",
@@ -269,20 +287,43 @@ if barstate.islast
             color rangeColor = color.rgb(245, 158, 11)
             color upperColor = color.rgb(239, 107, 127)
             color lowerColor = color.rgb(75, 155, 216)
+            color horizontalBorderColor = color.new(rangeColor, horizontalBorderTransparency)
+            color verticalBorderColor = color.new(rangeColor, verticalBorderTransparency)
 
             if showOpeningRange and hasHorizontalSpace
                 // 完整早盘矩形使用最终高低点，不随盘中高点形成阶梯或曲线。
+                // 原生 Box 边框无法分别设置横向和竖向透明度，因此使用独立 line 绘制四边。
                 box openingBox = box.new(
                      left = selectedBoxStart,
                      top = selectedHigh,
                      right = selectedBoxEnd,
                      bottom = selectedLow,
                      xloc = xloc.bar_time,
-                     border_color = rangeColor,
-                     border_width = 1,
+                     border_color = na,
                      bgcolor = color.new(rangeColor, 82)
                 )
                 array.push(drawnBoxes, openingBox)
+
+                line leftBorderLine = line.new(
+                     x1 = selectedBoxStart,
+                     y1 = selectedHigh,
+                     x2 = selectedBoxStart,
+                     y2 = selectedLow,
+                     xloc = xloc.bar_time,
+                     color = verticalBorderColor,
+                     width = 1
+                )
+                line rightBorderLine = line.new(
+                     x1 = selectedBoxEnd,
+                     y1 = selectedHigh,
+                     x2 = selectedBoxEnd,
+                     y2 = selectedLow,
+                     xloc = xloc.bar_time,
+                     color = verticalBorderColor,
+                     width = 1
+                )
+                array.push(drawnLines, leftBorderLine)
+                array.push(drawnLines, rightBorderLine)
 
                 if canExtend
                     box continuationBox = box.new(
@@ -303,7 +344,7 @@ if barstate.islast
                      x2 = segmentRight,
                      y2 = selectedHigh,
                      xloc = xloc.bar_time,
-                     color = rangeColor,
+                     color = horizontalBorderColor,
                      width = 1
                 )
                 line lowLine = line.new(
@@ -312,7 +353,7 @@ if barstate.islast
                      x2 = segmentRight,
                      y2 = selectedLow,
                      xloc = xloc.bar_time,
-                     color = rangeColor,
+                     color = horizontalBorderColor,
                      width = 1
                 )
                 array.push(drawnLines, highLine)
