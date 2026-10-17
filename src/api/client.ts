@@ -681,6 +681,7 @@ export const api = {
     symbol?: string
     side?: 'LONG' | 'SHORT'
     setup_name?: string
+    pnl_result?: 'PROFIT' | 'LOSS'
     start_time?: string
     end_time?: string
   }): Promise<ApiPositionRecord[]> {

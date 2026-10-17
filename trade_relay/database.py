@@ -5291,6 +5291,7 @@ def query_position_records(
     symbol: Optional[str] = None,
     side: Optional[str] = None,
     setup_name: Optional[str] = None,
+    pnl_result: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
 ) -> list:
@@ -5376,6 +5377,11 @@ def query_position_records(
     if normalized_setup_name:
         sql += " AND UPPER(TRIM(pr.setup_name)) = %s"
         params.append(normalized_setup_name)
+    normalized_pnl_result = str(pnl_result or "").strip().upper()
+    if normalized_pnl_result == "PROFIT":
+        sql += " AND f.realized_pnl > 0"
+    elif normalized_pnl_result == "LOSS":
+        sql += " AND f.realized_pnl < 0"
     if start_time:
         sql += " AND COALESCE(f.close_time, f.updated_at, f.created_at) >= %s"
         params.append(start_time)

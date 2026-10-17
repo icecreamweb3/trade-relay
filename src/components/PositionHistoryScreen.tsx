@@ -17,6 +17,7 @@ interface PositionHistoryFilters {
   symbol: string
   side: '' | 'LONG' | 'SHORT'
   setupName: string
+  pnlResult: '' | 'PROFIT' | 'LOSS'
   startTime: string
   endTime: string
 }
@@ -31,6 +32,7 @@ const INITIAL_FILTERS: PositionHistoryFilters = {
   symbol: '',
   side: '',
   setupName: '',
+  pnlResult: '',
   startTime: '',
   endTime: '',
 }
@@ -504,7 +506,7 @@ export function PositionHistoryScreen() {
             <option value="SHORT">{t('pos.short')}</option>
           </select>
         </FilterField>
-        <FilterField label={t('review.setupName')} className="w-[260px]">
+        <FilterField label={t('review.setupName')} className="w-[240px]">
           <select
             value={filters.setupName}
             onChange={(event) => setFilters((current) => ({ ...current, setupName: event.target.value }))}
@@ -514,6 +516,20 @@ export function PositionHistoryScreen() {
             {REVIEW_SETUP_OPTIONS.map((value) => (
               <option key={value} value={value}>{t(`review.setup.${value}`)}</option>
             ))}
+          </select>
+        </FilterField>
+        <FilterField label={t('pos.historyFilter.pnlResult')} className="w-[100px]">
+          <select
+            value={filters.pnlResult}
+            onChange={(event) => setFilters((current) => ({
+              ...current,
+              pnlResult: event.target.value as PositionHistoryFilters['pnlResult'],
+            }))}
+            className={INPUT_CLS}
+          >
+            <option value="">{t('pos.historyFilter.allPnlResults')}</option>
+            <option value="PROFIT">{t('review.pnl.profit')}</option>
+            <option value="LOSS">{t('review.pnl.loss')}</option>
           </select>
         </FilterField>
         <FilterField label={t('log.filter.startTime')} className="w-[220px]">
@@ -672,6 +688,7 @@ function buildQuery(filters: PositionHistoryFilters, limit: number) {
     symbol: filters.symbol.trim() || undefined,
     side: filters.side || undefined,
     setup_name: filters.setupName || undefined,
+    pnl_result: filters.pnlResult || undefined,
     start_time: toBackendDateTime(filters.startTime),
     end_time: toBackendDateTime(filters.endTime),
   }

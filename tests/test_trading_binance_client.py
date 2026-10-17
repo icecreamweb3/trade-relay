@@ -3719,7 +3719,12 @@ def test_get_position_history_orders_by_latest_updated_at(monkeypatch):
     ]
 
 
-def test_query_position_records_exports_closed_position_cycles(monkeypatch):
+@pytest.mark.parametrize(("pnl_result", "pnl_clause"), [
+    (" profit ", "f.realized_pnl > 0"),
+    ("LOSS", "f.realized_pnl < 0"),
+    (None, None),
+])
+def test_query_position_records_exports_closed_position_cycles(monkeypatch, pnl_result, pnl_clause):
     from trade_relay import database as db_module
 
     queries = []
@@ -3753,6 +3758,7 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
         symbol="btc",
         side="SHORT",
         setup_name=" other ",
+        pnl_result=pnl_result,
         start_time="2026-09-01 00:00:00",
         end_time="2026-09-07 23:59:59",
     )
@@ -3785,6 +3791,11 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "UPPER(f.symbol) LIKE %s" in sql
     assert "UPPER(f.side) = %s" in sql
     assert "UPPER(TRIM(pr.setup_name)) = %s" in sql
+    if pnl_clause:
+        assert pnl_clause in sql
+    else:
+        assert "f.realized_pnl > 0" not in sql
+        assert "f.realized_pnl < 0" not in sql
     assert "ORDER BY COALESCE(f.close_time, f.updated_at, f.created_at) DESC, f.id DESC LIMIT %s OFFSET %s" in sql
     assert params == [
         5,

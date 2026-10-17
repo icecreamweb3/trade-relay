@@ -1153,6 +1153,7 @@ def get_position_records(
     symbol: Optional[str] = None,
     side: Optional[str] = Query(None, pattern="^(LONG|SHORT)$"),
     setup_name: Optional[str] = Query(None, max_length=255),
+    pnl_result: Optional[str] = Query(None, pattern="^(PROFIT|LOSS)$"),
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     user: dict = Depends(get_current_user),
@@ -1166,6 +1167,7 @@ def get_position_records(
         symbol=symbol,
         side=side,
         setup_name=setup_name,
+        pnl_result=pnl_result,
         start_time=start_time,
         end_time=end_time,
     )

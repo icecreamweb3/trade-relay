@@ -102,6 +102,7 @@ def test_position_records_expose_saved_review_marker(monkeypatch):
         symbol=None,
         side=None,
         setup_name="OTHER",
+        pnl_result="PROFIT",
         start_time=None,
         end_time=None,
         user={"sub": "5", "username": "Will", "role": "user"},
@@ -110,6 +111,7 @@ def test_position_records_expose_saved_review_marker(monkeypatch):
     assert result[0].position_id == 41
     assert result[0].reviewed is True
     assert captured["setup_name"] == "OTHER"
+    assert captured["pnl_result"] == "PROFIT"
 
 
 def test_position_review_is_loaded_for_position_owner(monkeypatch):
