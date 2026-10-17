@@ -283,7 +283,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
           : ({ left: floating.position.x, top: floating.position.y, WebkitAppRegion: 'no-drag' } as React.CSSProperties)}
         className={standalone
           ? 'fixed inset-0 flex h-screen w-screen flex-col overflow-hidden bg-[#101318]'
-          : 'fixed z-[200] flex h-[93.6vh] min-h-[672px] max-h-[96vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]'}
+          : 'fixed z-[200] flex h-[calc(93.6vh_+_10px)] min-h-[672px] max-h-[96vh] w-[88vw] min-w-[620px] max-w-[1500px] resize flex-col overflow-hidden rounded-lg border border-[#4a5361] bg-[#101318] shadow-[0_10px_40px_rgba(0,0,0,0.75)]'}
       >
         <header
           onMouseDown={standalone ? undefined : floating.onMouseDown}
@@ -689,7 +689,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
   const label = (key: string, tipKey: string, control: React.ReactNode, layoutClass = 'col-span-3', labelSuffix?: React.ReactNode) => <label className={`min-w-0 ${layoutClass}`}><span className="mb-1 flex items-center gap-1 text-[11px] text-[#8f99a8]">{t(key)}<span tabIndex={0} role="note" aria-label={t(tipKey)} title={t(tipKey)} className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-[#657083] text-[9px] font-semibold leading-none text-[#9da7b6] outline-none hover:border-[#2f7cf6] hover:text-[#69a4ff] focus:border-[#2f7cf6] focus:text-[#69a4ff]">?</span>{labelSuffix}</span>{control}</label>
 
   return (
-    <section className="h-[410px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
+    <section className="h-[420px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><h3 className="text-xs font-semibold text-[#dce2ea]">{t('review.title')}</h3><span className="text-[10px] text-[#697382]">{positionId != null ? `Position #${positionId}` : `Record #${recordId}`}</span></div>
         <div className="flex items-center gap-2">
