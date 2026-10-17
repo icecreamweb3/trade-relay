@@ -3776,6 +3776,7 @@ def test_query_position_records_exports_closed_position_cycles(monkeypatch):
     assert "pr.signal_candle_open_time AS review_signal_candle_open_time" in sql
     assert "pr.signal_candle_number AS review_signal_candle_number" in sql
     assert "pr.final_exit_reason AS review_final_exit_reason" in sql
+    assert "pr.mistake_reflection AS review_mistake_reflection" in sql
     assert "LEFT JOIN position_reviews pr" in sql
     assert "pr.position_history_final_id = f.id AND pr.user_id = f.user_id" in sql
     assert "f.position_id IS NULL" in sql

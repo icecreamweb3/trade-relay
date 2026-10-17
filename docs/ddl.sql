@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS position_reviews (
     first_target           VARCHAR(255) DEFAULT NULL COMMENT '第一目标',
     structural_target      VARCHAR(255) DEFAULT NULL COMMENT '结构目标',
     final_exit_reason      TEXT         COMMENT '最终退出理由',
+    mistake_reflection     TEXT         COMMENT '错误反思',
     discipline_trigger     VARCHAR(16)  DEFAULT NULL COMMENT '冷静期/停手机制触发状态',
     created_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

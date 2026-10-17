@@ -726,6 +726,7 @@ function buildExportRow(
     [t('review.export.firstTarget')]: row.review_first_target ?? '',
     [t('review.export.structuralTarget')]: row.review_structural_target ?? '',
     [t('review.export.exitReason')]: row.review_final_exit_reason ?? '',
+    [t('review.export.mistakeReflection')]: row.review_mistake_reflection ?? '',
     [t('review.export.discipline')]: formatReviewDiscipline(row.review_discipline_trigger, t),
   }
 }

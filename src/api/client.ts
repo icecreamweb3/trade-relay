@@ -271,6 +271,7 @@ export interface ApiPositionRecord {
   review_first_target?: string | null
   review_structural_target?: string | null
   review_final_exit_reason?: string | null
+  review_mistake_reflection?: string | null
   review_discipline_trigger?: 'NONE' | 'COOLDOWN' | 'STOP_TRADING' | 'BOTH' | null
 }
 
@@ -300,6 +301,7 @@ export interface ApiPositionReview {
   first_target: string | null
   structural_target: string | null
   final_exit_reason: string | null
+  mistake_reflection: string | null
   discipline_trigger: 'NONE' | 'COOLDOWN' | 'STOP_TRADING' | 'BOTH' | null
   created_at: string
   updated_at: string

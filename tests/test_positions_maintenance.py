@@ -131,6 +131,7 @@ def test_position_review_is_loaded_for_position_owner(monkeypatch):
             "signal_candle_open_time": datetime(2026, 9, 11, 8, 50),
             "signal_candle_number": 699,
             "is_planned_trade": 1,
+            "mistake_reflection": "Entered before confirmation",
             "created_at": datetime(2026, 9, 12, 8, 0),
             "updated_at": datetime(2026, 9, 12, 8, 1),
         },
@@ -145,6 +146,7 @@ def test_position_review_is_loaded_for_position_owner(monkeypatch):
     assert result.user_id == 5
     assert result.market_state == "TREND"
     assert result.is_planned_trade is True
+    assert result.mistake_reflection == "Entered before confirmation"
     assert result.signal_candle_open_time == "2026-09-11T08:50:00Z"
 
 
@@ -307,6 +309,7 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
         opportunity_grade="A",
         estimated_win_probability=55,
         is_planned_trade=True,
+        mistake_reflection="  Wait for confirmation next time  ",
     )
 
     result = positions_router.save_position_review(
@@ -320,6 +323,7 @@ def test_admin_saves_review_under_position_owner(monkeypatch):
     assert calls[0][2]["setup_name"] == "RANGE_BREAKOUT_EXTREME_CLOSE"
     assert calls[0][2]["setup_variant"] == "STRONG_TREND_CONTINUATION"
     assert calls[0][2]["estimated_win_probability"] == 55
+    assert calls[0][2]["mistake_reflection"] == "Wait for confirmation next time"
     assert calls[0][2]["planned_stop_price"] == 95
 
 

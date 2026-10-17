@@ -117,6 +117,7 @@ class PositionRecordOut(BaseModel):
     review_first_target: Optional[str] = None
     review_structural_target: Optional[str] = None
     review_final_exit_reason: Optional[str] = None
+    review_mistake_reflection: Optional[str] = None
     review_discipline_trigger: Optional[str] = None
 
 
@@ -142,6 +143,7 @@ class PositionReviewIn(BaseModel):
     first_target: Optional[str] = Field(None, max_length=255)
     structural_target: Optional[str] = Field(None, max_length=255)
     final_exit_reason: Optional[str] = Field(None, max_length=5000)
+    mistake_reflection: Optional[str] = Field(None, max_length=5000)
     discipline_trigger: Optional[Literal["NONE", "COOLDOWN", "STOP_TRADING", "BOTH"]] = None
 
 
@@ -1219,6 +1221,7 @@ def get_position_records(
             review_first_target=row.get("review_first_target"),
             review_structural_target=row.get("review_structural_target"),
             review_final_exit_reason=row.get("review_final_exit_reason"),
+            review_mistake_reflection=row.get("review_mistake_reflection"),
             review_discipline_trigger=row.get("review_discipline_trigger"),
         )
         for row in rows
@@ -1275,6 +1278,7 @@ def _position_review_out(row: dict) -> PositionReviewOut:
         first_target=row.get("first_target"),
         structural_target=row.get("structural_target"),
         final_exit_reason=row.get("final_exit_reason"),
+        mistake_reflection=row.get("mistake_reflection"),
         discipline_trigger=row.get("discipline_trigger"),
         created_at=serialize_utc_timestamp_required(row.get("created_at")),
         updated_at=serialize_utc_timestamp_required(row.get("updated_at")),

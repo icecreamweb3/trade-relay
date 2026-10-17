@@ -1784,6 +1784,7 @@ def init_db() -> None:
                     first_target           VARCHAR(255) DEFAULT NULL COMMENT '第一目标',
                     structural_target      VARCHAR(255) DEFAULT NULL COMMENT '结构目标',
                     final_exit_reason      TEXT         COMMENT '最终退出理由',
+                    mistake_reflection     TEXT         COMMENT '错误反思',
                     discipline_trigger     VARCHAR(16)  DEFAULT NULL COMMENT '冷静期/停手机制触发状态',
                     created_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
                     updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
@@ -1806,6 +1807,7 @@ def init_db() -> None:
                 ("planned_reward_risk", "ALTER TABLE position_reviews ADD COLUMN planned_reward_risk DECIMAL(20,10) DEFAULT NULL COMMENT '计划盈亏比' AFTER first_target_price"),
                 ("expected_value_r", "ALTER TABLE position_reviews ADD COLUMN expected_value_r DECIMAL(20,10) DEFAULT NULL COMMENT '交易期望值（R）' AFTER planned_reward_risk"),
                 ("opportunity_score", "ALTER TABLE position_reviews ADD COLUMN opportunity_score DECIMAL(6,2) DEFAULT NULL COMMENT '自动量化分数 0-100' AFTER expected_value_r"),
+                ("mistake_reflection", "ALTER TABLE position_reviews ADD COLUMN mistake_reflection TEXT COMMENT '错误反思' AFTER final_exit_reason"),
             ]:
                 try:
                     cur.execute(_ddl)
@@ -5139,7 +5141,7 @@ _POSITION_REVIEW_FIELDS = (
     "planned_reward_risk", "expected_value_r", "opportunity_score",
     "is_planned_trade", "first_entry_pnl_state",
     "planned_stop_price", "actual_stop_fill_price", "first_target",
-    "structural_target", "final_exit_reason", "discipline_trigger",
+    "structural_target", "final_exit_reason", "mistake_reflection", "discipline_trigger",
 )
 
 
@@ -5330,6 +5332,7 @@ def query_position_records(
                     pr.first_target AS review_first_target,
                     pr.structural_target AS review_structural_target,
                     pr.final_exit_reason AS review_final_exit_reason,
+                    pr.mistake_reflection AS review_mistake_reflection,
                     pr.discipline_trigger AS review_discipline_trigger,
                     f.created_at, f.updated_at
                FROM position_history_final f
