@@ -268,6 +268,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
   }, [onClose])
 
   const duration = formatDuration(position.endTime - position.startTime, locale)
+  const positionMeta = `${position.username} · ${formatDateTime(position.startTime)} — ${position.isOpen ? t('log.chart.now') : formatDateTime(position.endTime)} · ${duration}`
   const sideLabel = position.positionSide === 'LONG' ? t('log.chart.long')
     : position.positionSide === 'SHORT' ? t('log.chart.short') : t('log.chart.unknownSide')
 
@@ -295,9 +296,6 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
               <h2 className="text-base font-semibold text-[#e6e9ef]">{position.symbol} · {t('log.chart.title')}</h2>
               <span className={`rounded px-2 py-0.5 text-xs font-semibold ${position.positionSide === 'SHORT' ? 'bg-[#f6465d]/15 text-[#f6465d]' : 'bg-[#0ecb81]/15 text-[#0ecb81]'}`}>{sideLabel}</span>
               {position.isOpen && <span className="rounded bg-[#f0b90b]/15 px-2 py-0.5 text-xs text-[#f0b90b]">{t('log.chart.openPosition')}</span>}
-            </div>
-            <div className="mt-1 truncate text-xs text-[#8b94a5]">
-              {position.username} · {formatDateTime(position.startTime)} — {position.isOpen ? t('log.chart.now') : formatDateTime(position.endTime)} · {duration}
             </div>
           </div>
           <button type="button" onClick={onClose} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} aria-label={t('common.close')} className="rounded p-1.5 text-[#9aa3b2] hover:bg-[#2b313b] hover:text-white"><X size={19} /></button>
@@ -375,7 +373,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
           </div>
         </div>
 
-        <div className="relative min-h-[280px] flex-1 p-3">
+        <div className="relative min-h-[200px] flex-1 p-3">
           {loading && <LoadingProgress progress={loadingProgress} label={t('log.chart.loading')} overlay />}
           {!loading && error && <div className="absolute inset-0 flex items-center justify-center text-sm text-[#f6465d]">{t('log.chart.failed')}</div>}
           {klines.length > 0 && <CandlestickChart
@@ -383,6 +381,7 @@ export function OrderKlineModal({ position, onClose, onReviewSaved, standalone =
             markers={position.markers.filter((marker) => marker.timestamp >= bounds.start && marker.timestamp <= bounds.end)}
             startTime={position.startTime}
             endTime={position.endTime}
+            positionMeta={positionMeta}
             locale={locale}
             showBarNumbers={showBarNumbers}
             openingRange={showOpeningRange ? openingRange : null}
@@ -686,11 +685,11 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
 
   const inputClass = 'h-8 w-full rounded border border-[#343b46] bg-[#151a21] px-2 text-xs text-[#dce2ea] outline-none focus:border-[#2f7cf6] disabled:opacity-50'
   const areaClass = `${inputClass} min-h-8 resize-y py-1.5`
-  const reflectionAreaClass = `${inputClass} h-11 min-h-11 resize-y py-2`
+  const reflectionAreaClass = `${inputClass} h-[66px] min-h-[66px] resize-y py-2 leading-4`
   const label = (key: string, tipKey: string, control: React.ReactNode, layoutClass = 'col-span-3', labelSuffix?: React.ReactNode) => <label className={`min-w-0 ${layoutClass}`}><span className="mb-1 flex items-center gap-1 text-[11px] text-[#8f99a8]">{t(key)}<span tabIndex={0} role="note" aria-label={t(tipKey)} title={t(tipKey)} className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-[#657083] text-[9px] font-semibold leading-none text-[#9da7b6] outline-none hover:border-[#2f7cf6] hover:text-[#69a4ff] focus:border-[#2f7cf6] focus:text-[#69a4ff]">?</span>{labelSuffix}</span>{control}</label>
 
   return (
-    <section className="max-h-[285px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
+    <section className="h-[410px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2"><h3 className="text-xs font-semibold text-[#dce2ea]">{t('review.title')}</h3><span className="text-[10px] text-[#697382]">{positionId != null ? `Position #${positionId}` : `Record #${recordId}`}</span></div>
         <div className="flex items-center gap-2">
@@ -973,6 +972,7 @@ function CandlestickChart({
   markers,
   startTime,
   endTime,
+  positionMeta,
   locale,
   showBarNumbers,
   openingRange,
@@ -986,6 +986,7 @@ function CandlestickChart({
   markers: PositionFillMarker[]
   startTime: number
   endTime: number
+  positionMeta: string
   locale: string
   showBarNumbers: boolean
   openingRange: OpeningRange | null
@@ -1038,8 +1039,9 @@ function CandlestickChart({
   const resetZoom = () => setVisibleRange({ start: 0, end: klines.length })
 
   const { width, height } = chartSize
-  const margin = { top: 48, right: 92, bottom: 54, left: 18 }
+  const margin = { top: 48, right: 92, bottom: 30, left: 18 }
   const volumeHeight = 80
+  const timeAxisLabelY = height - margin.bottom / 2
   const priceBottom = height - margin.bottom - volumeHeight - 28
   const plotWidth = width - margin.left - margin.right
   const priceHeight = priceBottom - margin.top
@@ -1109,6 +1111,9 @@ function CandlestickChart({
         <button type="button" onClick={resetZoom} title="Reset" className="rounded p-1 hover:bg-[#2b333e] hover:text-white"><RotateCcw size={14} /></button>
         <span className="border-l border-[#3b424d] px-1.5 text-[10px] text-[#818b9a]">{visibleCount}/{klines.length}</span>
       </div>
+      {!hoveredBar && <div className="pointer-events-none absolute right-3 top-3 z-10 flex h-[30px] max-w-[calc(100%_-_220px)] items-center truncate whitespace-nowrap bg-[#0d1014]/85 px-2 text-xs text-[#8b94a5]">
+        {positionMeta}
+      </div>}
       {hoveredBar && <div
         className="pointer-events-none absolute left-[220px] right-3 top-3 z-10 flex h-[30px] items-center gap-3 overflow-hidden whitespace-nowrap text-xs font-medium"
         aria-live="polite"
@@ -1224,7 +1229,7 @@ function CandlestickChart({
       </g>)}
       {timeTicks.map((time) => <g key={time}>
         <line x1={x(time)} x2={x(time)} y1={margin.top} y2={height - margin.bottom} stroke="#20262e" strokeWidth="1" />
-        <text x={x(time)} y={height - 18} textAnchor="middle" fill="#758091" fontSize="12">{formatAxisTime(time, locale)}</text>
+        <text x={x(time)} y={timeAxisLabelY} textAnchor="middle" dominantBaseline="middle" fill="#758091" fontSize="12">{formatAxisTime(time, locale)}</text>
       </g>)}
 
       {selectedSignalCandle?.interval === candleInterval && visibleKlines.some((bar) => bar.open_time === selectedSignalCandle.openTime) && (() => {
