@@ -687,7 +687,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
   const inputClass = 'h-8 w-full rounded border border-[#343b46] bg-[#151a21] px-2 text-xs text-[#dce2ea] outline-none focus:border-[#2f7cf6] disabled:opacity-50'
   const areaClass = `${inputClass} min-h-8 resize-y py-1.5`
   const reflectionAreaClass = `${inputClass} h-11 min-h-11 resize-y py-2`
-  const label = (key: string, tipKey: string, control: React.ReactNode, layoutClass = 'col-span-3') => <label className={`min-w-0 ${layoutClass}`}><span className="mb-1 flex items-center gap-1 text-[11px] text-[#8f99a8]">{t(key)}<span tabIndex={0} role="note" aria-label={t(tipKey)} title={t(tipKey)} className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-[#657083] text-[9px] font-semibold leading-none text-[#9da7b6] outline-none hover:border-[#2f7cf6] hover:text-[#69a4ff] focus:border-[#2f7cf6] focus:text-[#69a4ff]">?</span></span>{control}</label>
+  const label = (key: string, tipKey: string, control: React.ReactNode, layoutClass = 'col-span-3', labelSuffix?: React.ReactNode) => <label className={`min-w-0 ${layoutClass}`}><span className="mb-1 flex items-center gap-1 text-[11px] text-[#8f99a8]">{t(key)}<span tabIndex={0} role="note" aria-label={t(tipKey)} title={t(tipKey)} className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full border border-[#657083] text-[9px] font-semibold leading-none text-[#9da7b6] outline-none hover:border-[#2f7cf6] hover:text-[#69a4ff] focus:border-[#2f7cf6] focus:text-[#69a4ff]">?</span>{labelSuffix}</span>{control}</label>
 
   return (
     <section className="max-h-[285px] shrink-0 overflow-auto border-t border-[#2c323b] bg-[#11151b] px-4 py-3" aria-label={t('review.title')}>
@@ -751,7 +751,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
         </div>, 'col-span-2')}
         {label('review.firstTarget', 'review.tip.firstTarget', <input value={draft.first_target} onChange={(e) => update('first_target', e.target.value)} className={inputClass} maxLength={255} />)}
         {label('review.structuralTarget', 'review.tip.structuralTarget', <input value={draft.structural_target} onChange={(e) => update('structural_target', e.target.value)} className={inputClass} maxLength={255} />)}
-        {label('review.exitReason', 'review.tip.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />, 'col-span-4')}
+        {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null && <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div>}</div>, 'col-span-4', <span className="truncate text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</span>)}
         {label('review.entryRationale', 'review.tip.entryRationale', <textarea
           value={draft.entry_rationale}
           onChange={(e) => update('entry_rationale', e.target.value)}
@@ -760,7 +760,7 @@ function PositionReviewForm({ recordId, positionId, entryPrice, positionSide, pl
           className={validationError ? `${areaClass} border-[#f6465d] focus:border-[#f6465d]` : areaClass}
           maxLength={5000}
         />, 'col-span-6')}
-        {label('review.signalTrigger', 'review.tip.signalTrigger', <div><textarea value={draft.signal_candle_trigger} onChange={(e) => update('signal_candle_trigger', e.target.value)} className={areaClass} maxLength={5000} />{draft.signal_candle_interval && draft.signal_candle_open_time && draft.signal_candle_number != null ? <div className="mt-1 truncate text-[10px] text-[#69a4ff]">{draft.signal_candle_interval} · #{draft.signal_candle_number} · {formatStoredUtcDateTime(draft.signal_candle_open_time)}</div> : <div className="mt-1 text-[10px] text-[#7f8998]">{t('review.signalSelectHint')}</div>}</div>, 'col-span-6')}
+        {label('review.exitReason', 'review.tip.exitReason', <textarea value={draft.final_exit_reason} onChange={(e) => update('final_exit_reason', e.target.value)} className={areaClass} maxLength={5000} />, 'col-span-6')}
         {label('review.mistakeReflection', 'review.tip.mistakeReflection', <textarea value={draft.mistake_reflection} onChange={(e) => update('mistake_reflection', e.target.value)} className={reflectionAreaClass} maxLength={5000} />, 'col-span-12')}
       </div>
     </section>
