@@ -2,7 +2,7 @@
  * Trade Relay — Electron Main Process (Electron + React + BrowserView architecture)
  * Replaced Qt6 + TCP NDJSON bridge with standard Electron IPC.
  */
-const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, shell } = require('electron')
+const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, screen, shell } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const { execFile, exec } = require('child_process')
@@ -473,19 +473,41 @@ function createMainWindow() {
   })
 }
 
-function openOrderKlineWindow(payload) {
+function getOrderKlineWindowBounds(sourceWindow, requestedWidth, requestedHeight) {
+  const anchorWindow = sourceWindow && !sourceWindow.isDestroyed() ? sourceWindow : mainWindow
+  const display = anchorWindow && !anchorWindow.isDestroyed()
+    ? screen.getDisplayMatching(anchorWindow.getBounds())
+    : screen.getPrimaryDisplay()
+  const workArea = display.workArea
+  const topInset = 45
+  const width = Math.min(Math.round(requestedWidth), workArea.width)
+  const height = Math.min(Math.round(requestedHeight), workArea.height - topInset)
+  return {
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: workArea.y + topInset,
+    width,
+    height,
+  }
+}
+
+function openOrderKlineWindow(payload, sourceWindow) {
   orderKlinePayload = payload
   if (orderKlineWindow && !orderKlineWindow.isDestroyed()) {
-    orderKlineWindow.webContents.send('order-kline-payload', orderKlinePayload)
+    const currentBounds = orderKlineWindow.getBounds()
+    const wasMaximized = orderKlineWindow.isMaximized()
     if (orderKlineWindow.isMinimized()) orderKlineWindow.restore()
+    if (wasMaximized) orderKlineWindow.unmaximize()
+    orderKlineWindow.setBounds(getOrderKlineWindowBounds(sourceWindow, currentBounds.width, currentBounds.height))
+    if (wasMaximized) orderKlineWindow.maximize()
+    orderKlineWindow.webContents.send('order-kline-payload', orderKlinePayload)
     orderKlineWindow.show()
     orderKlineWindow.focus()
     return
   }
 
+  const initialBounds = getOrderKlineWindowBounds(sourceWindow, 1500, 1238)
   orderKlineWindow = new BrowserWindow({
-    width: 1500,
-    height: 1238,
+    ...initialBounds,
     minWidth: 760,
     minHeight: 576,
     show: false,
@@ -1956,11 +1978,11 @@ ipcMain.handle('maximize-window', () => {
   else mainWindow?.maximize()
 })
 ipcMain.handle('close-window', () => mainWindow?.close())
-ipcMain.handle('open-order-kline-window', (_event, payload) => {
+ipcMain.handle('open-order-kline-window', (event, payload) => {
   if (!payload || typeof payload !== 'object' || !String(payload.symbol || '').trim()) {
     throw new Error('Invalid order kline payload')
   }
-  openOrderKlineWindow(payload)
+  openOrderKlineWindow(payload, BrowserWindow.fromWebContents(event.sender))
   return { ok: true }
 })
 ipcMain.handle('get-order-kline-payload', () => orderKlinePayload)
