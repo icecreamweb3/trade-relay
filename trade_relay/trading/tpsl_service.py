@@ -76,12 +76,21 @@ def _replace_existing_take_profit_limit_orders(
     close_side: str,
     position_id: Optional[int],
 ) -> list[str]:
-    """Cancel only limit orders created as position take-profit orders."""
+    """Cancel active basic limit exits before replacing a position take-profit.
+
+    Automatic TP orders are stored as ``TAKE_PROFIT``, while a limit close
+    submitted from the order panel is stored as ``LIMIT`` with CLOSE/reduce-only
+    metadata.  Both reserve position quantity at Binance and must be removed
+    before a new full-position 2R take-profit can be accepted.
+    """
     errors: list[str] = []
-    for row in db.query_orders(user_id=user_id, status="NEW", limit=500):
-        if str(row.get("order_type") or "").upper() != "TAKE_PROFIT":
+    for row in db.get_active_orders(user_id=user_id):
+        if str(row.get("order_type") or "").upper() not in {"TAKE_PROFIT", "LIMIT"}:
             continue
-        if str(row.get("trade_direction") or "").upper() != "CLOSE":
+        if (
+            str(row.get("trade_direction") or "").upper() != "CLOSE"
+            and not bool(row.get("reduce_only"))
+        ):
             continue
         if str(row.get("symbol") or "").upper() != symbol.upper():
             continue

@@ -1900,6 +1900,7 @@ def test_place_tp_sl_orders_replaces_existing_stop_loss_order(monkeypatch):
     monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
     monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "get_active_orders", lambda **kwargs: [])
     monkeypatch.setattr(
         tpsl_service.db,
         "query_orders",
@@ -1959,6 +1960,7 @@ def test_place_tp_sl_orders_can_place_basic_take_profit_limit(monkeypatch):
     monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
     monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "get_active_orders", lambda **kwargs: [])
     monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
     monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
 
@@ -1983,6 +1985,89 @@ def test_place_tp_sl_orders_can_place_basic_take_profit_limit(monkeypatch):
     assert created_orders[0]["order_category"] == "Basic"
     assert created_orders[0]["binance_order_id"] == "4321"
     assert created_orders[1]["order_type"] == "STOP_MARKET"
+
+
+def test_two_r_take_profit_cancels_order_panel_limit_exit_before_placement(monkeypatch):
+    from trade_relay.trading import tpsl_service
+
+    events = []
+    status_updates = []
+    created_orders = []
+
+    class StubClient:
+        def __init__(self, api_key, secret_key, testnet):
+            pass
+
+        def cancel_order(self, symbol, order_id):
+            events.append(("cancel", symbol, order_id))
+            return {"status": "CANCELED"}
+
+        def place_take_profit_limit_order(self, symbol, side, stop_price, price, quantity, position_side):
+            events.append(("place", symbol, side, price, quantity, position_side))
+            return {"orderId": 4322, "clientOrderId": "replacement-two-r", "status": "NEW"}
+
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
+    monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(
+        tpsl_service.db,
+        "get_active_orders",
+        lambda **kwargs: [
+            {
+                "id": 9020,
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "trade_direction": "CLOSE",
+                "reduce_only": True,
+                "order_type": "LIMIT",
+                "position_id": 6815,
+                "exchange_order_id": "77236097399",
+                "status": "PARTIALLY_FILLED",
+            },
+            {
+                "id": 9021,
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "trade_direction": "OPEN",
+                "reduce_only": False,
+                "order_type": "LIMIT",
+                "position_id": None,
+                "exchange_order_id": "77236097400",
+                "status": "NEW",
+            },
+        ],
+    )
+    monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
+    monkeypatch.setattr(
+        tpsl_service.db,
+        "update_order_status",
+        lambda order_id, status, **kwargs: status_updates.append((order_id, status)) or True,
+    )
+    monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 100)
+
+    errors = tpsl_service.place_tp_sl_orders(
+        username="Will",
+        user_id=5,
+        symbol="BTCUSDC",
+        position_side="LONG",
+        quantity=0.01,
+        entry_price=85454.1,
+        tp_price=86262.3,
+        sl_price=None,
+        position_id=6815,
+        position_mode="DUAL",
+        current_price=85880.0,
+        tp_order_type="LIMIT",
+    )
+
+    assert errors == []
+    assert events == [
+        ("cancel", "BTCUSDC", "77236097399"),
+        ("place", "BTCUSDC", "SELL", 86262.3, 0.01, "LONG"),
+    ]
+    assert status_updates == [(9020, "CANCELED")]
+    assert [order["order_type"] for order in created_orders] == ["TAKE_PROFIT"]
 
 
 def test_place_tp_sl_orders_stop_only_preserves_existing_limit_take_profit(monkeypatch):
@@ -2128,6 +2213,7 @@ def test_place_tp_sl_orders_uses_close_all_orders_for_single_mode(monkeypatch):
     monkeypatch.setattr(tpsl_service.cfg, "get_api_secret", lambda username: "secret")
     monkeypatch.setattr(tpsl_service.cfg, "is_testnet", lambda username: False)
     monkeypatch.setattr(tpsl_service, "BinanceClient", StubClient)
+    monkeypatch.setattr(tpsl_service.db, "get_active_orders", lambda **kwargs: [])
     monkeypatch.setattr(tpsl_service.db, "query_orders", lambda **kwargs: [])
     monkeypatch.setattr(tpsl_service.db, "create_order", lambda **kwargs: created_orders.append(kwargs) or 101)
 
