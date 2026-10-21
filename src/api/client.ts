@@ -33,6 +33,19 @@ type QueryValue = string | number | boolean | null | undefined | Array<string | 
 
 type ApiResult = Record<string, unknown>
 
+export interface ApiOrderSubmission {
+  type: 'order_submission_result'
+  submission_id: string
+  status: 'QUEUED' | 'SUCCEEDED' | 'FAILED'
+  symbol: string
+  side: string
+  ok: boolean
+  message?: string
+  order_id?: number | null
+  pending_confirmation?: boolean
+  rebalanced_orders?: unknown[]
+}
+
 interface ApiUser {
   id: number
   username: string
@@ -527,6 +540,21 @@ export const api = {
     rebalance_close_orders?: boolean
   }): Promise<ApiResult> {
     return request<ApiResult>('POST', '/api/orders', { body: order })
+  },
+
+  async submitOrderAsync(order: {
+    symbol: string; side: string; order_type: string; quantity: number
+    price?: number; stop_price?: number; tp_price?: number; sl_price?: number
+    post_only?: boolean
+    leverage?: number
+    margin_type: string; position_direction: string; position_mode?: string
+    rebalance_close_orders?: boolean
+  }): Promise<ApiOrderSubmission> {
+    return request<ApiOrderSubmission>('POST', '/api/orders/async', { body: order })
+  },
+
+  async getOrderSubmission(submissionId: string): Promise<ApiOrderSubmission> {
+    return request<ApiOrderSubmission>('GET', `/api/orders/async/${encodeURIComponent(submissionId)}`)
   },
 
   async getOrders(params?: {

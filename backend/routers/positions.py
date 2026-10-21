@@ -1078,7 +1078,15 @@ async def positions_ws(websocket: WebSocket, token: Optional[str] = Query(defaul
                     username,
                     event,
                     summary_symbol,
-                    refresh_account_summary=bool(summary_symbol),
+                    # Submission completion is already authoritative and should
+                    # reach the UI immediately. A synchronous Binance account
+                    # refresh here would reintroduce the latency this event is
+                    # intended to remove; the following exchange update refreshes
+                    # the account snapshot through the normal path.
+                    refresh_account_summary=(
+                        bool(summary_symbol)
+                        and event.get("type") != "order_submission_result"
+                    ),
                 )
             )
     except (WebSocketDisconnect, Exception):

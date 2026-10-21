@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { api, getBackendWebSocketUrl } from '../api/client'
+import { api, getBackendWebSocketUrl, type ApiOrderSubmission } from '../api/client'
 import { getLatestTradePrice, useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { useToastStore } from '../store/toastStore'
@@ -74,9 +74,24 @@ interface LiveOrderSnapshot {
 interface PositionsWsMessage {
   type?: string
   event?: string
+  submission_id?: string
+  status?: ApiOrderSubmission['status']
+  ok?: boolean
+  message?: string
+  order_id?: number | null
+  pending_confirmation?: boolean
+  rebalanced_orders?: unknown[]
+  symbol?: string
+  side?: string
   positions?: PositionSnapshot[]
   open_orders?: LiveOrderSnapshot[]
   account_summary?: AccountSummary
+}
+
+interface PendingOrderSubmission {
+  sizeSnapshot: SubmittedSizeSnapshot
+  pollTimer?: ReturnType<typeof setTimeout>
+  pollAttempts: number
 }
 
 const QUOTE_ASSETS = ['USDT', 'USDC', 'FDUSD', 'BUSD', 'BTC', 'ETH'] as const
@@ -384,7 +399,109 @@ export function OrderFormWidget({
   const loadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const forceLoadAccountSummaryRef = useRef<(() => Promise<void>) | null>(null)
   const loadSymbolPositionsRef = useRef<(() => Promise<void>) | null>(null)
+  const pendingSubmissionsRef = useRef(new Map<string, PendingOrderSubmission>())
+  const earlySubmissionResultsRef = useRef(new Map<string, ApiOrderSubmission>())
+  const awaitingSubmissionResponseRef = useRef(false)
+  const submissionRequestInFlightRef = useRef(false)
+  const handleOrderSubmissionResultRef = useRef<(result: ApiOrderSubmission) => void>(() => {})
   const _accountFirstLoadDone = useRef(false)
+
+  const handleOrderSubmissionResult = async (result: ApiOrderSubmission) => {
+    if (result.status === 'QUEUED') return
+
+    const pending = pendingSubmissionsRef.current.get(result.submission_id)
+    if (!pending) {
+      // A mock or exceptionally fast exchange response may arrive over the WS
+      // before the HTTP 202 response has returned its submission id.
+      if (awaitingSubmissionResponseRef.current) {
+        earlySubmissionResultsRef.current.set(result.submission_id, result)
+      }
+      return
+    }
+
+    pendingSubmissionsRef.current.delete(result.submission_id)
+    if (pending.pollTimer) clearTimeout(pending.pollTimer)
+
+    if (result.status === 'FAILED' || !result.ok) {
+      const message = result.message || t('order.error.failed')
+      window.electronAPI?.logToMain?.('error', 'async order submission failed', {
+        submissionId: result.submission_id,
+        username: pending.sizeSnapshot.username ?? null,
+        symbol: result.symbol,
+        side: result.side,
+        message,
+      })
+      showToast('error', message, { duration: 8000 })
+      return
+    }
+
+    const rebalancedCount = Array.isArray(result.rebalanced_orders)
+      ? result.rebalanced_orders.length
+      : 0
+    if (result.pending_confirmation === true) {
+      showToast('info', result.message || t('order.success'), { duration: 8000 })
+    } else if (rebalancedCount > 0) {
+      showToast('success', t('order.success.rebalanced', { count: rebalancedCount }))
+    } else {
+      showToast('success', t('order.success'))
+    }
+
+    const sizeSnapshot = pending.sizeSnapshot
+    if (sizeSnapshot.username) {
+      let sharedPreferenceSaved = false
+      try {
+        const preferenceResult = await window.electronAPI?.saveOrderSizePreference?.({
+          username: sizeSnapshot.username,
+          symbol: sizeSnapshot.symbol,
+          inputQuantity: Number(sizeSnapshot.quantity),
+          sizeUnit: sizeSnapshot.sizeUnit,
+        })
+        sharedPreferenceSaved = preferenceResult?.ok === true
+      } catch {
+        // Keep order success independent from non-critical local preference persistence.
+      }
+      if (!sharedPreferenceSaved) {
+        writeStoredOrderSize(
+          sizeSnapshot.username,
+          sizeSnapshot.symbol,
+          sizeSnapshot.sizeUnit,
+          sizeSnapshot.quantity,
+        )
+      }
+    }
+    onOrderPlaced?.()
+  }
+  handleOrderSubmissionResultRef.current = (result) => {
+    void handleOrderSubmissionResult(result)
+  }
+
+  const scheduleSubmissionPoll = (submissionId: string, delay = 1500) => {
+    const pending = pendingSubmissionsRef.current.get(submissionId)
+    if (!pending) return
+    pending.pollTimer = setTimeout(async () => {
+      const current = pendingSubmissionsRef.current.get(submissionId)
+      if (!current) return
+      try {
+        const result = await api.getOrderSubmission(submissionId)
+        if (result.status !== 'QUEUED') {
+          handleOrderSubmissionResultRef.current(result)
+          return
+        }
+      } catch {
+        // WebSocket remains the primary path; polling is only a disconnect fallback.
+      }
+      current.pollAttempts += 1
+      scheduleSubmissionPoll(submissionId, current.pollAttempts < 10 ? 1500 : 5000)
+    }, delay)
+  }
+
+  useEffect(() => () => {
+    for (const pending of pendingSubmissionsRef.current.values()) {
+      if (pending.pollTimer) clearTimeout(pending.pollTimer)
+    }
+    pendingSubmissionsRef.current.clear()
+    earlySubmissionResultsRef.current.clear()
+  }, [])
 
   useEffect(() => {
     if (user?.username) loadRiskWarningParameters(user.username)
@@ -650,6 +767,16 @@ export function OrderFormWidget({
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data as string) as PositionsWsMessage
+          if (
+            data.type === 'order_submission_result'
+            && data.submission_id
+            && data.status
+            && data.symbol
+            && data.side
+            && typeof data.ok === 'boolean'
+          ) {
+            handleOrderSubmissionResultRef.current(data as ApiOrderSubmission)
+          }
           const hasSnapshot = Array.isArray(data.positions) && Array.isArray(data.open_orders)
           const hasAccountSummary = Boolean(data.account_summary)
 
@@ -1290,6 +1417,8 @@ export function OrderFormWidget({
     body: Parameters<typeof api.submitOrder>[0],
     sizeSnapshot: SubmittedSizeSnapshot,
   ) => {
+    if (submissionRequestInFlightRef.current) return
+    submissionRequestInFlightRef.current = true
     setIsSubmitting(true)
     try {
       window.electronAPI?.logToMain?.('info', 'submit order', {
@@ -1300,41 +1429,24 @@ export function OrderFormWidget({
         baseQty,
       })
 
-      const result = await api.submitOrder(body)
-      const rebalancedCount = Array.isArray(result.rebalanced_orders)
-        ? result.rebalanced_orders.length
-        : 0
-      if (result.pending_confirmation === true) {
-        showToast('info', typeof result.message === 'string' ? result.message : t('order.success'), { duration: 8000 })
-      } else if (rebalancedCount > 0) {
-        showToast('success', t('order.success.rebalanced', { count: rebalancedCount }))
+      awaitingSubmissionResponseRef.current = true
+      const accepted = await api.submitOrderAsync(body)
+      pendingSubmissionsRef.current.set(accepted.submission_id, {
+        sizeSnapshot,
+        pollAttempts: 0,
+      })
+      awaitingSubmissionResponseRef.current = false
+      showToast('info', t('order.accepted'))
+
+      const earlyResult = earlySubmissionResultsRef.current.get(accepted.submission_id)
+      if (earlyResult) {
+        earlySubmissionResultsRef.current.delete(accepted.submission_id)
+        handleOrderSubmissionResultRef.current(earlyResult)
       } else {
-        showToast('success', t('order.success'))
+        scheduleSubmissionPoll(accepted.submission_id)
       }
-      if (sizeSnapshot.username) {
-        let sharedPreferenceSaved = false
-        try {
-          const preferenceResult = await window.electronAPI?.saveOrderSizePreference?.({
-            username: sizeSnapshot.username,
-            symbol: sizeSnapshot.symbol,
-            inputQuantity: Number(sizeSnapshot.quantity),
-            sizeUnit: sizeSnapshot.sizeUnit,
-          })
-          sharedPreferenceSaved = preferenceResult?.ok === true
-        } catch {
-          // Keep order success independent from non-critical local preference persistence.
-        }
-        if (!sharedPreferenceSaved) {
-          writeStoredOrderSize(
-            sizeSnapshot.username,
-            sizeSnapshot.symbol,
-            sizeSnapshot.sizeUnit,
-            sizeSnapshot.quantity,
-          )
-        }
-      }
-      onOrderPlaced?.()
     } catch (err: unknown) {
+      awaitingSubmissionResponseRef.current = false
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
         (err as { message?: string })?.message || t('order.error.failed')
@@ -1347,6 +1459,7 @@ export function OrderFormWidget({
       })
       showToast('error', msg)
     } finally {
+      submissionRequestInFlightRef.current = false
       setIsSubmitting(false)
     }
   }

@@ -2,12 +2,15 @@ import asyncio
 import sys
 from pathlib import Path
 
+from fastapi import BackgroundTasks, HTTPException
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trade_relay.auth.manager import Session
 from trade_relay.exchange import binance_client as exchange_client
 from trade_relay.trading import binance_client as trading_client
 from trade_relay.trading import order_manager
+from backend.routers import orders as orders_router
 
 
 def test_submit_transport_failures_are_treated_as_ambiguous():
@@ -231,3 +234,91 @@ def test_reclaimed_fast_fill_close_order_keeps_position_link(monkeypatch):
         "reduce_only": True,
     })]
     assert "created" not in captured
+
+
+def test_async_order_endpoint_returns_before_exchange_and_publishes_result(monkeypatch):
+    captured = {}
+    exchange_started = asyncio.Event()
+    release_exchange = asyncio.Event()
+
+    async def fake_execute(body, user):
+        exchange_started.set()
+        await release_exchange.wait()
+        return {
+            "ok": True,
+            "order_id": 91,
+            "message": "accepted by exchange",
+            "pending_confirmation": False,
+            "rebalanced_orders": [],
+        }
+
+    monkeypatch.setattr(orders_router, "_execute_order_request", fake_execute)
+    monkeypatch.setattr(
+        orders_router,
+        "notify_user_stream_listeners",
+        lambda username, event: captured.update(username=username, event=event),
+    )
+    orders_router._order_submissions.clear()
+    body = orders_router.OrderRequest(
+        symbol="BTCUSDC",
+        side="BUY",
+        order_type="LIMIT",
+        quantity=0.01,
+        price=80_000,
+        margin_type="CROSS",
+    )
+    user = {"sub": "1", "username": "Will", "role": "user"}
+    background = BackgroundTasks()
+
+    accepted = asyncio.run(orders_router.place_order_async(body, background, user))
+
+    assert accepted["status"] == "QUEUED"
+    assert exchange_started.is_set() is False
+    submission_id = accepted["submission_id"]
+
+    async def finish_background():
+        task = asyncio.create_task(background())
+        await exchange_started.wait()
+        assert orders_router._order_submissions[("Will", submission_id)][1]["status"] == "QUEUED"
+        release_exchange.set()
+        await task
+
+    asyncio.run(finish_background())
+
+    assert captured["username"] == "Will"
+    assert captured["event"]["status"] == "SUCCEEDED"
+    assert captured["event"]["order_id"] == 91
+    stored = asyncio.run(orders_router.get_order_submission(submission_id, user))
+    assert stored == captured["event"]
+
+
+def test_async_order_failure_is_available_to_polling_and_websocket(monkeypatch):
+    events = []
+
+    async def fake_execute(body, user):
+        raise HTTPException(status_code=400, detail="Binance rejected the order")
+
+    monkeypatch.setattr(orders_router, "_execute_order_request", fake_execute)
+    monkeypatch.setattr(
+        orders_router,
+        "notify_user_stream_listeners",
+        lambda username, event: events.append((username, event)),
+    )
+    orders_router._order_submissions.clear()
+    body = orders_router.OrderRequest(
+        symbol="ETHUSDC",
+        side="SELL",
+        order_type="MARKET",
+        quantity=0.1,
+        margin_type="CROSS",
+    )
+    user = {"sub": "2", "username": "simba", "role": "user"}
+    background = BackgroundTasks()
+
+    accepted = asyncio.run(orders_router.place_order_async(body, background, user))
+    asyncio.run(background())
+    result = asyncio.run(orders_router.get_order_submission(accepted["submission_id"], user))
+
+    assert result["status"] == "FAILED"
+    assert result["message"] == "Binance rejected the order"
+    assert events == [("simba", result)]

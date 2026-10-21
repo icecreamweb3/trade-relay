@@ -1905,6 +1905,32 @@ def register_user_stream_listener(username: str, listener: Callable[[dict], None
         listeners.add(listener)
 
 
+def notify_user_stream_listeners(username: str, event: dict) -> None:
+    """Push an application event to every live frontend session for a user.
+
+    Unlike exchange-status refresh events, application events are not throttled:
+    an order-submission result must never be dropped just because another Binance
+    update was emitted during the notification cooldown window.
+    """
+    with _listeners_lock:
+        listeners = list(_listeners.get(username, ()))
+    logger.debug(
+        "Notifying %d listeners for user=%s application_event=%s",
+        len(listeners),
+        username,
+        event.get("type"),
+    )
+    for listener in listeners:
+        try:
+            listener(event)
+        except Exception:
+            logger.debug(
+                "Failed to notify user stream listener for user=%s",
+                username,
+                exc_info=True,
+            )
+
+
 def unregister_user_stream_listener(username: str, listener: Callable[[dict], None]) -> None:
     with _listeners_lock:
         listeners = _listeners.get(username)

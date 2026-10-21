@@ -8,16 +8,18 @@ import asyncio
 import math
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query, status
 from pydantic import BaseModel
 
 from trade_relay import database as db_module
 from trade_relay import config as cfg
 from trade_relay.auth.manager import Session
 from trade_relay.trading.order_manager import submit_order
+from trade_relay.trading.order_status_stream import notify_user_stream_listeners
 from trade_relay.trading.close_trade_sync import sync_filled_order_trade_details
 from trade_relay.trading.order_history_reconciliation import reconcile_order_history
 from trade_relay.trading.position_id_backfill import backfill_missing_position_ids
@@ -41,6 +43,8 @@ _client_cache_lock = Lock()
 _position_id_backfill_lock = Lock()
 _position_id_backfill_inflight: set[int | None] = set()
 _close_limit_rebalance_locks: dict[tuple[int, str, str], asyncio.Lock] = {}
+_ORDER_SUBMISSION_TTL_SECONDS = 10 * 60
+_order_submissions: dict[tuple[str, str], tuple[float, dict]] = {}
 
 
 def _get_futures_client(api_key: str, api_secret: str, testnet: bool) -> FuturesBinanceClient:
@@ -306,8 +310,7 @@ def _get_recent_fills_cached() -> list[OrderOut]:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.post("")
-async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)):
+async def _execute_order_request(body: OrderRequest, user: dict) -> dict:
     _log.info(
         "[ORDER_FLOW] phase=request username=%s symbol=%s side=%s type=%s qty=%s price=%s pos_dir=%s",
         user["username"], body.symbol, body.side, body.order_type, body.quantity, body.price, body.position_direction,
@@ -368,6 +371,110 @@ async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)
         "pending_confirmation": result.pending_confirmation,
         "rebalanced_orders": rebalanced_orders,
     }
+
+
+def _prune_order_submissions(now: float | None = None) -> None:
+    cutoff = (now if now is not None else time.monotonic()) - _ORDER_SUBMISSION_TTL_SECONDS
+    stale_keys = [key for key, (created_at, _) in _order_submissions.items() if created_at < cutoff]
+    for key in stale_keys:
+        _order_submissions.pop(key, None)
+
+
+def _store_order_submission(username: str, submission_id: str, payload: dict) -> None:
+    _prune_order_submissions()
+    _order_submissions[(username, submission_id)] = (time.monotonic(), payload)
+
+
+async def _run_order_submission(submission_id: str, body: OrderRequest, user: dict) -> None:
+    username = str(user["username"])
+    try:
+        response = await _execute_order_request(body, user)
+        result = {
+            "type": "order_submission_result",
+            "submission_id": submission_id,
+            "status": "SUCCEEDED",
+            "symbol": body.symbol.strip().upper(),
+            "side": body.side.strip().upper(),
+            **response,
+        }
+    except HTTPException as exc:
+        result = {
+            "type": "order_submission_result",
+            "submission_id": submission_id,
+            "status": "FAILED",
+            "symbol": body.symbol.strip().upper(),
+            "side": body.side.strip().upper(),
+            "ok": False,
+            "message": str(exc.detail),
+        }
+    except Exception as exc:
+        _log.exception(
+            "[ORDER_FLOW] phase=async_unhandled_error submission_id=%s username=%s",
+            submission_id,
+            username,
+        )
+        result = {
+            "type": "order_submission_result",
+            "submission_id": submission_id,
+            "status": "FAILED",
+            "symbol": body.symbol.strip().upper(),
+            "side": body.side.strip().upper(),
+            "ok": False,
+            "message": str(exc) or "Order submission failed",
+        }
+
+    _store_order_submission(username, submission_id, result)
+    notify_user_stream_listeners(username, result)
+    _log.info(
+        "[ORDER_FLOW] phase=async_result submission_id=%s username=%s status=%s order_id=%s",
+        submission_id,
+        username,
+        result["status"],
+        result.get("order_id"),
+    )
+
+
+@router.post("")
+async def place_order(body: OrderRequest, user: dict = Depends(get_current_user)):
+    return await _execute_order_request(body, user)
+
+
+@router.post("/async", status_code=status.HTTP_202_ACCEPTED)
+async def place_order_async(
+    body: OrderRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    submission_id = uuid.uuid4().hex
+    queued = {
+        "type": "order_submission_result",
+        "submission_id": submission_id,
+        "status": "QUEUED",
+        "symbol": body.symbol.strip().upper(),
+        "side": body.side.strip().upper(),
+        "ok": True,
+        "message": "Order accepted for submission",
+    }
+    _store_order_submission(str(user["username"]), submission_id, queued)
+    background_tasks.add_task(_run_order_submission, submission_id, body, dict(user))
+    _log.info(
+        "[ORDER_FLOW] phase=async_accepted submission_id=%s username=%s symbol=%s side=%s type=%s",
+        submission_id,
+        user["username"],
+        body.symbol,
+        body.side,
+        body.order_type,
+    )
+    return queued
+
+
+@router.get("/async/{submission_id}")
+async def get_order_submission(submission_id: str, user: dict = Depends(get_current_user)):
+    _prune_order_submissions()
+    stored = _order_submissions.get((str(user["username"]), submission_id))
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Order submission not found or expired")
+    return stored[1]
 
 
 @router.get("", response_model=list[OrderOut])
