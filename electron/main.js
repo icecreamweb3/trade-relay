@@ -2,7 +2,7 @@
  * Trade Relay — Electron Main Process (Electron + React + BrowserView architecture)
  * Replaced Qt6 + TCP NDJSON bridge with standard Electron IPC.
  */
-const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, screen, shell } = require('electron')
+const { app, BrowserWindow, BrowserView, ipcMain, safeStorage, screen, shell, dialog } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const { execFile, exec } = require('child_process')
@@ -266,6 +266,67 @@ function httpRequest(method, path, body, token) {
     })
     if (data) req.write(data)
     req.end()
+  })
+}
+
+function downloadServerLog(filename, destinationPath, token) {
+  return new Promise((resolve) => {
+    const requestPath = `/api/server-logs/${encodeURIComponent(filename)}/download`
+    const targetUrl = new URL(requestPath, `${BACKEND_BASE_URL}/`)
+    const transport = targetUrl.protocol === 'https:' ? https : http
+    const headers = token ? { Authorization: `Bearer ${token}` } : {}
+    const temporaryPath = `${destinationPath}.trade-relay-download-${process.pid}-${Date.now()}`
+    const request = transport.request({
+      protocol: targetUrl.protocol,
+      hostname: targetUrl.hostname,
+      port: targetUrl.port || undefined,
+      path: `${targetUrl.pathname}${targetUrl.search}`,
+      method: 'GET',
+      headers,
+      agent: getProxyAgent(targetUrl),
+    }, (response) => {
+      if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
+        let message = ''
+        response.setEncoding('utf8')
+        response.on('data', chunk => {
+          if (message.length < 4096) message += chunk
+        })
+        response.on('end', () => {
+          try {
+            const parsed = JSON.parse(message)
+            resolve({ ok: false, error: parsed.detail || `HTTP ${response.statusCode}` })
+          } catch {
+            resolve({ ok: false, error: message || `HTTP ${response.statusCode}` })
+          }
+        })
+        return
+      }
+
+      const output = fs.createWriteStream(temporaryPath, { flags: 'wx' })
+      response.pipe(output)
+      output.on('finish', () => {
+        output.close(() => {
+          try {
+            fs.copyFileSync(temporaryPath, destinationPath)
+            fs.unlinkSync(temporaryPath)
+            resolve({ ok: true, path: destinationPath })
+          } catch (error) {
+            try { fs.unlinkSync(temporaryPath) } catch {}
+            resolve({ ok: false, error: error?.message || String(error) })
+          }
+        })
+      })
+      output.on('error', (error) => {
+        response.destroy()
+        try { fs.unlinkSync(temporaryPath) } catch {}
+        resolve({ ok: false, error: error?.message || String(error) })
+      })
+    })
+    request.on('error', (error) => {
+      try { fs.unlinkSync(temporaryPath) } catch {}
+      resolve({ ok: false, error: error?.message || String(error) })
+    })
+    request.end()
   })
 }
 
@@ -759,6 +820,23 @@ ipcMain.handle('backend-request', async (_event, { method = 'GET', path, body = 
   const token = getToken()
   const requestPath = buildBackendPath(path, query)
   return httpRequest(method, requestPath, body, token)
+})
+
+ipcMain.handle('download-server-log', async (_event, filename) => {
+  const safeName = String(filename || '').trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\.log(?:\.\d+)?$/.test(safeName)) {
+    return { ok: false, error: 'Invalid log filename' }
+  }
+  const token = getToken()
+  if (!token) return { ok: false, error: 'Not authenticated' }
+
+  const selection = await dialog.showSaveDialog(mainWindow, {
+    title: 'Download server log',
+    defaultPath: safeName,
+    filters: [{ name: 'Log files', extensions: ['log'] }, { name: 'All files', extensions: ['*'] }],
+  })
+  if (selection.canceled || !selection.filePath) return { ok: false, canceled: true }
+  return downloadServerLog(safeName, selection.filePath, token)
 })
 
 ipcMain.handle('auth-get-status', async () => {

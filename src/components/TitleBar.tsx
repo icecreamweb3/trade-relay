@@ -1,5 +1,5 @@
 import React from 'react'
-import { ChevronLeft, ChevronRight, ChevronUp, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2, BriefcaseBusiness } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronUp, RotateCcw, Expand, Shrink, LogOut, LogIn, Settings, Users, BarChart2, ClipboardList, Activity, Trash2, BriefcaseBusiness, ScrollText } from 'lucide-react'
 import { useMarketStore } from '../store/marketStore'
 import { useAuthStore } from '../store/authStore'
 import { Locale, useTranslation } from '../i18n/translations'
@@ -10,7 +10,7 @@ import {
   useRiskWarningSettingsStore,
 } from '../store/riskWarningSettingsStore'
 
-type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'profile' | 'settings'
+type Screen = 'trade' | 'orders' | 'positions' | 'users' | 'logs' | 'profile' | 'settings'
 
 interface TitleBarProps {
   activeScreen: Screen
@@ -150,7 +150,10 @@ export function TitleBar({
             <ScreenTab active={activeScreen === 'orders'} onClick={() => onNavigate('orders')} icon={<ClipboardList size={11} />}>{t('nav.orders')}</ScreenTab>
             <ScreenTab active={activeScreen === 'positions'} onClick={() => onNavigate('positions')} icon={<BriefcaseBusiness size={11} />}>{t('nav.positions')}</ScreenTab>
             {user?.role === 'admin' && (
-              <ScreenTab active={activeScreen === 'users'} onClick={() => onNavigate('users')} icon={<Users size={11} />}>{t('nav.users')}</ScreenTab>
+              <>
+                <ScreenTab active={activeScreen === 'users'} onClick={() => onNavigate('users')} icon={<Users size={11} />}>{t('nav.users')}</ScreenTab>
+                <ScreenTab active={activeScreen === 'logs'} onClick={() => onNavigate('logs')} icon={<ScrollText size={11} />}>{t('nav.logs')}</ScreenTab>
+              </>
             )}
             <ScreenTab active={activeScreen === 'profile'} onClick={() => onNavigate('profile')} icon={<BarChart2 size={11} />}>{t('nav.profile')}</ScreenTab>
             <ScreenTab active={activeScreen === 'settings'} onClick={() => onNavigate('settings')} icon={<Settings size={11} />}>{t('nav.settings')}</ScreenTab>

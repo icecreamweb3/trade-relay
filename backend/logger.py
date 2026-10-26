@@ -50,6 +50,11 @@ _MAX_BYTES = 100 * 1024 * 1024   # 100 MB
 _BACKUP_COUNT = 9                  # 最多保留 9 个滚动备份
 
 
+def get_log_dir() -> Path:
+    """Return the effective directory used by backend log files."""
+    return _LOG_DIR
+
+
 def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
     """
     初始化全局日志配置，返回根 logger。

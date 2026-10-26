@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     body: options.body ?? null,
     query: options.query ?? null,
   }),
+  downloadServerLog: (filename) => ipcRenderer.invoke('download-server-log', filename),
   getAuthStatus: () => ipcRenderer.invoke('auth-get-status'),
 
   // ── Window controls ───────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ interface ElectronAPI {
       query?: Record<string, string | number | boolean | null | undefined | Array<string | number | boolean>>
     }
   ) => Promise<{ status: number; body: unknown }>
+  downloadServerLog?: (filename: string) => Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>
   getAuthStatus: () => Promise<{ authenticated: boolean; user?: import('./store/authStore').UserInfo }>
 
   // Window

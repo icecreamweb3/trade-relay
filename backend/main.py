@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import account, auth, users, orders, positions, config, profile
+from .routers import account, auth, users, orders, positions, config, profile, server_logs
 from .logger import setup_logging, get_logger
 
 _log = get_logger(__name__)
@@ -74,6 +74,7 @@ app.include_router(positions.router)
 app.include_router(config.router)
 app.include_router(profile.router)
 app.include_router(account.router)
+app.include_router(server_logs.router)
 
 
 @app.get("/health")

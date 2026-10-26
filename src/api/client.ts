@@ -57,6 +57,17 @@ interface ApiUser {
   updated_at?: string
 }
 
+export interface ApiServerLogFile {
+  name: string
+  size: number
+  modified_at: string
+}
+
+export interface ApiServerLogPreview extends ApiServerLogFile {
+  content: string
+  truncated: boolean
+}
+
 interface ApiOrderUser {
   id: number
   username: string
@@ -797,6 +808,34 @@ export const api = {
 
   async deleteUser(userId: number): Promise<ApiResult> {
     return request<ApiResult>('DELETE', `/api/users/${userId}`)
+  },
+
+  // ── Server logs (admin) ──────────────────────────────────────────────────
+  async getServerLogs(): Promise<ApiServerLogFile[]> {
+    return request<ApiServerLogFile[]>('GET', '/api/server-logs')
+  },
+
+  async getServerLogPreview(filename: string): Promise<ApiServerLogPreview> {
+    return request<ApiServerLogPreview>('GET', `/api/server-logs/${encodeURIComponent(filename)}`)
+  },
+
+  async downloadServerLog(filename: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+    if (window.electronAPI?.downloadServerLog) {
+      return window.electronAPI.downloadServerLog(filename)
+    }
+
+    const token = await getToken()
+    const response = await axios.get(
+      `${getBackendBaseUrl()}/api/server-logs/${encodeURIComponent(filename)}/download`,
+      { headers: getHeaders(token), responseType: 'blob' },
+    )
+    const url = URL.createObjectURL(response.data)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+    return { ok: true }
   },
 
   // ── Config ────────────────────────────────────────────────────────────────
