@@ -1364,8 +1364,27 @@ class UserOrderStatusStream:
             int(db_order["position_id"]) if db_order.get("position_id") is not None else None
         )
         if position_id is not None and sl_price and entry_price:
+            # ACCOUNT_UPDATE and ORDER_TRADE_UPDATE are separate streams and can
+            # arrive in either order.  When this fill adds to an already updated
+            # position, ``quantity`` is only the latest order's cumulative fill,
+            # not the whole position protected by the stop.  Persisting 1R from
+            # that smaller amount produces tiny baselines such as 0.01 USDC.
+            # Prefer the live position snapshot whenever it represents more of
+            # the position; otherwise retain the fill values used historically.
+            position_quantity = _safe_float((position or {}).get("quantity"))
+            position_entry_price = _safe_float((position or {}).get("avg_entry_price"))
+            risk_quantity = float(quantity)
+            risk_entry_price = float(entry_price)
+            if (
+                position_quantity is not None
+                and position_quantity > risk_quantity + 1e-12
+                and position_entry_price is not None
+                and position_entry_price > 0
+            ):
+                risk_quantity = position_quantity
+                risk_entry_price = position_entry_price
             open_commission = abs(_safe_float(db_order.get("commission") or 0) or 0.0)
-            initial_risk = abs(float(entry_price) - float(sl_price)) * float(quantity) + open_commission
+            initial_risk = abs(risk_entry_price - float(sl_price)) * risk_quantity + open_commission
             if initial_risk > 0:
                 try:
                     db.initialize_position_risk(position_id, float(sl_price), initial_risk)

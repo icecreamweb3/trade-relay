@@ -859,12 +859,13 @@ def set_position_tpsl(
     # A later manual stop change must not re-arm it, including after an app or
     # backend restart.
     if body.auto_breakeven and position_row.get("auto_breakeven_triggered_at") is not None:
+        _, effective_initial_risk = _restore_missing_position_risk(position_row, position_id, None)
         return {
             "ok": True,
             "unchanged": True,
             "tp_price": None,
             "sl_price": body.sl_price,
-            "initial_risk_usdc": position_row.get("initial_risk_usdc"),
+            "initial_risk_usdc": effective_initial_risk,
             "auto_breakeven_triggered": True,
         }
 
@@ -895,6 +896,7 @@ def set_position_tpsl(
                 or (position_side == "SHORT" and active_stop <= body.sl_price)
             )
             if already_protected:
+                _, effective_initial_risk = _restore_missing_position_risk(position_row, position_id, None)
                 if body.auto_breakeven:
                     db_module.mark_position_auto_breakeven_triggered(position_id)
                 with _tpsl_store_lock:
@@ -913,7 +915,7 @@ def set_position_tpsl(
                     "unchanged": True,
                     "tp_price": None,
                     "sl_price": active_stop,
-                    "initial_risk_usdc": position_row.get("initial_risk_usdc"),
+                    "initial_risk_usdc": effective_initial_risk,
                 }
 
     current_price = _fetch_current_trigger_price(user_id, username, symbol)
@@ -967,32 +969,15 @@ def set_position_tpsl(
     if body.auto_breakeven:
         db_module.mark_position_auto_breakeven_triggered(position_id)
 
-    stored_planned_stop = (
-        float(position_row["planned_stop_price"])
-        if position_row.get("planned_stop_price") is not None
-        else None
+    # Return the same reconciled baseline as the positions query.  Previously a
+    # stale, undersized value already stored on the row was returned verbatim and
+    # immediately painted into the UI after saving TP/SL, even though the next
+    # uncached positions read would repair it.
+    _, effective_initial_risk = _restore_missing_position_risk(
+        position_row,
+        position_id,
+        float(body.sl_price) if body.sl_price and body.sl_price > 0 else None,
     )
-    # Treat the two columns as one baseline.  A standalone amount (commonly an
-    # old opening-commission value) is invalid and must not block initialization
-    # from the first actual stop-loss.
-    effective_initial_risk = (
-        float(position_row["initial_risk_usdc"])
-        if stored_planned_stop is not None
-        and math.isfinite(stored_planned_stop)
-        and stored_planned_stop > 0
-        and position_row.get("initial_risk_usdc") is not None
-        else None
-    )
-    if effective_initial_risk is None and body.sl_price and body.sl_price > 0 and entry_price and quantity > 0:
-        # A stop added to an existing position has no reliable historical opening-fee
-        # context, so initialise 1R from price risk. The first planned stop remains fixed.
-        effective_initial_risk = abs(entry_price - float(body.sl_price)) * quantity
-        if effective_initial_risk > 0:
-            db_module.initialize_position_risk(
-                position_id,
-                float(body.sl_price),
-                effective_initial_risk,
-            )
 
     # Store the set prices in memory
     with _tpsl_store_lock:

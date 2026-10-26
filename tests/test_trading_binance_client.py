@@ -392,6 +392,46 @@ def test_order_status_stream_places_tp_sl_for_filled_open_order(monkeypatch):
     }]
 
 
+def test_order_status_stream_initial_risk_uses_full_live_position_after_add(monkeypatch):
+    from trade_relay.trading import order_status_stream
+
+    stream = order_status_stream.UserOrderStatusStream("Will", "key", "secret", False)
+    initialized = []
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "get_position",
+        lambda *args, **kwargs: {
+            "id": 99,
+            "quantity": 0.005,
+            "avg_entry_price": 79941.8,
+        },
+    )
+    monkeypatch.setattr(
+        order_status_stream.db,
+        "initialize_position_risk",
+        lambda position_id, stop, risk: initialized.append((position_id, stop, risk)) or True,
+    )
+    monkeypatch.setattr(order_status_stream, "place_tp_sl_orders", lambda **kwargs: [])
+
+    stream._place_open_fill_tpsl(
+        {
+            "exchange_order_id": "12345",
+            "user_id": 1,
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "trade_direction": "OPEN",
+            "sl_price": 79823.6,
+            # The just-filled add order is much smaller than the live position.
+            "filled_qty": 0.0001,
+            "avg_price": 79941.8,
+        },
+        executed_qty=0.0001,
+        avg_price=79941.8,
+    )
+
+    assert initialized == [(99, 79823.6, pytest.approx((79941.8 - 79823.6) * 0.005))]
+
+
 def test_order_status_stream_uses_binance_private_ws_url_for_mainnet():
     from trade_relay.trading import order_status_stream
 
@@ -4794,6 +4834,43 @@ def test_setting_first_stop_replaces_orphan_risk(monkeypatch):
     expected_risk = (79740.0 - 79557.8) * 0.02
     assert result["initial_risk_usdc"] == pytest.approx(expected_risk)
     assert initialized == [(23, 79740.0, pytest.approx(expected_risk))]
+
+
+def test_setting_stop_returns_reconciled_risk_instead_of_stale_small_value(monkeypatch):
+    from backend.routers import positions as positions_router
+
+    row = {
+        "id": 24,
+        "symbol": "BTCUSDC",
+        "position_side": "LONG",
+        "position_mode": "DUAL",
+        "quantity": 0.005,
+        "avg_entry_price": 79941.8,
+        "planned_stop_price": 79823.6,
+        "initial_risk_usdc": 0.0175,
+    }
+    updated = []
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_key", lambda username: "key")
+    monkeypatch.setattr(positions_router.cfg_module, "get_api_secret", lambda username: "secret")
+    monkeypatch.setattr(positions_router.db_module, "get_positions", lambda **kwargs: [row])
+    monkeypatch.setattr(positions_router, "_fetch_current_trigger_price", lambda *args: 80000.0)
+    monkeypatch.setattr(positions_router, "place_tp_sl_orders", lambda **kwargs: [])
+    monkeypatch.setattr(
+        positions_router.db_module,
+        "update_position_initial_risk",
+        lambda position_id, risk: updated.append((position_id, risk)) or True,
+    )
+    monkeypatch.setattr(positions_router, "_clear_positions_cache", lambda user_id: None)
+
+    result = positions_router.set_position_tpsl(
+        24,
+        positions_router.TpSlIn(sl_price=79823.6),
+        {"username": "Will", "sub": "5", "role": "user"},
+    )
+
+    expected_risk = (79941.8 - 79823.6) * 0.005
+    assert result["initial_risk_usdc"] == pytest.approx(expected_risk)
+    assert updated == [(24, pytest.approx(expected_risk))]
 
 
 def test_stop_only_tpsl_update_does_not_recreate_take_profit(monkeypatch):
