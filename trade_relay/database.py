@@ -18,6 +18,8 @@ import base64
 import logging
 import math
 import os
+import traceback
+import uuid
 from decimal import Decimal
 from queue import Empty, Full, Queue
 from contextlib import contextmanager
@@ -59,6 +61,13 @@ _OP_LOG_WORKER_LOCK = RLock()
 _op_log_queue: Optional[Queue] = None
 _op_log_worker: Optional[Thread] = None
 _op_log_stop_event = Event()
+
+_INITIAL_RISK_MONITOR_THRESHOLD = 0.02
+_INITIAL_RISK_SNAPSHOT_SQL = """SELECT id, user_id, username, symbol, position_side, status,
+                                       quantity, avg_entry_price, planned_stop_price,
+                                       initial_risk_usdc, updated_at
+                                  FROM positions
+                                 WHERE id = %s"""
 
 
 def _sanitize_db_log_value(key: str, value):
@@ -113,6 +122,93 @@ def _log_db_query_result(table: str, query_name: str, **details) -> None:
         query_name,
         _sanitize_db_log_fields(details),
     )
+
+
+def _execute_initial_risk_write(
+    cur,
+    *,
+    source: str,
+    position_id: int,
+    candidate_risk,
+    sql: str,
+    params: tuple,
+) -> int:
+    """Execute a risk write and capture diagnostics for suspiciously small values.
+
+    Monitoring is observational: the write is not rejected. Snapshot failures are
+    logged but never prevent the original SQL from running.
+    """
+    try:
+        numeric_risk = float(candidate_risk) if candidate_risk is not None else None
+    except (TypeError, ValueError):
+        numeric_risk = None
+    should_monitor = (
+        numeric_risk is not None
+        and math.isfinite(numeric_risk)
+        and numeric_risk <= _INITIAL_RISK_MONITOR_THRESHOLD
+    )
+    if not should_monitor:
+        cur.execute(sql, params)
+        return cur.rowcount
+
+    event_id = uuid.uuid4().hex
+    event_time_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    sql_template = " ".join(sql.split())
+    stack = " <- ".join(
+        f"{frame.filename}:{frame.lineno}:{frame.name}"
+        for frame in traceback.extract_stack(limit=10)[:-1]
+    )
+
+    before = None
+    try:
+        cur.execute(_INITIAL_RISK_SNAPSHOT_SQL, (position_id,))
+        before = cur.fetchone()
+    except Exception as exc:
+        logger.warning(
+            "[INITIAL_RISK_MONITOR] phase=snapshot_before_failed event_id=%s event_time_utc=%s "
+            "source=%s position_id=%s candidate_risk=%s error=%r",
+            event_id, event_time_utc, source, position_id, candidate_risk, exc,
+        )
+
+    logger.warning(
+        "[INITIAL_RISK_MONITOR] phase=write_attempt event_id=%s event_time_utc=%s "
+        "source=%s threshold=%s position_id=%s candidate_risk=%s sql=%s params=%r "
+        "row_before=%s caller_stack=%s",
+        event_id, event_time_utc, source, _INITIAL_RISK_MONITOR_THRESHOLD,
+        position_id, candidate_risk, sql_template, params, before, stack,
+    )
+
+    try:
+        cur.execute(sql, params)
+    except Exception:
+        logger.exception(
+            "[INITIAL_RISK_MONITOR] phase=write_failed event_id=%s event_time_utc=%s "
+            "source=%s position_id=%s candidate_risk=%s sql=%s params=%r",
+            event_id, event_time_utc, source, position_id, candidate_risk,
+            sql_template, params,
+        )
+        raise
+
+    affected_rows = cur.rowcount
+    after = None
+    try:
+        cur.execute(_INITIAL_RISK_SNAPSHOT_SQL, (position_id,))
+        after = cur.fetchone()
+    except Exception as exc:
+        logger.warning(
+            "[INITIAL_RISK_MONITOR] phase=snapshot_after_failed event_id=%s event_time_utc=%s "
+            "source=%s position_id=%s candidate_risk=%s affected_rows=%s error=%r",
+            event_id, event_time_utc, source, position_id, candidate_risk,
+            affected_rows, exc,
+        )
+
+    logger.warning(
+        "[INITIAL_RISK_MONITOR] phase=write_result event_id=%s event_time_utc=%s "
+        "source=%s position_id=%s candidate_risk=%s affected_rows=%s row_after=%s",
+        event_id, event_time_utc, source, position_id, candidate_risk,
+        affected_rows, after,
+    )
+    return affected_rows
 
 
 @lru_cache(maxsize=1)
@@ -5471,8 +5567,7 @@ def initialize_position_risk(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE positions
+            sql = """UPDATE positions
                    SET initial_risk_usdc = CASE
                            WHEN planned_stop_price IS NULL OR planned_stop_price <= 0 THEN %s
                            ELSE COALESCE(initial_risk_usdc, %s)
@@ -5481,11 +5576,17 @@ def initialize_position_risk(
                            WHEN planned_stop_price IS NULL OR planned_stop_price <= 0 THEN %s
                            ELSE planned_stop_price
                        END
-                   WHERE id = %s""",
-                (initial_risk_usdc, initial_risk_usdc, planned_stop_price, position_id),
+                   WHERE id = %s"""
+            affected_rows = _execute_initial_risk_write(
+                cur,
+                source="initialize_position_risk",
+                position_id=position_id,
+                candidate_risk=initial_risk_usdc,
+                sql=sql,
+                params=(initial_risk_usdc, initial_risk_usdc, planned_stop_price, position_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            return affected_rows > 0
     finally:
         conn.close()
 
@@ -5495,15 +5596,20 @@ def update_position_initial_risk(position_id: int, initial_risk_usdc: float) -> 
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE positions
+            sql = """UPDATE positions
                    SET initial_risk_usdc = %s
                    WHERE id = %s
-                     AND planned_stop_price IS NOT NULL""",
-                (initial_risk_usdc, position_id),
+                     AND planned_stop_price IS NOT NULL"""
+            affected_rows = _execute_initial_risk_write(
+                cur,
+                source="update_position_initial_risk",
+                position_id=position_id,
+                candidate_risk=initial_risk_usdc,
+                sql=sql,
+                params=(initial_risk_usdc, position_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            return affected_rows > 0
     finally:
         conn.close()
 
@@ -6067,8 +6173,7 @@ def save_position_excursion_metrics(position_id: int, metrics: dict) -> bool:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE positions
+            sql = """UPDATE positions
                    SET planned_stop_price = COALESCE(planned_stop_price, %s),
                        initial_risk_usdc = COALESCE(initial_risk_usdc, %s),
                        mfe_usdc = %s, mae_usdc = %s, mfe_at = %s, mae_at = %s,
@@ -6079,19 +6184,25 @@ def save_position_excursion_metrics(position_id: int, metrics: dict) -> bool:
                        excursion_next_retry_at = NULL, excursion_last_error = NULL,
                        excursion_source = %s, excursion_version = %s,
                        excursion_calculated_at = UTC_TIMESTAMP(3)
-                   WHERE id = %s""",
-                (
-                    metrics.get("planned_stop_price"), metrics.get("initial_risk_usdc"),
-                    metrics.get("mfe_usdc"), metrics.get("mae_usdc"),
-                    metrics.get("mfe_at"), metrics.get("mae_at"), metrics.get("net_pnl"),
-                    metrics.get("mfe_r"), metrics.get("mae_r"), metrics.get("net_pnl_r"),
-                    metrics.get("profit_capture_rate"), metrics.get("exit_efficiency"),
-                    metrics.get("profit_giveback_usdc"), metrics.get("profit_giveback_rate"),
-                    metrics.get("excursion_source", "1m_kline"),
-                    metrics.get("excursion_version", 1), position_id,
-                ),
+                   WHERE id = %s"""
+            params = (
+                metrics.get("planned_stop_price"), metrics.get("initial_risk_usdc"),
+                metrics.get("mfe_usdc"), metrics.get("mae_usdc"),
+                metrics.get("mfe_at"), metrics.get("mae_at"), metrics.get("net_pnl"),
+                metrics.get("mfe_r"), metrics.get("mae_r"), metrics.get("net_pnl_r"),
+                metrics.get("profit_capture_rate"), metrics.get("exit_efficiency"),
+                metrics.get("profit_giveback_usdc"), metrics.get("profit_giveback_rate"),
+                metrics.get("excursion_source", "1m_kline"),
+                metrics.get("excursion_version", 1), position_id,
             )
-            affected_rows = cur.rowcount
+            affected_rows = _execute_initial_risk_write(
+                cur,
+                source="save_position_excursion_metrics",
+                position_id=position_id,
+                candidate_risk=metrics.get("initial_risk_usdc"),
+                sql=sql,
+                params=params,
+            )
             _upsert_position_history_final_from_position_cursor(cur, position_id)
             conn.commit()
             return affected_rows > 0
