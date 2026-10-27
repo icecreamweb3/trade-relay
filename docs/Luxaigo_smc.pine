@@ -694,10 +694,12 @@ drawLevels(string timeframe, bool sameTimeframe, string style, color levelColor)
     topLine.set_first_point(    chart.point.new(parsedTopTime,na,parsedTop))
     topLine.set_second_point(   chart.point.new(last_bar_time + 20 * (time-time[1]),na,parsedTop))   
     topLabel.set_point(         chart.point.new(last_bar_time + 20 * (time-time[1]),na,parsedTop))
+    topLabel.set_text(          'P' + timeframe + 'H ' + str.tostring(parsedTop, format.mintick))
 
     bottomLine.set_first_point( chart.point.new(parsedBottomTime,na,parsedBottom))    
     bottomLine.set_second_point(chart.point.new(last_bar_time + 20 * (time-time[1]),na,parsedBottom))
     bottomLabel.set_point(      chart.point.new(last_bar_time + 20 * (time-time[1]),na,parsedBottom))
+    bottomLabel.set_text(       'P' + timeframe + 'L ' + str.tostring(parsedBottom, format.mintick))
 
 // @function            true if chart timeframe is higher than provided timeframe
 // @param timeframe     timeframe to check
