@@ -24,6 +24,17 @@ indicator(
 
 string GROUP_SESSION = "早盘区间"
 string GROUP_DISPLAY = "显示设置"
+string GROUP_BOM = "BOM 突破模式"
+
+bool bomEnabled = input.bool(
+     true,
+     "启用 BOM 区间",
+     tooltip = "以统计时段内第 1 根 K 线（请使用 5m 图表）的高低点为基准。\n" +
+          "向上首次突破第 1 根高点后，其最高点为 BOM 上沿；在向下突破第 1 根低点之前创新高则更新上沿。\n" +
+          "向下首次突破第 1 根低点后，其最低点为 BOM 下沿；在向上突破第 1 根高点之前创新低则更新下沿。\n" +
+          "上、下两侧均被触发才构成 BOM，此时按 BOM 区间标记；否则沿用统计时段内的最高/最低点。",
+     group = GROUP_BOM
+)
 
 string sessionInput = input.session(
      "0930-1100",
@@ -171,11 +182,58 @@ else
     trackedMeasurementHigh := math.max(trackedMeasurementHigh, high)
     trackedMeasurementLow := math.min(trackedMeasurementLow, low)
 
+// BOM（Breakout Mode）状态：每个统计时段开始时重置。
+var float bomFirstHigh = na
+var float bomFirstLow = na
+var float bomUpHigh = na
+var float bomDownLow = na
+var bool bomUpTriggered = false
+var bool bomDownTriggered = false
+var bool bomUpFrozen = false
+var bool bomDownFrozen = false
+
+if inOpeningRange
+    if openingRangeStarted
+        bomFirstHigh := high
+        bomFirstLow := low
+        bomUpHigh := na
+        bomDownLow := na
+        bomUpTriggered := false
+        bomDownTriggered := false
+        bomUpFrozen := false
+        bomDownFrozen := false
+    else if not na(bomFirstHigh)
+        // 使用本 K 线之前的触发状态，避免同一根 K 线内顺序不明造成误判。
+        bool previousUpTriggered = bomUpTriggered
+        bool previousDownTriggered = bomDownTriggered
+        bool upBreak = high > bomFirstHigh
+        bool downBreak = low < bomFirstLow
+
+        // 上沿：已触发后，一旦向下突破第 1 根低点即停止更新。
+        if not bomUpFrozen
+            if downBreak and previousUpTriggered
+                bomUpFrozen := true
+            else if upBreak
+                bomUpTriggered := true
+                bomUpHigh := na(bomUpHigh) ? high : math.max(bomUpHigh, high)
+
+        // 下沿：已触发后，一旦向上突破第 1 根高点即停止更新。
+        if not bomDownFrozen
+            if upBreak and previousDownTriggered
+                bomDownFrozen := true
+            else if downBreak
+                bomDownTriggered := true
+                bomDownLow := na(bomDownLow) ? low : math.min(bomDownLow, low)
+
+bool bomActive = bomEnabled and bomUpTriggered and bomDownTriggered
+
 // 保存最近一段历史中的每日早盘区间。
 var array<int> sessionStarts = array.new<int>()
 var array<int> sessionEnds = array.new<int>()
 var array<float> sessionHighs = array.new<float>()
 var array<float> sessionLows = array.new<float>()
+var array<float> sessionBomHighs = array.new<float>()
+var array<float> sessionBomLows = array.new<float>()
 var array<float> sessionMorningHighs = array.new<float>()
 var array<float> sessionMorningLows = array.new<float>()
 int maxStoredSessions = 500
@@ -186,6 +244,8 @@ if openingRangeStarted
     array.push(sessionEnds, time_close)
     array.push(sessionHighs, high)
     array.push(sessionLows, low)
+    array.push(sessionBomHighs, na)
+    array.push(sessionBomLows, na)
     array.push(sessionMorningHighs, trackedMeasurementHigh)
     array.push(sessionMorningLows, trackedMeasurementLow)
 
@@ -194,6 +254,8 @@ if openingRangeStarted
         array.shift(sessionEnds)
         array.shift(sessionHighs)
         array.shift(sessionLows)
+        array.shift(sessionBomHighs)
+        array.shift(sessionBomLows)
         array.shift(sessionMorningHighs)
         array.shift(sessionMorningLows)
 else if inOpeningRange and array.size(sessionStarts) > 0
@@ -201,6 +263,8 @@ else if inOpeningRange and array.size(sessionStarts) > 0
     array.set(sessionEnds, lastIndex, time_close)
     array.set(sessionHighs, lastIndex, math.max(array.get(sessionHighs, lastIndex), high))
     array.set(sessionLows, lastIndex, math.min(array.get(sessionLows, lastIndex), low))
+    array.set(sessionBomHighs, lastIndex, bomActive ? bomUpHigh : na)
+    array.set(sessionBomLows, lastIndex, bomActive ? bomDownLow : na)
 
 // 美盘区块创建后，继续累计至北京时间次日 12:00。
 // 初始值已经包含美盘开盘当日 08:00 至开盘时刻的行情。
@@ -269,8 +333,11 @@ if barstate.islast
             int selectedBoxEnd = selectedEnd - halfBarDuration
             int selectedDisplayEnd = sessionDisplayEnd(selectedStart)
             int segmentRight = math.min(selectedDisplayEnd, chart.right_visible_bar_time)
-            float selectedHigh = array.get(sessionHighs, index)
-            float selectedLow = array.get(sessionLows, index)
+            float bomHigh = array.get(sessionBomHighs, index)
+            float bomLow = array.get(sessionBomLows, index)
+            bool isBomSession = not na(bomHigh) and not na(bomLow)
+            float selectedHigh = isBomSession ? bomHigh : array.get(sessionHighs, index)
+            float selectedLow = isBomSession ? bomLow : array.get(sessionLows, index)
             float rangeHeight = selectedHigh - selectedLow
             float selectedMorningHigh = array.get(sessionMorningHighs, index)
             float selectedMorningLow = array.get(sessionMorningLows, index)
@@ -362,9 +429,10 @@ if barstate.islast
                 bool hasRangeDifference = showRangeDifference and rangeHeight > 0
                 bool hasMorningDifference = showMorningDifference and not na(morningRangeHeight)
                 if hasRangeDifference or hasMorningDifference
+                    string bomPrefix = isBomSession ? "BOM  " : ""
                     string differenceText = hasRangeDifference
-                         ? "区间振幅：" + str.tostring(rangeHeight, format.mintick)
-                         : ""
+                         ? bomPrefix + "区间振幅：" + str.tostring(rangeHeight, format.mintick)
+                         : bomPrefix
                     if hasMorningDifference
                         differenceText += (hasRangeDifference ? "， 今日振幅：" : "今日振幅：")
                              + str.tostring(morningRangeHeight, format.mintick)
