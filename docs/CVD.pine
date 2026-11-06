@@ -30,6 +30,9 @@ import PineCoders/VisibleChart/5 as chart
 int     MS_IN_MIN   = 60 * 1000
 int     MS_IN_HOUR  = MS_IN_MIN  * 60
 int     MS_IN_DAY   = MS_IN_HOUR * 24
+int     SEC_IN_HOUR = 3600
+int     SEC_IN_DAY  = SEC_IN_HOUR * 24
+int     MAX_ROLL_BARS = 5000
 string  LBL_TXT     = " \n \n \n \n \n \n \n \n \n "
 
 // Default colors
@@ -55,11 +58,17 @@ string  RST4 = "At a fixed time..."
 string  RST5 = "At the beginning of the regular session"
 string  RST6 = "At the first visible chart bar"
 string  RST7 = "On trend changes..."
+string  RST8 = "Rolling window (no resets)..."
 
 // Trend types
 string  TR01 = "Supertrend"
 string  TR02 = "Aroon"
 string  TR03 = "Parabolic SAR"
+
+// Rolling window units
+string  RU1 = "Minutes"
+string  RU2 = "Hours"
+string  RU3 = "Days"
 
 // Volume delta calculation modes
 string  VD01 = "Volume delta"
@@ -109,6 +118,15 @@ string TT_RST_TREND = (
     + "The second field specifies the ATR multiplier for the Supertrend indicator.\n\n"
     + "The Parabolic SAR uses predefined settings. Neither field affects it."
 )
+string TT_ROLL = (
+    "These values control the 'Rolling window' CVD reset option. The CVD is the sum of volume delta over the last N "
+    + "chart bars, so it never resets and has no discontinuities. The window is defined as a duration and converted "
+    + "to a bar count using the chart's timeframe (capped at 5000 bars).\n\n"
+    + "When 'auto window' is enabled, the duration is chosen from the chart timeframe: 1m: 4h, 3m: 12h, 5m: 1D, "
+    + "15m: 2D, 1h: 3D, 4h: 7D, higher: 30 bars. Otherwise, the length and unit fields are used.\n\n"
+    + "'Cumulative values' is ignored in this mode. With 'Volume delta percent', the value is the window's total "
+    + "delta divided by the window's total volume."
+)
 string TT_LINE = "Select the style and color of the CVD lines."
 string TT_LTF  = (
     "Controls the number of intrabars that the indicator analyzes per chart bar. "
@@ -126,13 +144,16 @@ string TT_YSPCE  = "Scales the height of all oscillator zones using a percentage
 
 // ————— Inputs
 
-string  resetInput              = input.string(RST2,        "CVD resets",                       inline = "00", options = [RST1, RST2, RST5, RST6, RST3, RST4, RST7], tooltip = TT_RST)
+string  resetInput              = input.string(RST2,        "CVD resets",                       inline = "00", options = [RST1, RST2, RST5, RST6, RST3, RST4, RST7, RST8], tooltip = TT_RST)
 string  fixedTfInput            = input.timeframe("D",      "  Fixed higher timeframe:",        inline = "01", tooltip = TT_RST_HTF)
 int     hourInput               = input.int(9,              "  Fixed time: Hour",               inline = "02", minval  = 0, maxval = 23)
 int     minuteInput             = input.int(30,             "Minute",                           inline = "02", minval  = 0, maxval = 59, tooltip = TT_RST_TIME)
 string  trendInput              = input.string(TR01,        "  Trend: ",                        inline = "03", options = [TR02, TR03, TR01])
 int     trendPeriodInput        = input.int(14,             " Length",                          inline = "03", minval  = 2)
 float   trendValue2Input        = input.float(3.0,          "",                                 inline = "03", minval  = 0.25, step = 0.25, tooltip = TT_RST_TREND)
+bool    rollAutoInput           = input.bool(true,          "  Rolling: auto window",           inline = "07")
+int     rollLenInput            = input.int(3,              "  Rolling: length",                inline = "08", minval  = 1)
+string  rollUnitInput           = input.string(RU3,         "",                                 inline = "08", options = [RU1, RU2, RU3], tooltip = TT_ROLL)
 string  ltfModeInput            = input.string(LTF3,        "Intrabar precision",               inline = "04", options = [LTF1, LTF2, LTF3, LTF4, LTF5, LTF6, LTF7, LTF8, LTF9, LTF10], tooltip = TT_LTF)
 string  vdCalcModeInput         = input.string(VD01,        "Volume delta calculation",         inline = "05", options = [VD01, VD02])
 bool    cumulativeInput         = input.bool(true,          "Cumulative values",                inline = "06", tooltip = TT_CVD)
@@ -203,6 +224,20 @@ htfStep() =>
         tfInMs <= MS_IN_HOUR * 12 => "1W"
         tfInMs <  MS_IN_DAY  * 7  => "1M"
         =>                           "12M"
+
+
+// @function            Selects the default rolling window length, in seconds, based on the chart's timeframe.
+// @returns             (simple int) The rolling window length in seconds.
+autoRollSeconds() =>
+    int tfSec = timeframe.in_seconds()
+    int result = switch
+        tfSec <= 60    => 4  * SEC_IN_HOUR
+        tfSec <= 180   => 12 * SEC_IN_HOUR
+        tfSec <= 300   => SEC_IN_DAY
+        tfSec <= 900   => 2 * SEC_IN_DAY
+        tfSec <= 3600  => 3 * SEC_IN_DAY
+        tfSec <= 14400 => 7 * SEC_IN_DAY
+        =>                30 * tfSec
 
 
 // @function            Determines whether an intraday bar opens before or at a specified time of day and closes after
@@ -278,6 +313,18 @@ float delta         = totalUpVolume + totalDnVolume
 float deltaPct      = delta / totalVolume
 float barDelta      = useVdPct ? deltaPct : delta
 
+// Rolling window settings: convert the window duration to a number of chart bars.
+bool   isRolling      = resetInput == RST8
+int    rollUnitSec    = rollUnitInput == RU1 ? 60 : rollUnitInput == RU2 ? SEC_IN_HOUR : SEC_IN_DAY
+int    rollWindowSec  = rollAutoInput ? autoRollSeconds() : rollLenInput * rollUnitSec
+int    rollBars       = math.min(math.max(2, math.round(rollWindowSec / timeframe.in_seconds())), MAX_ROLL_BARS)
+string rollDesc       = "Rolling " + PCtime.formattedNoOfPeriods(rollWindowSec * 1000) + " (" + str.tostring(rollBars) + " bars)"
+
+// Sum of delta (and volume) over the last `rollBars` chart bars. Must be called on every bar.
+float rollDelta  = math.sum(nz(delta), rollBars)
+float rollVolume = math.sum(nz(totalVolume), rollBars)
+float rollValue  = useVdPct ? (rollVolume != 0 ? rollDelta / rollVolume : 0.0) : rollDelta
+
 // Declare variables to track CVD reset information.
 [reset, hasTrendDirection, trendIsUp, resetDescription] = switch resetInput
     RST1 => [false, false, false, "No resets"]
@@ -289,6 +336,7 @@ float barDelta      = useVdPct ? deltaPct : delta
      ]
     RST5 => [session.isfirstbar_regular, false, false, "Resets at the beginning of the session"]
     RST6 => [time == chart.left_visible_bar_time, false, false, "Resets at the beginning of visible bars"]
+    RST8 => [false, false, false, rollDesc]
     RST7 =>
         switch trendInput
             TR01 =>
@@ -306,6 +354,9 @@ float barDelta      = useVdPct ? deltaPct : delta
 int intrabars = upVolumes.size()
 int chartBarsCovered = int(ta.cum(math.sign(intrabars)))
 float avgIntrabars = ta.cum(intrabars) / chartBarsCovered
+
+// Number of bars in the rolling window that have intrabar data.
+int rollCovered = int(nz(math.sum(math.sign(intrabars), rollBars)))
 
 // Detect divergences between volume delta and the bar's polarity.
 bool divergence = delta != 0 and math.sign(delta) != math.sign(close - open)
@@ -328,7 +379,7 @@ priceLo := isVisible ? math.min(priceLo, low)  : low
 // Update data for new visible segments on a reset bar or the last bar.
 if reset or isLastBar
     if isVisible
-        segCvdValues.push(cumulativeInput ? cvd + barDelta : barDelta)
+        segCvdValues.push(isRolling ? rollValue : cumulativeInput ? cvd + barDelta : barDelta)
         resetBars.push(bar_index)
         zeroLevels.push(math.avg(priceHi, priceLo) - (priceHi - priceLo))
         priceRanges.push((priceHi - priceLo) / 2)
@@ -344,6 +395,9 @@ if reset or isLastBar
 // Track the previous CVD value and calculate the new value.
 float cvdO = cvd
 cvd += barDelta
+if isRolling
+    cvdO := nz(rollValue[1])
+    cvd  := rollValue
 
 // Logic to create drawings on the last available bar to display CVD data on the chart.
 if isLastBar
@@ -351,7 +405,7 @@ if isLastBar
     int startBar = leftBar
     int step = 0
     float yRangeMax = priceRanges.max() * percentYRangeInput
-    float highScale = useVdPct and not cumulativeInput ? 1 : array.max(rawCvdValues.abs())
+    float highScale = useVdPct and (isRolling or not cumulativeInput) ? 1 : array.max(rawCvdValues.abs())
     // Loop to create the scaled drawings.
     for [i, resetBar] in resetBars
         // Find the segment's zero level, vertical range, and high/low CVD, and calculate an adjusted range.
@@ -427,7 +481,7 @@ if isLastBar
 
 // Store necessary values for visible bars.
 if isVisible
-    segCvdValues.push(cumulativeInput ? cvd : barDelta)
+    segCvdValues.push(isRolling or cumulativeInput ? cvd : barDelta)
     barCenters.push(hl2)
 //#endregion
 
@@ -440,6 +494,10 @@ color candleColor = colorDivBodiesInput and divergence ? delta > 0 ? upDivColorI
 
 // Display key values in the Data Window.
 displayDataWindow       = display.data_window
+displayStatusLine       = display.status_line + display.data_window
+float cvdShown          = isRolling or cumulativeInput ? cvd : barDelta
+// The CVD value of the hovered bar is shown in the status line. `display.status_line` does not draw on the pane.
+plot(cvdShown,          "CVD",                      cvdShown >= 0 ? upColorInput : dnColorInput, display = displayStatusLine)
 plot(delta,             "Volume delta for the bar", candleColor,    display = displayDataWindow)
 plot(totalUpVolume,     "Up volume for the bar",    upColorInput,   display = displayDataWindow)
 plot(totalDnVolume,     "Dn volume for the bar",    dnColorInput,   display = displayDataWindow)
@@ -452,6 +510,9 @@ plot(maxDnVolume,       "Max intrabar dn volume",   dnColorInput,   display = di
 plot(intrabars,         "Intrabars in this bar",                    display = displayDataWindow)
 plot(avgIntrabars,      "Average intrabars",                        display = displayDataWindow)
 plot(chartBarsCovered,  "Chart bars covered",                       display = displayDataWindow)
+plot(isRolling ? rollBars : na,                 "Rolling window bars",              display = displayDataWindow)
+plot(isRolling ? rollCovered : na,              "Rolling window bars with intrabars", display = displayDataWindow)
+plot(isRolling ? nz(delta[rollBars]) : na,      "Delta rolled out of window",       display = displayDataWindow)
 plot(bar_index + 1,     "Chart bars",                               display = displayDataWindow)
 plot(na,                "═════════════════",                        display = displayDataWindow)
 plot(totalBars,         "Total visible bars",                       display = displayDataWindow)
@@ -479,6 +540,13 @@ if showInfoBoxInput and barstate.islastconfirmedhistory
     if avgIntrabars < 5
         txt += "\nThis quantity of intrabars is dangerously small.\nResults will not be as reliable with so few."
         infoBoxBgColor := color.red
+    if isRolling
+        txt += str.format(
+          "\nRolling window: {0} bars, with intrabars on {1} ({2,number,percent})",
+          rollBars, rollCovered, rollCovered / rollBars)
+        if rollCovered < rollBars * 0.95
+            txt += "\nThe window exceeds the available intrabar coverage.\nEarlier bars lack data, so the delta is understated.\nShorten the window or choose a more covering precision."
+            infoBoxBgColor := infoBoxBgColor == color.red ? color.red : ORANGE
     table.cell(
         infoBox, 0, 0, txt, text_color = infoBoxTxtColorInput, text_size = infoBoxSizeInput, bgcolor = infoBoxBgColor
     )
