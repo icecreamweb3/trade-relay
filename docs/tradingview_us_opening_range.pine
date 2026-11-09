@@ -10,6 +10,7 @@ indicator(
 
 // 与 Trade Relay K 线窗口保持一致：
 //   TR = 早盘区间高度（ORH - ORL），不是 Pine 内置的 True Range。
+//   触发 BOM 模式时，ORH/ORL 取 BOM 上沿/下沿，TR 与 1×/2× 目标均以 BOM 区间衡量。
 //   上方目标 = ORH + 1×/2×TR。
 //   下方目标 = ORL - 1×/2×TR。
 //
@@ -344,11 +345,15 @@ if barstate.islast
             float morningRangeHeight = selectedMorningHigh - selectedMorningLow
             bool hasHorizontalSpace = segmentRight > selectedBoxStart
             bool canExtend = segmentRight > selectedBoxEnd and rangeHeight > 0
+            // BOM 一旦触发即可显示 1×/2× TR（从区间左边界起画）；未触发则等早盘结束后从右边界起画。
+            int targetLeft = isBomSession ? selectedBoxStart : selectedBoxEnd
+            bool canShowTargets = segmentRight > targetLeft and rangeHeight > 0
             bool isLatestVisible = index == lastVisibleIndex
             int visibleLineLeft = math.max(selectedBoxStart, chart.left_visible_bar_time)
             int mainLabelX = visibleLineLeft + int(math.round((segmentRight - visibleLineLeft) / 2.0))
             float rangeLabelY = selectedHigh - rangeHeight * 0.04
-            int visibleExtensionLeft = math.max(selectedBoxEnd, chart.left_visible_bar_time)
+            string trPrefix = isBomSession ? "BOM " : ""
+            int visibleExtensionLeft = math.max(targetLeft, chart.left_visible_bar_time)
             int extensionLabelX = visibleExtensionLeft + int(math.round((segmentRight - visibleExtensionLeft) / 2.0))
 
             color rangeColor = color.rgb(245, 158, 11)
@@ -473,12 +478,12 @@ if barstate.islast
                     array.push(drawnLabels, highLabel)
                     array.push(drawnLabels, lowLabel)
 
-            if showUpperTargets and canExtend
+            if showUpperTargets and canShowTargets
                 float upper1 = selectedHigh + rangeHeight
                 float upper2 = selectedHigh + rangeHeight * 2.0
 
                 box upperBand1 = box.new(
-                     left = selectedBoxEnd,
+                     left = targetLeft,
                      top = upper1,
                      right = segmentRight,
                      bottom = selectedHigh,
@@ -487,7 +492,7 @@ if barstate.islast
                      bgcolor = color.new(upperColor, 95)
                 )
                 box upperBand2 = box.new(
-                     left = selectedBoxEnd,
+                     left = targetLeft,
                      top = upper2,
                      right = segmentRight,
                      bottom = upper1,
@@ -496,7 +501,7 @@ if barstate.islast
                      bgcolor = color.new(upperColor, 97)
                 )
                 line upperLine1 = line.new(
-                     x1 = selectedBoxEnd,
+                     x1 = targetLeft,
                      y1 = upper1,
                      x2 = segmentRight,
                      y2 = upper1,
@@ -505,7 +510,7 @@ if barstate.islast
                      style = line.style_dashed
                 )
                 line upperLine2 = line.new(
-                     x1 = selectedBoxEnd,
+                     x1 = targetLeft,
                      y1 = upper2,
                      x2 = segmentRight,
                      y2 = upper2,
@@ -522,7 +527,7 @@ if barstate.islast
                     label upperLabel1 = label.new(
                          x = extensionLabelX,
                          y = upper1,
-                         text = "+1×TR  " + str.tostring(upper1, format.mintick),
+                         text = trPrefix + "+1×TR  " + str.tostring(upper1, format.mintick),
                          xloc = xloc.bar_time,
                          style = label.style_none,
                          textcolor = upperColor,
@@ -532,7 +537,7 @@ if barstate.islast
                     label upperLabel2 = label.new(
                          x = extensionLabelX,
                          y = upper2,
-                         text = "+2×TR  " + str.tostring(upper2, format.mintick),
+                         text = trPrefix + "+2×TR  " + str.tostring(upper2, format.mintick),
                          xloc = xloc.bar_time,
                          style = label.style_none,
                          textcolor = upperColor,
@@ -542,12 +547,12 @@ if barstate.islast
                     array.push(drawnLabels, upperLabel1)
                     array.push(drawnLabels, upperLabel2)
 
-            if showLowerTargets and canExtend
+            if showLowerTargets and canShowTargets
                 float lower1 = selectedLow - rangeHeight
                 float lower2 = selectedLow - rangeHeight * 2.0
 
                 box lowerBand1 = box.new(
-                     left = selectedBoxEnd,
+                     left = targetLeft,
                      top = selectedLow,
                      right = segmentRight,
                      bottom = lower1,
@@ -556,7 +561,7 @@ if barstate.islast
                      bgcolor = color.new(lowerColor, 95)
                 )
                 box lowerBand2 = box.new(
-                     left = selectedBoxEnd,
+                     left = targetLeft,
                      top = lower1,
                      right = segmentRight,
                      bottom = lower2,
@@ -565,7 +570,7 @@ if barstate.islast
                      bgcolor = color.new(lowerColor, 97)
                 )
                 line lowerLine1 = line.new(
-                     x1 = selectedBoxEnd,
+                     x1 = targetLeft,
                      y1 = lower1,
                      x2 = segmentRight,
                      y2 = lower1,
@@ -574,7 +579,7 @@ if barstate.islast
                      style = line.style_dashed
                 )
                 line lowerLine2 = line.new(
-                     x1 = selectedBoxEnd,
+                     x1 = targetLeft,
                      y1 = lower2,
                      x2 = segmentRight,
                      y2 = lower2,
@@ -591,7 +596,7 @@ if barstate.islast
                     label lowerLabel1 = label.new(
                          x = extensionLabelX,
                          y = lower1,
-                         text = "-1×TR  " + str.tostring(lower1, format.mintick),
+                         text = trPrefix + "-1×TR  " + str.tostring(lower1, format.mintick),
                          xloc = xloc.bar_time,
                          style = label.style_none,
                          textcolor = lowerColor,
@@ -601,7 +606,7 @@ if barstate.islast
                     label lowerLabel2 = label.new(
                          x = extensionLabelX,
                          y = lower2,
-                         text = "-2×TR  " + str.tostring(lower2, format.mintick),
+                         text = trPrefix + "-2×TR  " + str.tostring(lower2, format.mintick),
                          xloc = xloc.bar_time,
                          style = label.style_none,
                          textcolor = lowerColor,
