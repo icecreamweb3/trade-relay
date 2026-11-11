@@ -31,8 +31,8 @@ bool bomEnabled = input.bool(
      true,
      "启用 BOM 区间",
      tooltip = "以统计时段内第 1 根 K 线（请使用 5m 图表）的高低点为基准。\n" +
-          "向上首次突破第 1 根高点后，其最高点为 BOM 上沿；在向下突破第 1 根低点之前创新高则更新上沿。\n" +
-          "向下首次突破第 1 根低点后，其最低点为 BOM 下沿；在向上突破第 1 根高点之前创新低则更新下沿。\n" +
+          "向上首次突破第 1 根高点后持续更新最高点，出现后续第 1 根阴线时冻结 BOM 上沿。\n" +
+          "向下首次突破第 1 根低点后持续更新最低点，出现后续第 1 根阳线时冻结 BOM 下沿。\n" +
           "上、下两侧均被触发才构成 BOM，此时按 BOM 区间标记；否则沿用统计时段内的最高/最低点。",
      group = GROUP_BOM
 )
@@ -210,21 +210,25 @@ if inOpeningRange
         bool upBreak = high > bomFirstHigh
         bool downBreak = low < bomFirstLow
 
-        // 上沿：已触发后，一旦向下突破第 1 根低点即停止更新。
+        // 上沿：突破首根高点后持续更新；后续首根阴线计入其最高点后冻结。
         if not bomUpFrozen
-            if downBreak and previousUpTriggered
-                bomUpFrozen := true
+            if previousUpTriggered
+                bomUpHigh := math.max(bomUpHigh, high)
+                if close < open
+                    bomUpFrozen := true
             else if upBreak
                 bomUpTriggered := true
-                bomUpHigh := na(bomUpHigh) ? high : math.max(bomUpHigh, high)
+                bomUpHigh := high
 
-        // 下沿：已触发后，一旦向上突破第 1 根高点即停止更新。
+        // 下沿：突破首根低点后持续更新；后续首根阳线计入其最低点后冻结。
         if not bomDownFrozen
-            if upBreak and previousDownTriggered
-                bomDownFrozen := true
+            if previousDownTriggered
+                bomDownLow := math.min(bomDownLow, low)
+                if close > open
+                    bomDownFrozen := true
             else if downBreak
                 bomDownTriggered := true
-                bomDownLow := na(bomDownLow) ? low : math.min(bomDownLow, low)
+                bomDownLow := low
 
 bool bomActive = bomEnabled and bomUpTriggered and bomDownTriggered
 
